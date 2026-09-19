@@ -1,0 +1,119 @@
+import type { NodeServer } from '../src/node';
+
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterAll, beforeAll, describe, it } from 'vitest';
+
+import { createApp, get, post, use } from '../src/app';
+import { readJson } from '../src/body';
+import { createFileReader, serve } from '../src/node';
+import { json, send } from '../src/respond';
+
+describe('node adapter (real http)', () => {
+  let nodeServer: NodeServer;
+  let dir: string;
+
+  beforeAll(async () => {
+    const app = createApp();
+    use(app, async (ctx, next) => {
+      await next();
+      // Onion check: the header can only be set after the inner chain
+      // produced a response.
+      ctx.res?.headers.append('x-s200', 'node');
+    });
+    get(app, '/hello/:name', (ctx) => json(ctx, { hello: ctx.params.name }));
+    post(app, '/echo', async (ctx) => json(ctx, await readJson(ctx)));
+    get(app, '/cookies', (ctx) =>
+      send(ctx, 'ok', { headers: [['set-cookie', 'a=1'], ['set-cookie', 'b=2']] })
+    );
+    get(app, '/boom', () => {
+      throw new Error('boom');
+    });
+    nodeServer = await serve(app, { port: 0 });
+
+    dir = await mkdtemp(join(tmpdir(), 's200-node-'));
+    await writeFile(join(dir, 'hello.txt'), 'hello from disk');
+    await mkdir(join(dir, 'sub'));
+    await writeFile(join(dir, 'sub', 'nested.txt'), 'nested');
+  });
+
+  it('resolves the ephemeral port and url', () => {
+    nodeServer.port.should.be.a('number');
+    nodeServer.port.should.be.greaterThan(0);
+    nodeServer.url.should.equal(`http://127.0.0.1:${nodeServer.port}`);
+    nodeServer.server.listening.should.be.true;
+  });
+
+  it('routes GET with params, middleware header and JSON body', async () => {
+    const res = await fetch(`${nodeServer.url}/hello/world`);
+    res.status.should.equal(200);
+    res.headers.get('x-s200')?.should.equal('node');
+    (await res.json()).should.deep.equal({ hello: 'world' });
+  });
+
+  it('round-trips a POST JSON body through the web stream', async () => {
+    const payload = { a: 1, list: ['x', 'y'] };
+    const res = await fetch(`${nodeServer.url}/echo`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    res.status.should.equal(200);
+    res.headers.get('x-s200')?.should.equal('node');
+    (await res.json()).should.deep.equal(payload);
+  });
+
+  it('keeps duplicated set-cookie headers separate', async () => {
+    const res = await fetch(`${nodeServer.url}/cookies`);
+    res.status.should.equal(200);
+    res.headers.getSetCookie().should.deep.equal(['a=1', 'b=2']);
+  });
+
+  it('answers unmatched routes with the default 404 JSON, middlewares still ran', async () => {
+    const res = await fetch(`${nodeServer.url}/nope`);
+    res.status.should.equal(404);
+    res.headers.get('x-s200')?.should.equal('node');
+    (await res.json()).should.deep.equal({ error: 'Not Found' });
+  });
+
+  it('maps a throwing handler to the default 500 JSON', async () => {
+    const res = await fetch(`${nodeServer.url}/boom`);
+    res.status.should.equal(500);
+    (await res.json()).should.deep.equal({ error: 'Internal Server Error' });
+  });
+
+  describe('createFileReader', () => {
+    it('reads files under the root as bytes', async () => {
+      const read = createFileReader(dir);
+      const bytes = await read('/hello.txt');
+      (bytes !== null).should.be.true;
+      new TextDecoder().decode(bytes!).should.equal('hello from disk');
+      new TextDecoder().decode((await read('sub/nested.txt'))!).should.equal('nested');
+    });
+
+    it('returns null for missing paths and directories', async () => {
+      const read = createFileReader(dir);
+      (await read('/missing.txt') === null).should.be.true;
+      (await read('/sub') === null).should.be.true; // EISDIR
+    });
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+    const url = nodeServer.url;
+    await nodeServer.close();
+    nodeServer.server.listening.should.be.false;
+    // Nothing listens anymore: keep-alive sockets were dropped by close().
+    // The rejection shape varies (ECONNREFUSED or a destroyed pooled socket),
+    // so only the fact of rejection is asserted.
+    let rejected = false;
+    try {
+      await fetch(`${url}/hello/x`);
+    } catch {
+      rejected = true;
+    }
+    rejected.should.be.true;
+  });
+});

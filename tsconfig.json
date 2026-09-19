@@ -1,0 +1,10 @@
+{
+  "extends": "tools-config/typescript",
+  "compilerOptions": {
+    "types": ["node"],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "exclude": ["dist", "coverage", "eslint.config.js", "scripts"]
+}

@@ -1,0 +1,142 @@
+{
+  "name": "s200",
+  "version": "0.0.0-development",
+  "description": "Data + functions server framework on the Web Standard: koa-style onion middleware, hono-style multi-runtime portability, replaceable modules, fully tree-shakable. Zero dependencies.",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/types/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./node": {
+      "import": {
+        "types": "./dist/types/node.d.mts",
+        "default": "./dist/node.mjs"
+      },
+      "require": {
+        "types": "./dist/types/node.d.ts",
+        "default": "./dist/node.cjs"
+      }
+    },
+    "./bun": {
+      "import": {
+        "types": "./dist/types/bun.d.mts",
+        "default": "./dist/bun.mjs"
+      },
+      "require": {
+        "types": "./dist/types/bun.d.ts",
+        "default": "./dist/bun.cjs"
+      }
+    }
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "commit": "lint-staged && git-cz -n",
+    "prepare": "husky",
+    "build": "vite build && npm run build:types",
+    "build:types": "tsc -p tsconfig.build.json && node scripts/gen-dmts.mjs",
+    "dev": "vite",
+    "preview": "vite preview",
+    "coverage": "vitest run --coverage --coverage.reporter=lcov",
+    "lint": "eslint --fix src test",
+    "lint:ci": "eslint src test",
+    "lint:pkg": "publint --strict",
+    "attw": "attw --pack . --profile node16",
+    "size": "size-limit",
+    "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
+    "check:paradigm": "node scripts/check-paradigm.mjs",
+    "smoke": "node scripts/smoke.mjs && bun scripts/smoke.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "start": "vitest watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wmzy/s200.git"
+  },
+  "keywords": [
+    "server",
+    "framework",
+    "http",
+    "web-standard",
+    "middleware",
+    "router",
+    "functional",
+    "tree-shaking",
+    "multi-runtime",
+    "node",
+    "bun"
+  ],
+  "author": "wmzy",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/wmzy/s200/issues"
+  },
+  "homepage": "https://github.com/wmzy/s200#readme",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "size-limit": [
+    {
+      "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
+      "path": "dist/index.mjs",
+      "gzip": true,
+      "limit": "4 KB"
+    },
+    {
+      "name": "minimal usage: createApp/use/get/handle (min+gz)",
+      "path": "src/index.ts",
+      "import": "{ createApp, use, get, handle }",
+      "gzip": true,
+      "limit": "2 KB"
+    },
+    {
+      "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
+      "path": "dist/node.mjs",
+      "ignore": ["node:*"],
+      "gzip": true,
+      "limit": "2 KB"
+    }
+  ],
+  "lint-staged": {
+    "*.{js,mjs,cjs,ts}": [
+      "eslint --fix"
+    ]
+  },
+  "config": {
+    "commitizen": {
+      "path": "./node_modules/cz-conventional-changelog"
+    }
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@size-limit/esbuild": "^13.0.3",
+    "@size-limit/file": "^13.0.3",
+    "@types/node": "^26.5.1",
+    "@vitest/coverage-v8": "^5.0.0",
+    "commitizen": "^4.3.2",
+    "cz-conventional-changelog": "^3.3.0",
+    "eslint": "^10.10.0",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.5.0",
+    "publint": "^0.3.24",
+    "size-limit": "^13.0.3",
+    "tools-config": "^0.5.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}

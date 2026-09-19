@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // The build contract, declared here rather than inherited: `tsc` must
+    // emit declaration-only output into dist/types (consumed by
+    // scripts/gen-dmts.mjs). The tools-config 0.5 base sets "noEmit": true
+    // (bundler projects never want tsc output), so emission is re-enabled
+    // here explicitly.
+    "noEmit": false,
+    "outDir": "dist/types",
+    "declaration": true,
+    "emitDeclarationOnly": true
+  },
+  "include": ["src"]
+}
