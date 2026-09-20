@@ -20,11 +20,16 @@ function makeApp(files: Record<string, string>, options: Omit<ServeStaticOptions
   return { app, reads };
 }
 
-/** Sentinel middleware: proves serveStatic called next() by responding after it. */
+/**
+ * Sentinel middleware: proves serveStatic called next() by responding after
+ * it. Running at all proves the fall-through — a serving serveStatic never
+ * calls next(). The overwrite is unconditional: after next() settles,
+ * ctx.res is always set (handler response or the materialized fallback).
+ */
 function withSentinel(app: ReturnType<typeof createApp>, marker: string): void {
   use(app, async (ctx, next) => {
     await next();
-    if (ctx.res === undefined) text(ctx, marker);
+    text(ctx, marker);
   });
 }
 
@@ -275,5 +280,113 @@ describe('serveStatic fallthrough and spa', () => {
     );
     res.status.should.equal(404);
     reads.should.deep.equal(['some/route']);
+  });
+});
+
+describe('serveStatic dotfiles', () => {
+  it('refuses dotfile paths by default, even percent-encoded ones', async () => {
+    const { app, reads } = makeApp({ '.env': 'SECRET=x', '.git/config': 'g' });
+    for (const path of ['/.env', '/.git/config', '/%2eenv']) {
+      const res = await handle(app, new Request(`http://localhost${path}`));
+      res.status.should.equal(404);
+    }
+    reads.should.deep.equal([]);
+  });
+
+  it("serves dotfiles when configured with dotfiles: 'allow'", async () => {
+    const { app } = makeApp({ '.env': 'SECRET=x' }, { dotfiles: 'allow' });
+    const res = await handle(app, new Request('http://localhost/.env'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('SECRET=x');
+  });
+
+  it('still falls through to a later route that answers the dotfile path', async () => {
+    const app = createApp();
+    use(app, serveStatic({ read: () => Promise.resolve(null) }));
+    get(app, '/.well-known/health', () => new Response('ok'));
+    // Denied by the dotfile policy before the route... middleware order:
+    // serveStatic runs first and falls through, so the route answers.
+    const res = await handle(app, new Request('http://localhost/.well-known/health'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('ok');
+  });
+});
+
+describe('serveStatic range requests', () => {
+  it('serves a single byte range with 206 and Content-Range', async () => {
+    const { app } = makeApp({ 'file.txt': '0123456789' });
+    const res = await handle(
+      app,
+      new Request('http://localhost/file.txt', { headers: { range: 'bytes=2-5' } }),
+    );
+    res.status.should.equal(206);
+    (res.headers.get('content-range') ?? '').should.equal('bytes 2-5/10');
+    (res.headers.get('accept-ranges') ?? '').should.equal('bytes');
+    (await res.text()).should.equal('2345');
+  });
+
+  it('clamps an open-ended and an over-long end to the representation', async () => {
+    const { app } = makeApp({ 'file.txt': '0123456789' });
+    const open = await handle(
+      app,
+      new Request('http://localhost/file.txt', { headers: { range: 'bytes=7-' } }),
+    );
+    open.status.should.equal(206);
+    (await open.text()).should.equal('789');
+    const over = await handle(
+      app,
+      new Request('http://localhost/file.txt', { headers: { range: 'bytes=8-999' } }),
+    );
+    over.status.should.equal(206);
+    (over.headers.get('content-range') ?? '').should.equal('bytes 8-9/10');
+    (await over.text()).should.equal('89');
+  });
+
+  it('serves suffix ranges as the last N bytes', async () => {
+    const { app } = makeApp({ 'file.txt': '0123456789' });
+    const res = await handle(
+      app,
+      new Request('http://localhost/file.txt', { headers: { range: 'bytes=-3' } }),
+    );
+    res.status.should.equal(206);
+    (res.headers.get('content-range') ?? '').should.equal('bytes 7-9/10');
+    (await res.text()).should.equal('789');
+  });
+
+  it('answers unsatisfiable ranges with 416 and bytes */length', async () => {
+    const { app } = makeApp({ 'file.txt': '0123456789' });
+    const res = await handle(
+      app,
+      new Request('http://localhost/file.txt', { headers: { range: 'bytes=99-' } }),
+    );
+    res.status.should.equal(416);
+    (res.headers.get('content-range') ?? '').should.equal('bytes */10');
+    (res.body === null).should.be.true;
+  });
+
+  it('ignores malformed and multi-range headers, serving the full body', async () => {
+    const { app } = makeApp({ 'file.txt': '0123456789' });
+    for (const range of ['bytes=abc', 'bytes=5-2', 'bytes=0-1,3-4', 'items=0-1']) {
+      const res = await handle(
+        app,
+        new Request('http://localhost/file.txt', { headers: { range } }),
+      );
+      res.status.should.equal(200);
+      (await res.text()).should.equal('0123456789');
+    }
+  });
+
+  it('ignores Range on HEAD requests', async () => {
+    const { app } = makeApp({ 'file.txt': '0123456789' });
+    const res = await handle(
+      app,
+      new Request('http://localhost/file.txt', {
+        method: 'HEAD',
+        headers: { range: 'bytes=0-1' },
+      }),
+    );
+    res.status.should.equal(200);
+    (res.headers.get('content-range') === null).should.be.true;
+    (res.body === null).should.be.true;
   });
 });

@@ -16,14 +16,14 @@ describe('logger', function () {
     lines[0]?.should.match(/ GET \/x 200 /);
   });
 
-  it("reports '-' when the chain wrote no response (default fallbacks)", async function () {
+  it('reports the real status of materialized fallbacks', async function () {
     const lines: string[] = [];
     const app = createApp();
     use(app, logger({ sink: (line) => lines.push(line) }));
     const res = await handle(app, new Request('http://localhost/nope'));
     res.status.should.equal(404);
     lines.should.have.length(1);
-    lines[0]?.should.match(/ GET \/nope - /);
+    lines[0]?.should.match(/ GET \/nope 404 /);
   });
 
   it('passes the measured duration to a custom format function', async function () {

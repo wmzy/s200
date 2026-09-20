@@ -14,7 +14,7 @@ const adapter = globalThis.Bun
   ? await import('../dist/bun.mjs')
   : await import('../dist/node.mjs');
 
-const { createApp, use, get, post, json, text, readJson } = core;
+const { createApp, use, get, post, json, text, readJson, mount, serveStatic } = core;
 
 const app = createApp();
 
@@ -47,9 +47,31 @@ get(app, '/secret', (ctx, next) => {
   return next();
 }, (ctx) => json(ctx, { secret: 'ok' }));
 
+// A mounted sub-app proves the trie joins prefixes and params, and a busy
+// route table exercises the static-prefix index against the last bucket.
+// All registered before the catch-all so the wildcard never shadows them.
+const api = createApp();
+get(api, '/users/:id', (ctx) => json(ctx, { id: ctx.params.id }));
+mount(app, '/v1', api);
+for (let i = 0; i < 50; i += 1) {
+  get(app, `/api/resource${i}/:id`, (ctx) => json(ctx, { n: i, id: ctx.params.id }));
+}
 get(app, '/*all', (ctx) => {
   text(ctx, 'fallback');
 });
+
+// Dotfiles get their own app: a read that must never see a dotfile path.
+const staticReads = [];
+const staticApp = createApp();
+use(
+  staticApp,
+  serveStatic({
+    read: async (path) => {
+      staticReads.push(path);
+      return new TextEncoder().encode('file');
+    },
+  }),
+);
 
 let failures = 0;
 function check(name, ok, detail) {
@@ -129,6 +151,39 @@ try {
     fallback.headers.get('x-s200') === 'smoke',
     `got ${fallback.headers.get('x-s200')}`,
   );
+
+  const mounted = await fetch(`${base}/v1/users/42`);
+  const mountedBody = await mounted.json();
+  check('mounted sub-app route status 200', mounted.status === 200, `got ${mounted.status}`);
+  check(
+    'mounted sub-app params joined under the prefix',
+    JSON.stringify(mountedBody) === '{"id":"42"}',
+    JSON.stringify(mountedBody),
+  );
+
+  const lastBucket = await fetch(`${base}/api/resource49/7`);
+  const lastBucketBody = await lastBucket.json();
+  check(
+    'trie reaches the last static bucket',
+    JSON.stringify(lastBucketBody) === '{"n":49,"id":"7"}',
+    JSON.stringify(lastBucketBody),
+  );
+
+  const staticServer = await adapter.serve(staticApp, { port: 0 });
+  try {
+    const dotfile = await fetch(`${staticServer.url}/.env`);
+    check('dotfile path is refused with 404', dotfile.status === 404, `got ${dotfile.status}`);
+    check(
+      'dotfile refusal happens before any read',
+      !staticReads.includes('.env'),
+      `read saw: ${staticReads.join(',')}`,
+    );
+    const plain = await fetch(`${staticServer.url}/ok.txt`);
+    check('non-dotfile path is served', plain.status === 200, `got ${plain.status}`);
+    check('plain file lookup reached the reader', staticReads.includes('ok.txt'), `read saw: ${staticReads.join(',')}`);
+  } finally {
+    await staticServer.close();
+  }
 } finally {
   await server.close();
 }

@@ -65,6 +65,36 @@
         "types": "./dist/types/route-table.d.ts",
         "default": "./dist/route-table.cjs"
       }
+    },
+    "./cookies": {
+      "import": {
+        "types": "./dist/types/cookies.d.mts",
+        "default": "./dist/cookies.mjs"
+      },
+      "require": {
+        "types": "./dist/types/cookies.d.ts",
+        "default": "./dist/cookies.cjs"
+      }
+    },
+    "./validate": {
+      "import": {
+        "types": "./dist/types/validate.d.mts",
+        "default": "./dist/validate.mjs"
+      },
+      "require": {
+        "types": "./dist/types/validate.d.ts",
+        "default": "./dist/validate.cjs"
+      }
+    },
+    "./rate-limit": {
+      "import": {
+        "types": "./dist/types/rate-limit.d.mts",
+        "default": "./dist/rate-limit.mjs"
+      },
+      "require": {
+        "types": "./dist/types/rate-limit.d.ts",
+        "default": "./dist/rate-limit.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -84,6 +114,9 @@
     "lint:pkg": "publint --strict",
     "attw": "attw --pack . --profile node16",
     "size": "size-limit",
+    "bench": "pnpm build && node scripts/bench-router.mjs",
+    "prepublish:jsr": "node scripts/prep-jsr.mjs",
+    "publish:jsr": "pnpm build && pnpm prepublish:jsr && npx jsr publish",
     "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
     "check:paradigm": "node scripts/check-paradigm.mjs",
     "smoke": "node scripts/smoke.mjs && bun scripts/smoke.mjs",
@@ -123,14 +156,14 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "4 KB"
+      "limit": "4.5 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
       "path": "src/index.ts",
       "import": "{ createApp, use, get, handle }",
       "gzip": true,
-      "limit": "2 KB"
+      "limit": "2.5 KB"
     },
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",

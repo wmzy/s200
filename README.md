@@ -31,7 +31,7 @@ get(app, '/x', handler);       // behavior: (app, pattern, handler) => app
 handle(app, request);          // behavior: (app, Request) => Promise<Response>
 ```
 
-No `class`, no `new App()`, no `app.get(...)` method calls. The payoff is mechanical: bundlers can drop every capability you don't import (`verify:tree-shaking` asserts the core minimal import weighs ~1.3 KB min+gz), and the core translates directly to `struct + procedure` shapes in any language.
+No `class`, no `new App()`, no `app.get(...)` method calls. The payoff is mechanical: bundlers can drop every capability you don't import (`pnpm verify:tree-shaking` proves the body/static modules vanish from a minimal bundle, and `pnpm size` gates the shipped sizes), and the core translates directly to `struct + procedure` shapes in any language.
 
 ## Installation
 
@@ -47,7 +47,7 @@ npm install s200
 
 ## Routing
 
-Patterns use `:name` params and a terminal `*name` wildcard; matching is strict (no trailing-slash tolerance), first registration wins, `ALL` matches every method, and `HEAD` falls back to `GET` routes.
+Patterns use `:name` params and a terminal `*name` wildcard; matching is strict (no trailing-slash tolerance), first registration wins, `ALL` matches every method, and `HEAD` falls back to `GET` routes. Duplicate capture names (`/users/:id/posts/:id`) are rejected at registration.
 
 ```ts
 get(app, '/users/:id', (ctx) => text(ctx, ctx.params.id));   // ctx.params.id: string — inferred
@@ -60,7 +60,21 @@ The pattern literal drives the type: `ParamsOf<'/users/:id/posts/:postId'>` is `
 const app = createApp({ match: myTrieMatcher });
 ```
 
+Dispatch runs over a static-prefix trie, not a linear scan: a request only visits the trie nodes its own segments spell out, so matching cost tracks URL depth, not route count. The residual linear case is a table whose routes share no static first segment (`/:tenant/...` style) — see `pnpm bench`.
+
 When the path matches but no route's method does, s200 answers `405 {"error":"Method Not Allowed"}` with an `Allow` header listing the methods that would have matched (RFC 9110). Middlewares run first and can answer such requests themselves — a CORS preflight or a custom `OPTIONS` handler short-circuits before the fallback.
+
+Sub-apps mount as a pure data transform — `sub` is copied, never mutated, and its app-level middlewares become route-scoped on the mounted routes:
+
+```ts
+import { mount } from 's200';
+
+const api = createApp();
+get(api, '/users/:id', handler);
+
+const app = createApp();
+mount(app, '/v1', api);   // /v1/users/:id — api itself stays reusable
+```
 
 ## Middleware (onion)
 
@@ -75,7 +89,7 @@ use(app, async (ctx, next) => {
 });
 ```
 
-`ctx.state` is a fresh mutable bag per request — the typed hand-off channel between middlewares and handlers.
+`ctx.state` is a fresh mutable bag per request — the typed hand-off channel between middlewares and handlers. After `await next()` settles, `ctx.res` is always materialized — the handler's response or the 404/405/500 fallback — so the unwind observes (and may overwrite) the real response.
 
 Routes also accept scoped middlewares: any number of them between the pattern and the terminal handler. They run after the app-level chain (and unwind inside it), only for their own route:
 
@@ -92,7 +106,7 @@ Not calling `next()` skips everything below it — the handler included — so a
 
 ## Responding
 
-Response helpers write `ctx.res` in place (init headers always win over the defaults):
+Response helpers write `ctx.res` in place (init headers always win over the defaults) and return the written `Response`:
 
 ```ts
 json(ctx, { ok: true });                 // application/json
@@ -102,7 +116,7 @@ redirect(ctx, '/login');                 // 302
 send(ctx, bytes, { headers: { 'content-type': 'application/pdf' } });
 ```
 
-Handlers may also simply **return** a `Response` — it is written for you when nothing has been written yet. If a matched chain finishes without writing anything, s200 answers `500 {"error":"No response written"}`; an unmatched, unwritten request goes to `onNotFound` (default `404`).
+Handlers may also simply **return** a `Response` — it is written for you when nothing has been written yet. If a matched chain finishes without writing anything, s200 answers `500 {"error":"No response written"}`; an unmatched, unwritten request goes to `onNotFound` (default `404`). The fallbacks are materialized inside the chain, so middlewares on the unwind (logger, cors) see and stamp the real response.
 
 ## Body parsing
 
@@ -130,7 +144,11 @@ use(app, serveStatic({
 }));
 ```
 
-Traversal (`..`) never escapes the root, `index` (default `index.html`) serves directory paths, and misses fall through to `next()` so other routes can answer.
+Traversal (`..`) never escapes the root, `index` (default `index.html`) serves directory paths, and misses fall through to `next()` so other routes can answer. Hidden files are refused by default — a request path with a dotfile segment (`.env`, `.git/…`, including percent-encoded forms) falls through instead of being served; opt out with `dotfiles: 'allow'`. Single byte ranges are honored: `Range: bytes=…` answers 206 (or 416 when unsatisfiable), so video seeking works.
+
+```ts
+serveStatic({ read: createFileReader('public'), dotfiles: 'allow' });
+```
 
 ## Batteries
 
@@ -140,18 +158,21 @@ Opt-in modules in separate entries — importing one pulls only it, the core sta
 import { cors } from 's200/cors';           // 0.58 kB gz, zero runtime imports
 import { logger } from 's200/logger';
 import { createRouteTable } from 's200/route-table';
+import { getCookie, setCookie, getSignedCookie, setSignedCookie } from 's200/cookies';
+import { validate, jsonBody } from 's200/validate';
+import { rateLimit } from 's200/rate-limit';
 ```
 
-**CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind:
+**CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
 
 ```ts
 use(app, cors({ origin: 'https://app.example', credentials: true }));
-use(app, cors({ origin: ['https://a.example'], maxAge: 600 }));
+use(app, cors({ origin: ['https://a.example'], maxAge: 600, exposeHeaders: ['x-request-id'] }));
 ```
 
-The default `'*'` origin emits the literal wildcard; allowlists and resolvers reflect the request origin and set `Vary: Origin`. Browsers refuse credentialed wildcard origins (fail-closed) — pair `credentials` with an explicit origin.
+The default `'*'` origin emits the literal wildcard; allowlists and resolvers reflect the request origin and set `Vary: Origin`. Browsers refuse credentialed wildcard origins (fail-closed) — pair `credentials` with an explicit origin. `exposeHeaders` emits `Access-Control-Expose-Headers` so page scripts can read custom response headers.
 
-**Logger** — one line per request (`ISO-time METHOD path status duration`) through a pluggable `sink`/`format`. The status is `-` when the chain wrote no response — the default 404/405/500 fallbacks are written after the chain unwinds.
+**Logger** — one line per request (`ISO-time METHOD path status duration`) through a pluggable `sink`/`format`. The status is always the real one — the fallbacks are materialized inside the chain, so the logger sees them.
 
 **Route table** — the `data + functions` payoff: the app is plain data, so it exports as JSON without executing anything:
 
@@ -161,6 +182,34 @@ createRouteTable(app);
 ```
 
 Handy for OpenAPI generation, route listing, or cross-language translation.
+
+**Cookies** — read, write, and sign as pure functions. Writing appends a proper `Set-Cookie` header (repeat calls stay separate headers, never comma-joined); call it once the response exists — the natural spot is the unwind, after `await next()`:
+
+```ts
+use(app, async (ctx, next) => {
+  await next();
+  setCookie(ctx, 'theme', 'dark', { httpOnly: true, sameSite: 'lax', maxAge: 86400 });
+});
+get(app, '/theme', async (ctx) => json(ctx, { theme: getCookie(ctx, 'theme') }));
+await setSignedCookie(ctx, 'sid', userId, SECRET);       // + sid.sig HMAC partner
+const sid = await getSignedCookie(ctx, 'sid', SECRET);   // undefined unless verified
+```
+
+**Validate** — wraps your parse function (zod/valibot/typebox/hand-rolled — s200 stays dependency-free and just calls it) as a gate middleware; the parsed value lands on `ctx.state`:
+
+```ts
+post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
+  json(ctx, { saved: ctx.state.validated });
+});
+```
+
+**Rate limit** — sliding-window gate per client key: the `limit + 1`th request in a window is answered in place with `429` + `Retry-After`, and the chain below never runs:
+
+```ts
+use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
+```
+
+The default key reads `x-forwarded-for` — only meaningful behind a proxy that overwrites it; pass `key: (ctx) => …` for any other identity (and a `now` clock for tests).
 
 ## Errors
 
@@ -179,7 +228,7 @@ const app = createApp({
 });
 ```
 
-Unhandled `HttpError`s render as `{ status, body: { "error": message } }`; anything else renders a generic 500 (never leaking internals).
+Unhandled `HttpError`s render as `{ status, body: { "error": message } }`; anything else is logged via `console.error` and rendered as a generic 500 (never leaking internals). Provide `onError` to own the mapping (and the logging) instead.
 
 ## Adapters
 
@@ -196,18 +245,20 @@ Both adapters expose the identical `serve(app, options)` surface; the core's `ha
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`) are separate entries so nothing unasked-for ever enters a bundle.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/rate-limit`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 6 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 9 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm test:run -- --run     # single run (144 tests)
+pnpm test:run -- --run     # single run (185 tests)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle
 pnpm smoke                 # runs scripts/smoke.mjs under node AND bun
+pnpm bench                 # router dispatch micro-benchmark (ROUTES/ITERATIONS env)
+pnpm publish:jsr           # build + prepare declarations for JSR + npx jsr publish
 ```
 
 ## License

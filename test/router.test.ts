@@ -76,6 +76,13 @@ describe('createSegments', function () {
     (() => createSegments('/a/*bad!')).should.throw(/wildcard/);
     (() => createSegments('/a/*rest/b')).should.throw(/last segment/);
   });
+
+  it('throws on duplicate capture names across params and wildcards', function () {
+    (() => createSegments('/users/:id/posts/:id')).should.throw(
+      /duplicate capture name 'id'/
+    );
+    (() => createSegments('/a/:x/*x')).should.throw(/duplicate capture name 'x'/);
+  });
 });
 
 describe('createRoute', function () {

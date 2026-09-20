@@ -2,6 +2,10 @@
  * CORS middleware: answers preflights in place and stamps allow-origin
  * headers onto actual responses.
  *
+ * Middleware order matters: the stamping runs on the unwind, after the
+ * chain terminal materialized the 404/405/500 fallback, so error responses
+ * carry CORS headers too — a browser reading the error body needs them.
+ *
  * @module
  */
 
@@ -23,6 +27,8 @@ export type CorsOptions = {
   readonly methods?: string | readonly string[];
   /** Preflight `Access-Control-Allow-Headers`; default echoes the request. */
   readonly headers?: string | readonly string[];
+  /** Response headers page scripts may read: `Access-Control-Expose-Headers`. */
+  readonly exposeHeaders?: string | readonly string[];
   readonly credentials?: boolean;
   readonly maxAge?: number;
 };
@@ -30,15 +36,16 @@ export type CorsOptions = {
 /**
  * CORS middleware (app-level via `use`, or per-route). Preflights are
  * answered in place with a 204 — the handler and any 405 fallback never
- * run. Actual responses get the CORS headers stamped on the unwind, when
- * one was written; the default 404/405/500 fallbacks are written after the
- * chain settles and stay unstamped.
+ * run. Actual responses get the CORS headers stamped on the unwind; the
+ * 404/405/500 fallbacks are materialized inside the chain, so they carry
+ * the headers too.
  */
 export function cors(options: CorsOptions = {}): Middleware {
   const {
     origin = '*',
     methods,
     headers,
+    exposeHeaders,
     credentials = false,
     maxAge,
   } = options;
@@ -59,6 +66,10 @@ export function cors(options: CorsOptions = {}): Middleware {
     const corsHeaders: Record<string, string> = {
       'access-control-allow-origin': resolved,
     };
+    const expose = toList(exposeHeaders);
+    if (expose !== undefined) {
+      corsHeaders['access-control-expose-headers'] = expose;
+    }
     if (credentials) {
       corsHeaders['access-control-allow-credentials'] = 'true';
     }

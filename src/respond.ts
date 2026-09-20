@@ -11,12 +11,14 @@ export function send(
   ctx: Ctx,
   body: BodyInit | Uint8Array | null,
   init?: ResponseInit
-): void {
+): Response {
   ctx.res = new Response(body as BodyInit, init);
+  return ctx.res;
 }
 
-export function json(ctx: Ctx, data: unknown, init?: ResponseInit): void {
+export function json(ctx: Ctx, data: unknown, init?: ResponseInit): Response {
   ctx.res = Response.json(data, init);
+  return ctx.res;
 }
 
 /**
@@ -37,14 +39,17 @@ function withContentType(init: ResponseInit | undefined, fallback: string): Resp
   return { ...init, headers };
 }
 
-export function text(ctx: Ctx, body: string, init?: ResponseInit): void {
+export function text(ctx: Ctx, body: string, init?: ResponseInit): Response {
   ctx.res = new Response(body, withContentType(init, 'text/plain; charset=utf-8'));
+  return ctx.res;
 }
 
-export function html(ctx: Ctx, body: string, init?: ResponseInit): void {
+export function html(ctx: Ctx, body: string, init?: ResponseInit): Response {
   ctx.res = new Response(body, withContentType(init, 'text/html; charset=utf-8'));
+  return ctx.res;
 }
 
-export function redirect(ctx: Ctx, location: string, status = 302): void {
+export function redirect(ctx: Ctx, location: string, status = 302): Response {
   ctx.res = new Response(null, { status, headers: { location } });
+  return ctx.res;
 }

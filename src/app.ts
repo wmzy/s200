@@ -12,7 +12,7 @@ import type {
 
 import type { ParamsOf } from './router';
 
-import { toErrorResponse } from './errors';
+import { isHttpError, toErrorResponse } from './errors';
 import { compose } from './compose';
 import { createRoute, matchRoutes } from './router';
 
@@ -56,6 +56,40 @@ export function use(app: App, middleware: Middleware): App {
 
 export function usePlugin(app: App, plugin: Plugin): App {
   plugin(app);
+  return app;
+}
+
+/**
+ * Mounts every route of `sub` under `prefix`: patterns are joined
+ * (`prefix '/v1'` + `/users/:id` → `/v1/users/:id`; the sub-app root `/`
+ * becomes the bare `/v1`), and `sub`'s app-level middlewares are scoped
+ * onto each mounted route, running after the parent chain and before the
+ * sub route's own middlewares and handler.
+ *
+ * Pure data transform: `sub` is copied, never mutated, so one sub-app can
+ * mount under many prefixes. `sub`'s `match`/`onError`/`onNotFound` are not
+ * carried over — the parent dispatches (mount routes are parent routes) and
+ * the parent's error/404 policy applies. Middlewares on an empty `sub` are
+ * lost (no routes to carry them); gate on the prefix with a normal `use`
+ * middleware instead.
+ */
+export function mount(app: App, prefix: string, sub: App): App {
+  if (prefix !== '' && !prefix.startsWith('/')) {
+    throw new Error(`Invalid mount prefix '${prefix}': must be empty or start with '/'`);
+  }
+  // Normalize: '' and '/' are no-prefix; a trailing slash would double up
+  // against the pattern's leading slash.
+  const base = prefix === '' || prefix === '/' ? '' : prefix.replace(/\/+$/, '');
+  for (const route of sub.routes) {
+    const pattern = base === '' ? route.pattern : route.pattern === '/' ? base : `${base}${route.pattern}`;
+    const middlewares =
+      sub.middlewares.length === 0
+        ? route.middlewares
+        : [...sub.middlewares, ...route.middlewares];
+    app.routes.push(
+      createRoute(route.method, pattern, route.handler as Handler, middlewares)
+    );
+  }
   return app;
 }
 
@@ -148,9 +182,6 @@ const appChainCache = new WeakMap<
 >();
 const routeChainCache = new WeakMap<Route, ReturnType<typeof compose>>();
 
-/** The chain terminal on unmatched requests: a no-op continuation. */
-const NOOP_NEXT: Next = () => Promise.resolve();
-
 function getAppChain(app: App): ReturnType<typeof compose> {
   const cached = appChainCache.get(app);
   if (cached !== undefined && cached.count === app.middlewares.length) {
@@ -196,27 +227,14 @@ export async function handle(app: App, request: Request): Promise<Response> {
     state: {},
     res: undefined,
   };
-  // The app chain is cached per registration wave; the continuation is the
-  // matched route's cached chain, or a no-op on unmatched requests so app
-  // middlewares still run (a static middleware may respond) and onNotFound
-  // stays reachable.
-  const inner: Next =
-    route === undefined ? NOOP_NEXT : () => getRouteChain(route)(ctx);
-  try {
-    await getAppChain(app)(ctx, inner);
-  } catch (error) {
-    if (app.onError === undefined) {
-      ctx.res = toErrorResponse(error);
-    } else {
-      try {
-        await app.onError(ctx, error);
-      } catch (handlerError) {
-        // A crashing error handler is itself a failure — default mapping.
-        ctx.res = toErrorResponse(handlerError);
-      }
+  // The chain terminal: when nothing wrote a response, the 405/404/500
+  // fallback is materialized INSIDE the chain — after the route chain
+  // settles but before the app middlewares unwind — so anything observing
+  // the unwind (logger status, CORS stamping) sees the real response.
+  const fallback = async (): Promise<void> => {
+    if (ctx.res !== undefined) {
+      return;
     }
-  }
-  if (ctx.res === undefined) {
     if (allowedMethods !== undefined) {
       // Path matched but no route's method did: RFC 9110 wants 405 + Allow.
       ctx.res = Response.json(
@@ -233,9 +251,47 @@ export async function handle(app: App, request: Request): Promise<Response> {
     } else {
       ctx.res = Response.json({ error: 'No response written' }, { status: 500 });
     }
+  };
+  // The app chain is cached per registration wave; the continuation is the
+  // matched route's cached chain (or nothing) followed by the fallback, so
+  // app middlewares still run on unmatched requests (a static middleware
+  // may respond) and onNotFound stays reachable.
+  const inner: Next = async () => {
+    if (route !== undefined) {
+      await getRouteChain(route)(ctx);
+    }
+    await fallback();
+  };
+  try {
+    await getAppChain(app)(ctx, inner);
+  } catch (error) {
+    if (app.onError === undefined) {
+      // HttpErrors are intentional client errors mapped to responses; only
+      // unexpected failures need surfacing — a silently swallowed 500 is
+      // undebuggable in production.
+      if (!isHttpError(error)) {
+        console.error(error);
+      }
+      ctx.res = toErrorResponse(error);
+    } else {
+      try {
+        await app.onError(ctx, error);
+      } catch (handlerError) {
+        // A crashing error handler is itself a failure — default mapping.
+        ctx.res = toErrorResponse(handlerError);
+      }
+    }
+  }
+  // A custom onError may answer or leave the response unwritten — the
+  // latter falls back like the in-chain terminal did (original semantics:
+  // the 405/404/500 decision still applies after errors).
+  if (ctx.res === undefined) {
+    await fallback();
   }
   if (request.method === 'HEAD') {
-    const res = ctx.res;
+    // fallback() guarantees a response above, but the write happens inside
+    // a closure tsc cannot see through.
+    const res = ctx.res as Response;
     // HEAD must not carry a body, but content-length stays so the client can
     // learn the size a GET would have returned.
     ctx.res = new Response(null, {
@@ -244,5 +300,5 @@ export async function handle(app: App, request: Request): Promise<Response> {
       headers: res.headers,
     });
   }
-  return ctx.res;
+  return ctx.res as Response;
 }

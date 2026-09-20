@@ -149,4 +149,31 @@ describe('cors', function () {
     (res.headers.get('access-control-allow-headers') ?? '').should.equal('x-a, x-b');
     (res.headers.get('access-control-max-age') ?? '').should.equal('600');
   });
+
+  it('stamps expose-headers onto actual responses', async function () {
+    const app = createApp();
+    use(app, cors({ exposeHeaders: ['x-request-id', 'x-total-count'] }));
+    get(app, '/x', () => new Response('ok'));
+    const res = await handle(
+      app,
+      new Request('http://localhost/x', { headers: { origin: 'https://app.example' } })
+    );
+    (res.headers.get('access-control-expose-headers') ?? '').should.equal(
+      'x-request-id, x-total-count'
+    );
+  });
+
+  it('stamps CORS headers onto fallback responses too', async function () {
+    const app = createApp();
+    use(app, cors({ origin: 'https://app.example' }));
+    get(app, '/x', () => new Response('ok'));
+    const res = await handle(
+      app,
+      new Request('http://localhost/nope', { headers: { origin: 'https://app.example' } })
+    );
+    res.status.should.equal(404);
+    (res.headers.get('access-control-allow-origin') ?? '').should.equal(
+      'https://app.example'
+    );
+  });
 });

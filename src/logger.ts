@@ -8,9 +8,9 @@ import type { Ctx, Middleware, Next } from './types';
 
 /**
  * Options for {@link logger}. The default format is
- * `ISO-time METHOD path status duration`; `status` is `-` when the chain
- * wrote no response — the default 404/405/500 fallbacks are written after
- * the chain unwinds, so no middleware can observe them.
+ * `ISO-time METHOD path status duration`; the status is always the real one
+ * — the 404/405/500 fallbacks are materialized inside the chain before the
+ * unwind, so the logger observes them like any other response.
  */
 export type LoggerOptions = {
   readonly sink?: (line: string) => void;

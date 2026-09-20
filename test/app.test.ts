@@ -1,6 +1,6 @@
 import type { App } from '../src/app';
 
-import { describe, it } from 'vitest';
+import { describe, it, vi } from 'vitest';
 
 import {
   addRoute,
@@ -38,11 +38,11 @@ describe('app dispatch', () => {
       order.push('a-in');
       await next();
       order.push('a-out');
-      // Writing after next() proves the unwind completes before handle()
-      // resolves and that the outermost layer gets the last word.
-      if (ctx.res === undefined) {
-        text(ctx, 'after');
-      }
+      // After next() settles, ctx.res is always set (handler response or
+      // the materialized 404/405/500 fallback). Writing here overwrites it,
+      // proving the unwind completes before handle() resolves and that the
+      // outermost layer gets the last word.
+      text(ctx, 'after');
     });
     use(app, async (_ctx, next) => {
       order.push('b-in');
@@ -199,6 +199,38 @@ describe('app dispatch', () => {
     const plain = await handle(app, new Request('http://localhost/plain'));
     plain.status.should.equal(500);
     (await plain.json()).should.deep.equal({ error: 'Internal Server Error' });
+  });
+
+  it('logs unknown errors to the console when onError is absent', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      get(app, '/boom', () => {
+        throw new Error('kaboom');
+      });
+      const res = await handle(app, new Request('http://localhost/boom'));
+      res.status.should.equal(500);
+      spy.should.have.been.calledOnce;
+      const logged = spy.mock.calls[0]?.[0] as Error;
+      logged.message.should.equal('kaboom');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('does not log intentional HttpErrors', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      get(app, '/nope', () => {
+        throw httpError(404, 'gone');
+      });
+      const res = await handle(app, new Request('http://localhost/nope'));
+      res.status.should.equal(404);
+      spy.should.not.have.been.called;
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('also catches middleware throws', async () => {

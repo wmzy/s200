@@ -1,0 +1,20 @@
+{
+  "$schema": "https://jsr.io/schema/config-file.v1.json",
+  "name": "@wmzy/s200",
+  "version": "0.0.0-development",
+  "license": "MIT",
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./node": "./dist/node.mjs",
+    "./bun": "./dist/bun.mjs",
+    "./cors": "./dist/cors.mjs",
+    "./logger": "./dist/logger.mjs",
+    "./route-table": "./dist/route-table.mjs",
+    "./cookies": "./dist/cookies.mjs",
+    "./validate": "./dist/validate.mjs",
+    "./rate-limit": "./dist/rate-limit.mjs"
+  },
+  "publish": {
+    "include": ["dist", "README.md"]
+  }
+}
