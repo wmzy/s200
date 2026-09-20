@@ -54,8 +54,14 @@ export type Route<P extends Params = Params> = {
   readonly handler: Handler<P>;
 };
 
-/** What a successful match yields: the route plus its captured params. */
-export type MatchResult = { readonly route: Route; readonly params: Params };
+/**
+ * What a match yields: the route plus captured params, or — when the path
+ * matched but no route's method did — the methods that would have matched
+ * (the `Allow` list for a 405).
+ */
+export type MatchResult =
+  | { readonly route: Route; readonly params: Params }
+  | { readonly allowedMethods: readonly string[] };
 
 /** Pluggable matcher — swap in a radix tree etc. without touching `App`. */
 export type MatchFn = (

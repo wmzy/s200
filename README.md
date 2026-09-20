@@ -43,6 +43,7 @@ npm install s200
 - `s200` — the runtime-agnostic core
 - `s200/node` — node:http adapter (`serve`, `createFileReader`)
 - `s200/bun` — Bun.serve adapter (`serve`, `createFileReader`)
+- `s200/cors` / `s200/logger` / `s200/route-table` — opt-in batteries (see [Batteries](#batteries))
 
 ## Routing
 
@@ -58,6 +59,8 @@ The pattern literal drives the type: `ParamsOf<'/users/:id/posts/:postId'>` is `
 ```ts
 const app = createApp({ match: myTrieMatcher });
 ```
+
+When the path matches but no route's method does, s200 answers `405 {"error":"Method Not Allowed"}` with an `Allow` header listing the methods that would have matched (RFC 9110). Middlewares run first and can answer such requests themselves — a CORS preflight or a custom `OPTIONS` handler short-circuits before the fallback.
 
 ## Middleware (onion)
 
@@ -129,6 +132,36 @@ use(app, serveStatic({
 
 Traversal (`..`) never escapes the root, `index` (default `index.html`) serves directory paths, and misses fall through to `next()` so other routes can answer.
 
+## Batteries
+
+Opt-in modules in separate entries — importing one pulls only it, the core stays lean.
+
+```ts
+import { cors } from 's200/cors';           // 0.58 kB gz, zero runtime imports
+import { logger } from 's200/logger';
+import { createRouteTable } from 's200/route-table';
+```
+
+**CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind:
+
+```ts
+use(app, cors({ origin: 'https://app.example', credentials: true }));
+use(app, cors({ origin: ['https://a.example'], maxAge: 600 }));
+```
+
+The default `'*'` origin emits the literal wildcard; allowlists and resolvers reflect the request origin and set `Vary: Origin`. Browsers refuse credentialed wildcard origins (fail-closed) — pair `credentials` with an explicit origin.
+
+**Logger** — one line per request (`ISO-time METHOD path status duration`) through a pluggable `sink`/`format`. The status is `-` when the chain wrote no response — the default 404/405/500 fallbacks are written after the chain unwinds.
+
+**Route table** — the `data + functions` payoff: the app is plain data, so it exports as JSON without executing anything:
+
+```ts
+createRouteTable(app);
+// { routes: [{ method: 'GET', pattern: '/users/:id', params: ['id'], middlewareCount: 1 }, …] }
+```
+
+Handy for OpenAPI generation, route listing, or cross-language translation.
+
 ## Errors
 
 Errors are tagged data, checked structurally — no `instanceof` chains across bundle boundaries:
@@ -163,14 +196,14 @@ Both adapters expose the identical `serve(app, options)` surface; the core's `ha
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters are separate entries (`s200/node`, `s200/bun`) so their runtime imports never enter a bundle that doesn't ask for them.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`) are separate entries so nothing unasked-for ever enters a bundle.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 3 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 6 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm test:run -- --run     # single run (121 tests)
+pnpm test:run -- --run     # single run (144 tests)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle

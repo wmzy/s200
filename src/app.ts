@@ -4,6 +4,7 @@ import type {
   Handler,
   MatchFn,
   Middleware,
+  Next,
   NotFoundHandler,
   Plugin,
   Route,
@@ -137,31 +138,72 @@ export function all(app: App, pattern: string, ...chain: [...Middleware[], Handl
   return register(app, 'ALL', pattern, chain);
 }
 
-export async function handle(app: App, request: Request): Promise<Response> {
-  const url = new URL(request.url);
-  const matched = app.match(app.routes, request.method, url.pathname);
-  const ctx: Ctx = {
-    req: request,
-    params: matched === undefined ? {} : matched.params,
-    query: url.searchParams,
-    state: {},
-    res: undefined,
-  };
-  // Terminator: the innermost "middleware" running the matched handler. It is
-  // a no-op on unmatched requests so middlewares still run (a static
-  // middleware may respond) and onNotFound stays reachable.
-  const dispatch: Middleware = async (routeCtx) => {
-    if (matched === undefined) return;
-    const returned = await matched.route.handler(routeCtx);
+// Composed-chain caches. `compose`'s double-next `index` is created per
+// invocation, so one composed function is safe to reuse across requests;
+// only the continuation differs per request. The app cache versions on
+// `middlewares.length` — `use` is push-only by contract.
+const appChainCache = new WeakMap<
+  App,
+  { readonly count: number; readonly chain: ReturnType<typeof compose> }
+>();
+const routeChainCache = new WeakMap<Route, ReturnType<typeof compose>>();
+
+/** The chain terminal on unmatched requests: a no-op continuation. */
+const NOOP_NEXT: Next = () => Promise.resolve();
+
+function getAppChain(app: App): ReturnType<typeof compose> {
+  const cached = appChainCache.get(app);
+  if (cached !== undefined && cached.count === app.middlewares.length) {
+    return cached.chain;
+  }
+  const chain = compose(app.middlewares);
+  appChainCache.set(app, { count: app.middlewares.length, chain });
+  return chain;
+}
+
+function getRouteChain(route: Route): ReturnType<typeof compose> {
+  const cached = routeChainCache.get(route);
+  if (cached !== undefined) {
+    return cached;
+  }
+  // Terminator: the innermost "middleware" running the matched handler. A
+  // returned Response is adopted only when nothing else wrote one first.
+  const terminator: Middleware = async (routeCtx) => {
+    const returned = await route.handler(routeCtx);
     if (returned instanceof Response && routeCtx.res === undefined) {
       routeCtx.res = returned;
     }
   };
+  const chain = compose([...route.middlewares, terminator]);
+  routeChainCache.set(route, chain);
+  return chain;
+}
+
+export async function handle(app: App, request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const matched = app.match(app.routes, request.method, url.pathname);
+  // 'route' in matched discriminates the MatchResult union: a path match
+  // with no method match yields `allowedMethods` (a 405) instead of a route.
+  const hit = matched !== undefined && 'route' in matched ? matched : undefined;
+  const miss =
+    matched !== undefined && 'allowedMethods' in matched ? matched : undefined;
+  const route = hit?.route;
+  const allowedMethods = miss?.allowedMethods;
+  const ctx: Ctx = {
+    req: request,
+    params: hit?.params ?? {},
+    query: url.searchParams,
+    state: {},
+    res: undefined,
+  };
+  // The app chain is cached per registration wave; the continuation is the
+  // matched route's cached chain, or a no-op on unmatched requests so app
+  // middlewares still run (a static middleware may respond) and onNotFound
+  // stays reachable.
+  const inner: Next =
+    route === undefined ? NOOP_NEXT : () => getRouteChain(route)(ctx);
   try {
-    // Route middlewares sit between the app-level chain and the terminator,
-    // so they are scoped to the matched route only and unwind inside it.
-    const routeMiddlewares = matched === undefined ? [] : matched.route.middlewares;
-    await compose([...app.middlewares, ...routeMiddlewares, dispatch])(ctx);
+    await getAppChain(app)(ctx, inner);
   } catch (error) {
     if (app.onError === undefined) {
       ctx.res = toErrorResponse(error);
@@ -175,7 +217,13 @@ export async function handle(app: App, request: Request): Promise<Response> {
     }
   }
   if (ctx.res === undefined) {
-    if (matched === undefined) {
+    if (allowedMethods !== undefined) {
+      // Path matched but no route's method did: RFC 9110 wants 405 + Allow.
+      ctx.res = Response.json(
+        { error: 'Method Not Allowed' },
+        { status: 405, headers: { Allow: allowedMethods.join(', ') } }
+      );
+    } else if (route === undefined) {
       if (app.onNotFound !== undefined) {
         await app.onNotFound(ctx);
       }

@@ -1,4 +1,4 @@
-import type { Handler, Middleware } from '../src/types';
+import type { Handler, MatchResult, Middleware, Route } from '../src/types';
 
 import { describe, it, expectTypeOf } from 'vitest';
 
@@ -18,6 +18,17 @@ function mustMatch<T>(value: T | undefined): T {
     throw new Error('expected a match');
   }
   return value;
+}
+
+// Narrow the MatchResult union to its route-bearing member.
+function mustRoute(
+  value: MatchResult | undefined
+): Extract<MatchResult, { route: Route }> {
+  const match = mustMatch(value);
+  if (!('route' in match)) {
+    throw new Error('expected a route match, got a method miss');
+  }
+  return match;
 }
 
 describe('createSegments', function () {
@@ -195,28 +206,30 @@ describe('matchRoutes', function () {
   it('returns the first match in registration order', function () {
     const first = createRoute('GET', '/a', noop);
     const second = createRoute('ALL', '/a', noop);
-    (mustMatch(matchRoutes([first, second], 'GET', '/a')).route === first)
+    (mustRoute(matchRoutes([first, second], 'GET', '/a')).route === first)
       .should.be.true;
-    (mustMatch(matchRoutes([second, first], 'GET', '/a')).route === second)
+    (mustRoute(matchRoutes([second, first], 'GET', '/a')).route === second)
       .should.be.true;
   });
 
-  it('skips routes whose method does not match', function () {
-    (matchRoutes([postUser], 'GET', '/users') === undefined).should.be.true;
-    const posted = mustMatch(matchRoutes([getUser, postUser], 'POST', '/users'));
+  it('reports the allowed methods when the path matches but the method does not', function () {
+    mustMatch(matchRoutes([postUser], 'GET', '/users')).should.deep.equal({
+      allowedMethods: ['POST'],
+    });
+    const posted = mustRoute(matchRoutes([getUser, postUser], 'POST', '/users'));
     (posted.route === postUser).should.be.true;
     posted.params.should.deep.equal({});
   });
 
   it('matches params and reports them with the route', function () {
-    const result = mustMatch(matchRoutes([getUser, postUser], 'GET', '/users/42'));
+    const result = mustRoute(matchRoutes([getUser, postUser], 'GET', '/users/42'));
     (result.route === getUser).should.be.true;
     result.params.should.deep.equal({ id: '42' });
   });
 
   it("treats 'ALL' routes as matching any method", function () {
     for (const method of ['GET', 'POST', 'DELETE']) {
-      const result = mustMatch(matchRoutes([anyPath], method, '/any/deep/path'));
+      const result = mustRoute(matchRoutes([anyPath], method, '/any/deep/path'));
       (result.route === anyPath).should.be.true;
     }
     // ALL matches any method — the pattern still has to match though.
@@ -224,17 +237,17 @@ describe('matchRoutes', function () {
   });
 
   it("matches 'HEAD' requests against GET routes", function () {
-    const result = mustMatch(matchRoutes([getUser], 'HEAD', '/users/42'));
+    const result = mustRoute(matchRoutes([getUser], 'HEAD', '/users/42'));
     (result.route === getUser).should.be.true;
     result.params.should.deep.equal({ id: '42' });
   });
 
   it("prefers an exact HEAD route registered earlier, but a GET route wins when it comes first", function () {
-    const exactFirst = mustMatch(
+    const exactFirst = mustRoute(
       matchRoutes([headUser, getUser], 'HEAD', '/users/1')
     );
     (exactFirst.route === headUser).should.be.true;
-    const getFirst = mustMatch(
+    const getFirst = mustRoute(
       matchRoutes([getUser, headUser], 'HEAD', '/users/1')
     );
     (getFirst.route === getUser).should.be.true;
@@ -242,13 +255,39 @@ describe('matchRoutes', function () {
 
   it('normalizes the incoming method', function () {
     (
-      mustMatch(matchRoutes([getUser], 'get', '/users/42')).route === getUser
+      mustRoute(matchRoutes([getUser], 'get', '/users/42')).route === getUser
     ).should.be.true;
   });
 
   it('returns undefined when nothing matches', function () {
     (
       matchRoutes([getUser, postUser, anyPath], 'PUT', '/none') === undefined
+    ).should.be.true;
+  });
+
+  it('lists allowed methods in registration order, deduping shadowed duplicates', function () {
+    const deleteUser = createRoute('DELETE', '/users/:id', noop);
+    const shadowed = createRoute('POST', '/users', noop);
+    mustMatch(matchRoutes([getUser, postUser, shadowed, deleteUser], 'PATCH', '/users'))
+      .should.deep.equal({ allowedMethods: ['POST'] });
+    mustMatch(matchRoutes([getUser, postUser, deleteUser], 'PATCH', '/users/42'))
+      .should.deep.equal({ allowedMethods: ['GET', 'DELETE'] });
+  });
+
+  it('never lists ALL routes — they match every method and would have won', function () {
+    mustMatch(matchRoutes([getUser, anyPath], 'DELETE', '/users/42')).should.deep.equal({
+      allowedMethods: ['GET'],
+    });
+  });
+
+  it('ignores method-compatible routes when building the Allow list', function () {
+    // getUser is GET-compatible with the request but misses the path; the
+    // Allow list only contains real path hits (postUser, pattern /users).
+    mustMatch(matchRoutes([getUser, postUser], 'GET', '/users')).should.deep.equal({
+      allowedMethods: ['POST'],
+    });
+    (
+      matchRoutes([getUser, postUser], 'POST', '/other') === undefined
     ).should.be.true;
   });
 });

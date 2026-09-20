@@ -303,6 +303,90 @@ describe('app dispatch', () => {
   });
 });
 
+describe('405 method misses', () => {
+  it('answers a method miss with 405 and an Allow header in registration order', async () => {
+    const app = createApp();
+    get(app, '/x', () => new Response('get'));
+    put(app, '/x', () => new Response('put'));
+    const res = await handle(app, new Request('http://localhost/x', { method: 'DELETE' }));
+    res.status.should.equal(405);
+    (res.headers.get('allow') ?? '').should.equal('GET, PUT');
+    (await res.json()).should.deep.equal({ error: 'Method Not Allowed' });
+  });
+
+  it('lets middlewares answer a method miss before the 405 fallback', async () => {
+    const app = createApp();
+    get(app, '/x', () => new Response('get'));
+    use(app, (ctx, next) => {
+      if (ctx.req.method === 'OPTIONS') {
+        text(ctx, 'auto-options');
+        return;
+      }
+      return next();
+    });
+    const res = await handle(app, new Request('http://localhost/x', { method: 'OPTIONS' }));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('auto-options');
+  });
+
+  it('does not call onNotFound for a method miss', async () => {
+    let notFoundRan = false;
+    const app = createApp({ onNotFound: () => { notFoundRan = true; } });
+    post(app, '/x', () => new Response('post'));
+    const res = await handle(app, new Request('http://localhost/x', { method: 'GET' }));
+    res.status.should.equal(405);
+    notFoundRan.should.be.false;
+    await handle(app, new Request('http://localhost/missing'));
+    notFoundRan.should.be.true;
+  });
+
+  it('strips the body of a HEAD 405 but keeps the Allow header', async () => {
+    const app = createApp();
+    post(app, '/x', () => new Response('post'));
+    const res = await handle(app, new Request('http://localhost/x', { method: 'HEAD' }));
+    res.status.should.equal(405);
+    (res.headers.get('allow') ?? '').should.equal('POST');
+    (res.body === null).should.be.true;
+  });
+});
+
+describe('chain caching', () => {
+  it('applies middlewares registered after the first request', async () => {
+    const app = createApp();
+    get(app, '/x', (ctx) => text(ctx, 'plain'));
+    const first = await handle(app, new Request('http://localhost/x'));
+    first.status.should.equal(200);
+    use(app, async (ctx, next) => {
+      await next();
+      ctx.res?.headers.set('x-added-later', 'yes');
+    });
+    const res = await handle(app, new Request('http://localhost/x'));
+    (res.headers.get('x-added-later') ?? '').should.equal('yes');
+  });
+
+  it('reuses the cached route chain across repeated hits', async () => {
+    let runs = 0;
+    const app = createApp();
+    get(
+      app,
+      '/count',
+      async (_ctx, next) => {
+        await next();
+      },
+      (ctx) => {
+        runs += 1;
+        text(ctx, String(runs));
+      },
+    );
+    for (let i = 0; i < 3; i++) {
+      const res = await handle(app, new Request('http://localhost/count'));
+      res.status.should.equal(200);
+      (await res.text()).should.equal(String(i + 1));
+    }
+    runs.should.equal(3);
+  });
+});
+
 describe('route middleware', () => {
   it('runs between the app chain and the handler, unwinding in reverse', async () => {
     const order: string[] = [];

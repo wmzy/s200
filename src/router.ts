@@ -197,10 +197,24 @@ export function matchSegments(
 }
 
 /**
- * First matching route in registration order. A route matches when its
- * method equals the request method, or it was registered as `'ALL'`; a
- * `HEAD` request also matches `GET` routes (web convention), so a server
- * gets HEAD support for free unless it registers an exact `HEAD` route.
+ * A route's method matches `m` directly, or via `'ALL'`; `HEAD` requests
+ * also match `GET` routes (web convention), so a server gets HEAD support
+ * for free unless it registers an exact `HEAD` route.
+ */
+function methodCompatible(routeMethod: string, method: string): boolean {
+  return (
+    routeMethod === method ||
+    routeMethod === 'ALL' ||
+    (method === 'HEAD' && routeMethod === 'GET')
+  );
+}
+
+/**
+ * First matching route in registration order, or — when the path matched
+ * but no route's method did — the allowed methods (for a 405). Two phases
+ * keep the common fast path untouched: method-compatible routes are scanned
+ * first; only when none of them matches the path is the rest of the table
+ * scanned for path hits, to build the `Allow` list.
  */
 export function matchRoutes(
   routes: readonly Route[],
@@ -209,16 +223,26 @@ export function matchRoutes(
 ): MatchResult | undefined {
   const m = method.toUpperCase();
   for (const route of routes) {
-    if (
-      route.method === m ||
-      route.method === 'ALL' ||
-      (m === 'HEAD' && route.method === 'GET')
-    ) {
-      const params = matchSegments(route.segments, pathname);
-      if (params !== undefined) {
-        return { route, params };
-      }
+    if (!methodCompatible(route.method, m)) {
+      continue;
+    }
+    const params = matchSegments(route.segments, pathname);
+    if (params !== undefined) {
+      return { route, params };
     }
   }
-  return undefined;
+  const allowed: string[] = [];
+  for (const route of routes) {
+    // Phase 1 already proved these miss the path — they cannot 405.
+    if (methodCompatible(route.method, m)) {
+      continue;
+    }
+    const params = matchSegments(route.segments, pathname);
+    // `includes` dedupes shadowed same-method registrations (first one wins
+    // on dispatch, but both live in the table).
+    if (params !== undefined && !allowed.includes(route.method)) {
+      allowed.push(route.method);
+    }
+  }
+  return allowed.length === 0 ? undefined : { allowedMethods: allowed };
 }

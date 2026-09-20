@@ -35,6 +35,36 @@
         "types": "./dist/types/bun.d.ts",
         "default": "./dist/bun.cjs"
       }
+    },
+    "./cors": {
+      "import": {
+        "types": "./dist/types/cors.d.mts",
+        "default": "./dist/cors.mjs"
+      },
+      "require": {
+        "types": "./dist/types/cors.d.ts",
+        "default": "./dist/cors.cjs"
+      }
+    },
+    "./logger": {
+      "import": {
+        "types": "./dist/types/logger.d.mts",
+        "default": "./dist/logger.mjs"
+      },
+      "require": {
+        "types": "./dist/types/logger.d.ts",
+        "default": "./dist/logger.cjs"
+      }
+    },
+    "./route-table": {
+      "import": {
+        "types": "./dist/types/route-table.d.mts",
+        "default": "./dist/route-table.mjs"
+      },
+      "require": {
+        "types": "./dist/types/route-table.d.ts",
+        "default": "./dist/route-table.cjs"
+      }
     }
   },
   "sideEffects": false,
