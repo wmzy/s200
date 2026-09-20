@@ -19,7 +19,7 @@ export type LoggerOptions = {
 
 function defaultFormat(ctx: Ctx, durationMs: number): string {
   const status = ctx.res === undefined ? '-' : String(ctx.res.status);
-  return `${new Date().toISOString()} ${ctx.req.method} ${new URL(ctx.req.url).pathname} ${status} ${durationMs.toFixed(1)}ms`;
+  return `${new Date().toISOString()} ${ctx.req.method} ${ctx.url.pathname} ${status} ${durationMs.toFixed(1)}ms`;
 }
 
 /**

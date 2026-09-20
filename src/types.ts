@@ -11,6 +11,21 @@ import type { App } from './app';
 /** Path params captured from a route pattern, keyed by `:name` / `*name`. */
 export type Params = Record<string, string>;
 
+/**
+ * The per-request typed state bag. Extend it per app via declaration
+ * merging (koa's DefaultState trick):
+ *
+ * ```ts
+ * declare module 's200' {
+ *   interface State { user: User }
+ * }
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions, @typescript-eslint/consistent-indexed-object-style -- must be an interface with an index signature: declaration merging (koa's DefaultState pattern) only extends interfaces, and `type State = Record<...>` cannot be augmented
+export interface State {
+  [key: string]: unknown;
+}
+
 /** Continuation into the next middleware — the onion's inner layer. */
 export type Next = () => Promise<void>;
 
@@ -28,12 +43,14 @@ export type Handler<P extends Params = Params> = (
 /**
  * Per-request context. The unit of mutation: middlewares and handlers write
  * `state` and `res` in place; `req` stays pinned to the incoming request.
+ * `url` is the request URL parsed once — reuse it instead of re-parsing.
  */
 export type Ctx<P extends Params = Params> = {
   readonly req: Request;
+  readonly url: URL;
   params: P;
   query: URLSearchParams;
-  state: Record<string, unknown>;
+  state: State;
   res: Response | undefined;
 };
 

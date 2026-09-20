@@ -15,6 +15,7 @@
 
 import type {
   Handler,
+  MatchFn,
   MatchResult,
   Middleware,
   Params,
@@ -190,6 +191,20 @@ function splitPath(pathname: string): readonly string[] | undefined {
 }
 
 /**
+ * Decodes one captured value. Matching happens on the raw path — an
+ * encoded '/' never fakes a segment boundary — but captures are handed to
+ * handlers decoded, the contract Express and Hono deliver. A malformed
+ * escape keeps the raw text instead of throwing (path-to-regexp behavior).
+ */
+function decodePart(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Matches a parsed pattern against pathname parts. Strict: trailing slashes
  * are significant (`'/a/'` never matches `/a` — only a wildcard can produce
  * an empty capture). Returns the captured params, or `undefined` on mismatch.
@@ -215,7 +230,7 @@ function matchParts(
       if (params === undefined) {
         params = {};
       }
-      params[segment.name] = parts.slice(i).join('/');
+      params[segment.name] = decodePart(parts.slice(i).join('/'));
       return params;
     }
     const part = parts[i];
@@ -232,7 +247,7 @@ function matchParts(
       if (params === undefined) {
         params = {};
       }
-      params[segment.name] = part;
+      params[segment.name] = decodePart(part);
     }
   }
   // Every segment consumed — the pathname must be consumed exactly too
@@ -273,14 +288,28 @@ function methodCompatible(routeMethod: string, method: string): boolean {
 }
 
 /**
- * One static-prefix trie node. `list` holds the routes whose static prefix
- * ends here — each route is filed exactly once, at its stopping node (the
- * node reached after its leading static segments). Ordering across nodes is
- * recovered by the position map instead (see {@link RouteIndex.seq}).
+ * One static-prefix trie node. Routes file at the node their leading static
+ * segments spell out (the stopping node), then split by whether any static
+ * segment remains beyond that prefix:
+ *
+ * - `plain` — no static segment after the prefix (terminal statics, trailing
+ *   params/wildcards): scanned directly, like the old per-node list.
+ * - `indexed` — at least one static segment after the prefix: each such
+ *   segment (absolute position → value) becomes a lookup key, so a request
+ *   reaches the route by spelling any of its static segments instead of
+ *   scanning every route filed at the node. This is what removes the
+ *   `/:tenant/...`-style residual linear scan: such routes land at the root
+ *   node and are reached by their later static segments. A route with no
+ *   static segments at all (`/:a/:b/:c`) is unfindable this way and stays
+ *   a linear scan — tables made of those alone remain inherently dynamic.
+ *
+ * Ordering across nodes is recovered by the position map instead (see
+ * {@link RouteIndex.seq}).
  */
 type StaticNode = {
   readonly statics: Map<string, StaticNode>;
-  readonly list: Route[];
+  readonly plain: Route[];
+  indexed: Map<number, Map<string, Route[]>> | undefined;
 };
 
 /** The per-route-table match index: a trie plus registration positions. */
@@ -300,7 +329,7 @@ const indexCache = new WeakMap<
 >();
 
 function buildRouteIndex(routes: readonly Route[]): RouteIndex {
-  const root: StaticNode = { statics: new Map(), list: [] };
+  const root: StaticNode = { statics: new Map(), plain: [], indexed: undefined };
   const seq = new WeakMap<Route, number>();
   routes.forEach((route, position) => {
     seq.set(route, position);
@@ -315,13 +344,39 @@ function buildRouteIndex(routes: readonly Route[]): RouteIndex {
       }
       let child = node.statics.get(segment.value);
       if (child === undefined) {
-        child = { statics: new Map(), list: [] };
+        child = { statics: new Map(), plain: [], indexed: undefined };
         node.statics.set(segment.value, child);
       }
       node = child;
       depth += 1;
     }
-    node.list.push(route);
+    // File under every static segment beyond the leading prefix; only a
+    // route with none such goes to the plain scan list.
+    let indexed = false;
+    for (let i = depth; i < route.segments.length; i += 1) {
+      const segment = route.segments[i];
+      if (segment?._tag !== 'static') {
+        continue;
+      }
+      if (node.indexed === undefined) {
+        node.indexed = new Map();
+      }
+      let byValueAtPos = node.indexed.get(i);
+      if (byValueAtPos === undefined) {
+        byValueAtPos = new Map();
+        node.indexed.set(i, byValueAtPos);
+      }
+      let routesForValue = byValueAtPos.get(segment.value);
+      if (routesForValue === undefined) {
+        routesForValue = [];
+        byValueAtPos.set(segment.value, routesForValue);
+      }
+      routesForValue.push(route);
+      indexed = true;
+    }
+    if (!indexed) {
+      node.plain.push(route);
+    }
   });
   return { root, seq };
 }
@@ -341,49 +396,72 @@ function getRouteIndex(routes: readonly Route[]): RouteIndex {
  * but no route's method did — the allowed methods (for a 405).
  *
  * Two phases keep the common fast path untouched: method-compatible routes
- * are scanned first; only when none of them matches the path is the path's
- * node chain scanned again for non-compatible hits, to build the `Allow`
+ * are scanned first; only when none of them matches the path is the
+ * candidate walk repeated for non-compatible hits, to build the `Allow`
  * list in registration order.
  *
- * The request walks the trie nodes its own segments spell out; every node
- * visited is scanned (shallow to deep) and the best match by registration
- * position wins — a route registered earlier than another always wins, even
- * when the loser sits at a shallower node.
+ * The walk is inlined (not a shared callback) — the per-candidate closure
+ * call is measurable on the sub-microsecond fast path.
+ *
+ * A route registered earlier than another always wins, even when the loser
+ * sits at a shallower node. `strict` (default true) treats trailing slashes
+ * as significant; with `strict: false`, `/a/` matches the `/a` route.
  */
 export function matchRoutes(
   routes: readonly Route[],
   method: string,
-  pathname: string
+  pathname: string,
+  strict = true
 ): MatchResult | undefined {
-  const parts = splitPath(pathname);
-  if (parts === undefined) {
+  const rawParts = splitPath(pathname);
+  if (rawParts === undefined) {
     return undefined;
   }
+  // Non-strict: one trailing empty segment (a trailing slash) is trimmed
+  // once per request; strict matching keeps every empty segment meaningful.
+  const parts =
+    !strict && rawParts.length > 0 && rawParts[rawParts.length - 1] === ''
+      ? rawParts.slice(0, -1)
+      : rawParts;
   const m = method.toUpperCase();
   const index = getRouteIndex(routes);
 
-  // Phase 1: the shallowest-first node walk with a position-min best match.
+  // Phase 1: candidate walk with a position-min best match. Each candidate
+  // check appears twice — once for the node's plain list, once per indexed
+  // bucket — keeping the loop bodies allocation-free.
   let best: { seq: number; route: Route; params: Params } | undefined;
   let node: StaticNode | undefined = index.root;
   let depth = 0;
   while (node !== undefined) {
-    for (const route of node.list) {
-      if (!methodCompatible(route.method, m)) {
-        continue;
-      }
+    for (const route of node.plain) {
+      if (!methodCompatible(route.method, m)) continue;
       const params = matchParts(route.segments, parts, depth);
-      if (params === undefined) {
-        continue;
-      }
+      if (params === undefined) continue;
       const seq = index.seq.get(route) ?? Number.MAX_SAFE_INTEGER;
       if (best === undefined || seq < best.seq) {
         best = { seq, route, params };
       }
     }
-    const part = parts[depth];
-    if (part === undefined) {
-      break;
+    const indexed = node.indexed;
+    if (indexed !== undefined) {
+      for (const [pos, byValue] of indexed) {
+        const part = parts[pos];
+        if (part === undefined) continue;
+        const bucket = byValue.get(part);
+        if (bucket === undefined) continue;
+        for (const route of bucket) {
+          if (!methodCompatible(route.method, m)) continue;
+          const params = matchParts(route.segments, parts, depth);
+          if (params === undefined) continue;
+          const seq = index.seq.get(route) ?? Number.MAX_SAFE_INTEGER;
+          if (best === undefined || seq < best.seq) {
+            best = { seq, route, params };
+          }
+        }
+      }
     }
+    const part = parts[depth];
+    if (part === undefined) break;
     node = node.statics.get(part);
     depth += 1;
   }
@@ -398,11 +476,9 @@ export function matchRoutes(
   node = index.root;
   depth = 0;
   while (node !== undefined) {
-    for (const route of node.list) {
+    for (const route of node.plain) {
       // Phase 1 already proved these miss the path — they cannot 405.
-      if (methodCompatible(route.method, m)) {
-        continue;
-      }
+      if (methodCompatible(route.method, m)) continue;
       const params = matchParts(route.segments, parts, depth);
       if (params !== undefined) {
         hits.push({
@@ -411,10 +487,27 @@ export function matchRoutes(
         });
       }
     }
-    const part = parts[depth];
-    if (part === undefined) {
-      break;
+    const indexed = node.indexed;
+    if (indexed !== undefined) {
+      for (const [pos, byValue] of indexed) {
+        const part = parts[pos];
+        if (part === undefined) continue;
+        const bucket = byValue.get(part);
+        if (bucket === undefined) continue;
+        for (const route of bucket) {
+          if (methodCompatible(route.method, m)) continue;
+          const params = matchParts(route.segments, parts, depth);
+          if (params !== undefined) {
+            hits.push({
+              seq: index.seq.get(route) ?? Number.MAX_SAFE_INTEGER,
+              method: route.method,
+            });
+          }
+        }
+      }
     }
+    const part = parts[depth];
+    if (part === undefined) break;
     node = node.statics.get(part);
     depth += 1;
   }
@@ -429,4 +522,15 @@ export function matchRoutes(
     }
   }
   return { allowedMethods: allowed };
+}
+
+/**
+ * Builds a {@link MatchFn} over {@link matchRoutes} with a fixed `strict`
+ * setting — the default matcher `createApp` installs, so `strict: false`
+ * survives the three-argument `MatchFn` surface.
+ */
+export function createMatcher(options: { strict?: boolean } = {}): MatchFn {
+  const strict = options.strict ?? true;
+  return (routes, method, pathname) =>
+    matchRoutes(routes, method, pathname, strict);
 }

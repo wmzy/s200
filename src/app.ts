@@ -14,7 +14,7 @@ import type { ParamsOf } from './router';
 
 import { isHttpError, toErrorResponse } from './errors';
 import { compose } from './compose';
-import { createRoute, matchRoutes } from './router';
+import { createMatcher, createRoute } from './router';
 
 /**
  * Options for {@link createApp}: the router is replaceable via `match`, and
@@ -22,6 +22,8 @@ import { createRoute, matchRoutes } from './router';
  */
 export type AppOptions = {
   match?: MatchFn;
+  /** Trailing-slash tolerance for the default matcher; default true = strict. */
+  strict?: boolean;
   onError?: ErrorHandler;
   onNotFound?: NotFoundHandler;
 };
@@ -43,7 +45,7 @@ export function createApp(options: AppOptions = {}): App {
   return {
     routes: [],
     middlewares: [],
-    match: options.match ?? matchRoutes,
+    match: options.match ?? createMatcher({ strict: options.strict }),
     onError: options.onError,
     onNotFound: options.onNotFound,
   };
@@ -210,6 +212,32 @@ function getRouteChain(route: Route): ReturnType<typeof compose> {
   return chain;
 }
 
+/**
+ * Maps a thrown value to a response through the app's error policy: custom
+ * `onError` (its own failures degrade to the default mapping), or the
+ * default — `HttpError` keeps its status/message, anything else logs via
+ * `console.error` and becomes an anonymous 500. Shared by the in-chain
+ * boundary (route/fallback errors) and the outer catch (middleware errors).
+ */
+async function mapError(app: App, ctx: Ctx, error: unknown): Promise<void> {
+  if (app.onError === undefined) {
+    // HttpErrors are intentional client errors mapped to responses; only
+    // unexpected failures need surfacing — a silently swallowed 500 is
+    // undebuggable in production.
+    if (!isHttpError(error)) {
+      console.error(error);
+    }
+    ctx.res = toErrorResponse(error);
+    return;
+  }
+  try {
+    await app.onError(ctx, error);
+  } catch (handlerError) {
+    // A crashing error handler is itself a failure — default mapping.
+    ctx.res = toErrorResponse(handlerError);
+  }
+}
+
 export async function handle(app: App, request: Request): Promise<Response> {
   const url = new URL(request.url);
   const matched = app.match(app.routes, request.method, url.pathname);
@@ -222,6 +250,7 @@ export async function handle(app: App, request: Request): Promise<Response> {
   const allowedMethods = miss?.allowedMethods;
   const ctx: Ctx = {
     req: request,
+    url,
     params: hit?.params ?? {},
     query: url.searchParams,
     state: {},
@@ -252,45 +281,39 @@ export async function handle(app: App, request: Request): Promise<Response> {
       ctx.res = Response.json({ error: 'No response written' }, { status: 500 });
     }
   };
-  // The app chain is cached per registration wave; the continuation is the
-  // matched route's cached chain (or nothing) followed by the fallback, so
-  // app middlewares still run on unmatched requests (a static middleware
-  // may respond) and onNotFound stays reachable.
+  // The error boundary sits BELOW the app middlewares: a route handler (or
+  // the fallback) that throws is mapped right here, so the app middlewares
+  // unwind with the error response materialized — the same contract the
+  // 404/405/500 fallbacks already honor. Errors thrown by a middleware
+  // itself (above this boundary) are mapped by the outer catch below.
   const inner: Next = async () => {
-    if (route !== undefined) {
-      await getRouteChain(route)(ctx);
+    try {
+      if (route !== undefined) {
+        await getRouteChain(route)(ctx);
+      }
+      await fallback();
+    } catch (error) {
+      await mapError(app, ctx, error);
     }
-    await fallback();
   };
   try {
     await getAppChain(app)(ctx, inner);
   } catch (error) {
-    if (app.onError === undefined) {
-      // HttpErrors are intentional client errors mapped to responses; only
-      // unexpected failures need surfacing — a silently swallowed 500 is
-      // undebuggable in production.
-      if (!isHttpError(error)) {
-        console.error(error);
-      }
-      ctx.res = toErrorResponse(error);
-    } else {
-      try {
-        await app.onError(ctx, error);
-      } catch (handlerError) {
-        // A crashing error handler is itself a failure — default mapping.
-        ctx.res = toErrorResponse(handlerError);
-      }
-    }
+    await mapError(app, ctx, error);
   }
   // A custom onError may answer or leave the response unwritten — the
   // latter falls back like the in-chain terminal did (original semantics:
   // the 405/404/500 decision still applies after errors).
   if (ctx.res === undefined) {
-    await fallback();
+    try {
+      await fallback();
+    } catch (error) {
+      await mapError(app, ctx, error);
+    }
   }
   if (request.method === 'HEAD') {
-    // fallback() guarantees a response above, but the write happens inside
-    // a closure tsc cannot see through.
+    // fallback()/mapError guarantee a response above, but the write happens
+    // inside a closure tsc cannot see through.
     const res = ctx.res as Response;
     // HEAD must not carry a body, but content-length stays so the client can
     // learn the size a GET would have returned.

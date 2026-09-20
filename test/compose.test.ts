@@ -7,6 +7,7 @@ import { compose } from '../src/compose';
 function createTestCtx(): Ctx {
   return {
     req: new Request('http://localhost/a'),
+    url: new URL('http://localhost/a'),
     params: {},
     query: new URLSearchParams(),
     state: {},

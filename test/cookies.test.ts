@@ -94,6 +94,7 @@ describe('setCookie', function () {
   it('rejects non-token cookie names', function () {
     const ctx = {
       req: new Request('http://localhost/'),
+      url: new URL('http://localhost/'),
       params: {},
       query: new URLSearchParams(),
       state: {},

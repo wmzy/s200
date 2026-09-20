@@ -202,6 +202,33 @@ describe('matchSegments', function () {
   it('rejects pathnames without a leading slash', function () {
     (matchSegments(createSegments('/a'), 'a') === undefined).should.be.true;
   });
+
+  it('hands captured params to handlers percent-decoded', function () {
+    mustMatch(
+      matchSegments(createSegments('/users/:id'), '/users/foo%20bar')
+    ).should.deep.equal({ id: 'foo bar' });
+    // An encoded slash stays inside ONE segment during matching...
+    mustMatch(
+      matchSegments(createSegments('/files/:name'), '/files/a%2Fb')
+    ).should.deep.equal({ name: 'a/b' });
+    // ...it captures whole (decoded), while a real slash splits — the
+    // surplus segment makes the path a non-match.
+    mustMatch(
+      matchSegments(createSegments('/a/:x/b'), '/a/1%2F2/b')
+    ).should.deep.equal({ x: '1/2' });
+    (matchSegments(createSegments('/a/:x/b'), '/a/1/2/b') === undefined).should.be
+      .true;
+    // Wildcards decode the whole capture.
+    mustMatch(
+      matchSegments(createSegments('/f/*rest'), '/f/a%20b/c')
+    ).should.deep.equal({ rest: 'a b/c' });
+  });
+
+  it('keeps malformed escapes raw instead of throwing', function () {
+    mustMatch(
+      matchSegments(createSegments('/users/:id'), '/users/%zz')
+    ).should.deep.equal({ id: '%zz' });
+  });
 });
 
 describe('matchRoutes', function () {
@@ -296,5 +323,60 @@ describe('matchRoutes', function () {
     (
       matchRoutes([getUser, postUser], 'POST', '/other') === undefined
     ).should.be.true;
+  });
+
+  it('matches param-first tables by their later static segments (indexed, not scanned)', function () {
+    const routes = Array.from({ length: 50 }, (_, i) =>
+      createRoute('GET', `/:tenant/resource${i}`, (ctx) => ctx.params.tenant),
+    );
+    const result = mustRoute(matchRoutes(routes, 'GET', '/acme/resource37'));
+    (result.route === routes[37]).should.be.true;
+    result.params.should.deep.equal({ tenant: 'acme' });
+    // A miss never scans: no candidate key exists for the path's statics.
+    (matchRoutes(routes, 'GET', '/acme/nope') === undefined).should.be.true;
+  });
+
+  it('matches statics separated by params in any position', function () {
+    const deep = createRoute('GET', '/a/:x/b/:y/c', (ctx) => ctx.params.x);
+    const table = [createRoute('GET', '/a/z', noop), deep];
+    const result = mustRoute(matchRoutes(table, 'GET', '/a/1/b/2/c'));
+    (result.route === deep).should.be.true;
+    result.params.should.deep.equal({ x: '1', y: '2' });
+    // Both static anchors must line up — the index alone is not a match.
+    (matchRoutes(table, 'GET', '/a/1/other/2/c') === undefined).should.be.true;
+  });
+
+  it('keeps registration order across indexed buckets and plain lists', function () {
+    const paramFirst = createRoute('GET', '/:a/x', noop);
+    const plain = createRoute('GET', '/p/x', noop);
+    const later = createRoute('GET', '/:b/x', noop);
+    const table = [paramFirst, plain, later];
+    // '/p/x' hits paramFirst (via index), plain, and later — the earliest
+    // registration wins.
+    (mustRoute(matchRoutes(table, 'GET', '/p/x')).route === paramFirst).should.be
+      .true;
+    // Remove the param-first route and the plain route wins over the other
+    // indexed one.
+    (mustRoute(matchRoutes([plain, later], 'GET', '/p/x')).route === plain).should
+      .be.true;
+  });
+
+  it('builds the 405 Allow list for param-first tables too', function () {
+    const getTenant = createRoute('GET', '/:tenant/report', noop);
+    const postTenant = createRoute('POST', '/:tenant/report', noop);
+    mustMatch(matchRoutes([getTenant, postTenant], 'PATCH', '/acme/report')).should.deep.equal({
+      allowedMethods: ['GET', 'POST'],
+    });
+  });
+
+  it('tolerates a trailing slash when strict is off', function () {
+    const route = createRoute('GET', '/a/:id', noop);
+    const result = mustRoute(matchRoutes([route], 'GET', '/a/42/', false));
+    result.params.should.deep.equal({ id: '42' });
+    (matchRoutes([route], 'GET', '/a/42/', true) === undefined).should.be.true;
+    // Only ONE trailing empty segment is tolerated — '//' still misses.
+    (matchRoutes([route], 'GET', '/a/42//', false) === undefined).should.be.true;
+    // Strict stays the default when the flag is omitted.
+    (matchRoutes([route], 'GET', '/a/42/') === undefined).should.be.true;
   });
 });

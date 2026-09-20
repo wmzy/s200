@@ -19,6 +19,7 @@ async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
 function makeCtx(body: BodyInit | null, headers?: Record<string, string>): Ctx {
   return {
     req: new Request('http://localhost/', { method: 'POST', body, headers }),
+    url: new URL('http://localhost/'),
     params: {},
     query: new URLSearchParams(),
     state: {},
@@ -108,5 +109,38 @@ describe('per-ctx body cache', () => {
     const second = (await rejectionOf(readJson(ctx))) as HttpError;
     second.status.should.equal(400);
     second.message.should.equal('Invalid JSON body');
+  });
+});
+
+describe('body size limit', () => {
+  it('rejects an oversized body with a 413 before buffering it whole', async () => {
+    const ctx = makeCtx('{"big":true}', { 'content-type': 'application/json' });
+    const error = await rejectionOf(readJson(ctx, { limit: 4 }));
+    (error as HttpError)._tag.should.equal('HttpError');
+    (error as HttpError).status.should.equal(413);
+    (error as HttpError).message.should.equal('Request body too large');
+  });
+
+  it('passes bodies at or under the limit', async () => {
+    const ctx = makeCtx('{"a":1}', { 'content-type': 'application/json' });
+    const parsed = await readJson<{ a: number }>(ctx, { limit: 64 });
+    parsed.should.deep.equal({ a: 1 });
+  });
+
+  it('enforces a limit added after an unlimited read already buffered the body', async () => {
+    const ctx = makeCtx('{"a":1}');
+    await readText(ctx);
+    const error = await rejectionOf(readJson(ctx, { limit: 2 }));
+    (error as HttpError).status.should.equal(413);
+  });
+
+  it('applies the limit to text and form reads too', async () => {
+    const textCtx = makeCtx('hello world');
+    const error = await rejectionOf(readText(textCtx, { limit: 5 }));
+    (error as HttpError).status.should.equal(413);
+
+    const formCtx = makeCtx('a=1&b=2', { 'content-type': 'application/x-www-form-urlencoded' });
+    const formError = await rejectionOf(readForm(formCtx, { limit: 3 }));
+    (formError as HttpError).status.should.equal(413);
   });
 });

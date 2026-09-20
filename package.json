@@ -95,6 +95,46 @@
         "types": "./dist/types/rate-limit.d.ts",
         "default": "./dist/rate-limit.cjs"
       }
+    },
+    "./compress": {
+      "import": {
+        "types": "./dist/types/compress.d.mts",
+        "default": "./dist/compress.mjs"
+      },
+      "require": {
+        "types": "./dist/types/compress.d.ts",
+        "default": "./dist/compress.cjs"
+      }
+    },
+    "./streaming": {
+      "import": {
+        "types": "./dist/types/streaming.d.mts",
+        "default": "./dist/streaming.mjs"
+      },
+      "require": {
+        "types": "./dist/types/streaming.d.ts",
+        "default": "./dist/streaming.cjs"
+      }
+    },
+    "./request-id": {
+      "import": {
+        "types": "./dist/types/request-id.d.mts",
+        "default": "./dist/request-id.mjs"
+      },
+      "require": {
+        "types": "./dist/types/request-id.d.ts",
+        "default": "./dist/request-id.cjs"
+      }
+    },
+    "./timeout": {
+      "import": {
+        "types": "./dist/types/timeout.d.mts",
+        "default": "./dist/timeout.mjs"
+      },
+      "require": {
+        "types": "./dist/types/timeout.d.ts",
+        "default": "./dist/timeout.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -156,7 +196,7 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "4.5 KB"
+      "limit": "5.6 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
@@ -171,6 +211,30 @@
       "ignore": ["node:*"],
       "gzip": true,
       "limit": "2 KB"
+    },
+    {
+      "name": "compress battery (min+gz)",
+      "path": "dist/compress.mjs",
+      "gzip": true,
+      "limit": "1 KB"
+    },
+    {
+      "name": "streaming battery (min+gz)",
+      "path": "dist/streaming.mjs",
+      "gzip": true,
+      "limit": "1.2 KB"
+    },
+    {
+      "name": "request-id battery (min+gz)",
+      "path": "dist/request-id.mjs",
+      "gzip": true,
+      "limit": "0.6 KB"
+    },
+    {
+      "name": "timeout battery (min+gz)",
+      "path": "dist/timeout.mjs",
+      "gzip": true,
+      "limit": "0.6 KB"
     }
   ],
   "lint-staged": {

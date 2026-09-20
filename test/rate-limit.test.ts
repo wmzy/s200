@@ -82,3 +82,65 @@ describe('rateLimit', function () {
     (() => rateLimit({ limit: 0 })).should.throw(/must be positive/);
   });
 });
+
+describe('rateLimit sliding window', () => {
+  it('is burst-proof at window edges, unlike a fixed-window counter', async () => {
+    const time = clock();
+    const app = createApp();
+    use(app, rateLimit({ windowMs: 1000, limit: 1, now: time.now }));
+    get(app, '/', () => new Response('ok'));
+
+    (await handle(app, new Request('http://localhost/'))).status.should.equal(200);
+    // 900ms later the first hit is still inside the window — blocked.
+    time.advance(900);
+    (await handle(app, new Request('http://localhost/'))).status.should.equal(429);
+    // Even after the FIRST hit ages out, the t=900 hit still blocks...
+    time.advance(101);
+    (await handle(app, new Request('http://localhost/'))).status.should.equal(429);
+    // ...only once every in-window hit aged out does a retry pass.
+    time.advance(1000);
+    (await handle(app, new Request('http://localhost/'))).status.should.equal(200);
+  });
+
+  it('computes Retry-After from the oldest blocking hit', async () => {
+    const time = clock();
+    const app = createApp();
+    use(app, rateLimit({ windowMs: 1000, limit: 1, now: time.now }));
+    get(app, '/', () => new Response('ok'));
+
+    await handle(app, new Request('http://localhost/'));
+    time.advance(400);
+    const blocked = await handle(app, new Request('http://localhost/'));
+    // The first hit expires 600ms from now → ceil to 1s minimum.
+    blocked.headers.get('retry-after')!.should.equal('1');
+    time.advance(1000);
+    (await handle(app, new Request('http://localhost/'))).status.should.equal(200);
+  });
+
+  it('runs an injected async store and 429s per its verdict', async () => {
+    const time = clock();
+    const hits: string[] = [];
+    const app = createApp();
+    use(
+      app,
+      rateLimit({
+        windowMs: 1000,
+        limit: 1,
+        now: time.now,
+        store: {
+          async hit(key, now, _limit, windowMs) {
+            hits.push(key);
+            const allowed = hits.length <= 1;
+            return { count: hits.length, retryAt: allowed ? now : now + windowMs };
+          },
+        },
+      }),
+    );
+    get(app, '/', () => new Response('ok'));
+    (await handle(app, new Request('http://localhost/'))).status.should.equal(200);
+    const blocked = await handle(app, new Request('http://localhost/'));
+    blocked.status.should.equal(429);
+    blocked.headers.get('retry-after')!.should.equal('1');
+    hits.should.deep.equal(['unknown', 'unknown']);
+  });
+});

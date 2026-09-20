@@ -45,7 +45,7 @@ describe('logger', function () {
     seen[0]?.should.be.at.least(0);
   });
 
-  it('does not log when the chain rejects', async function () {
+  it('still logs requests whose handler threw — the error response is materialized inside the chain', async function () {
     const lines: string[] = [];
     const app = createApp();
     use(app, logger({ sink: (line) => lines.push(line) }));
@@ -54,6 +54,7 @@ describe('logger', function () {
     });
     const res = await handle(app, new Request('http://localhost/x'));
     res.status.should.equal(500);
-    lines.should.have.length(0);
+    lines.should.have.length(1);
+    lines[0]?.should.match(/ GET \/x 500 /);
   });
 });

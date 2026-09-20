@@ -47,11 +47,17 @@ npm install s200
 
 ## Routing
 
-Patterns use `:name` params and a terminal `*name` wildcard; matching is strict (no trailing-slash tolerance), first registration wins, `ALL` matches every method, and `HEAD` falls back to `GET` routes. Duplicate capture names (`/users/:id/posts/:id`) are rejected at registration.
+Patterns use `:name` params and a terminal `*name` wildcard; matching is strict (no trailing-slash tolerance), first registration wins, `ALL` matches every method, and `HEAD` falls back to `GET` routes. Duplicate capture names (`/users/:id/posts/:id`) are rejected at registration. Captured values are handed to handlers **percent-decoded** (`/users/foo%20bar` → `'foo bar'`) — the Express/Hono contract — while matching runs on the raw path, so an encoded `/` can never fake a segment boundary.
 
 ```ts
 get(app, '/users/:id', (ctx) => text(ctx, ctx.params.id));   // ctx.params.id: string — inferred
 get(app, '/files/*path', (ctx) => text(ctx, ctx.params.path)); // captures the rest incl. '/'
+```
+
+Trailing-slash strictness is configurable per app (`strict: false` tolerates `/a/` → `/a`; the default stays strict):
+
+```ts
+const app = createApp({ strict: false });
 ```
 
 The pattern literal drives the type: `ParamsOf<'/users/:id/posts/:postId'>` is `{ id: string; postId: string }`, so `ctx.params` is fully typed inside literal-pattern handlers. The router itself is replaceable — pass a custom `match` to `createApp` and the whole matching strategy is yours:
@@ -60,7 +66,7 @@ The pattern literal drives the type: `ParamsOf<'/users/:id/posts/:postId'>` is `
 const app = createApp({ match: myTrieMatcher });
 ```
 
-Dispatch runs over a static-prefix trie, not a linear scan: a request only visits the trie nodes its own segments spell out, so matching cost tracks URL depth, not route count. The residual linear case is a table whose routes share no static first segment (`/:tenant/...` style) — see `pnpm bench`.
+Dispatch runs over a static-prefix trie, indexed by **every** static segment, not just the leading prefix: a request only visits the trie nodes its own segments spell out, and routes like `/:tenant/resourceN` are reached through their later static segments instead of a linear scan — matching cost tracks URL depth, not route count. The residual linear case is a table of routes with no static segments at all (`/:a/:b/:c` style) — see `pnpm bench`.
 
 When the path matches but no route's method does, s200 answers `405 {"error":"Method Not Allowed"}` with an `Allow` header listing the methods that would have matched (RFC 9110). Middlewares run first and can answer such requests themselves — a CORS preflight or a custom `OPTIONS` handler short-circuits before the fallback.
 
@@ -89,7 +95,15 @@ use(app, async (ctx, next) => {
 });
 ```
 
-`ctx.state` is a fresh mutable bag per request — the typed hand-off channel between middlewares and handlers. After `await next()` settles, `ctx.res` is always materialized — the handler's response or the 404/405/500 fallback — so the unwind observes (and may overwrite) the real response.
+`ctx.state` is a fresh mutable bag per request — the typed hand-off channel between middlewares and handlers. Extend its type per app via declaration merging (koa's `DefaultState` trick):
+
+```ts
+declare module 's200' {
+  interface State { user: User }
+}
+```
+
+`ctx.url` is the parsed request URL (reuse it — no re-parsing). After `await next()` settles, `ctx.res` is always materialized — the handler's response, the 404/405/500 fallback, **or the error response**: an error boundary inside the chain maps thrown errors before the unwind, so middlewares observe (and may overwrite) the real response even for 500s. This is what lets logger/CORS/request-id stamp error responses.
 
 Routes also accept scoped middlewares: any number of them between the pattern and the terminal handler. They run after the app-level chain (and unwind inside it), only for their own route:
 
@@ -121,34 +135,37 @@ Handlers may also simply **return** a `Response` — it is written for you when 
 ## Body parsing
 
 ```ts
-const body = await readJson<Login>(ctx); // invalid JSON → 400 HttpError
+const body = await readJson<Login>(ctx);   // invalid JSON → 400 HttpError
 const raw = await readText(ctx);
-const form = await readForm(ctx);        // FormData (urlencoded + multipart)
+const form = await readForm(ctx);          // FormData (urlencoded + multipart)
 ```
+
+Every read accepts a byte budget: `readJson(ctx, { limit: 64 * 1024 })`. The first read counts bytes as they arrive and rejects oversize bodies with a 413 `HttpError` **before buffering them** — an oversized payload never sits in memory (a later limited read of an already-buffered body enforces the limit after the fact). Default: unlimited.
 
 Bodies are single-read by platform contract; s200 caches the parse per request context, so multiple reads (and mixed json/text reads) replay from one buffer instead of throwing.
 
 ## Static files
 
-All I/O is injected — the core never touches a filesystem. Adapters ship `createFileReader`, but any `read` works (memory, S3, embedded):
+All I/O is injected — the core never touches a filesystem. Adapters ship the pieces, but any `read` works (memory, S3, embedded):
 
 ```ts
 import { serveStatic } from 's200';
-import { createFileReader } from 's200/node';
+import { createFileReader, createFileStat, createFileRangeReader } from 's200/node';
 
 use(app, serveStatic({
   read: createFileReader('public'),
+  stat: createFileStat('public'),            // ETag/Last-Modified + 304s
+  readRange: createFileRangeReader('public'), // streamed ranges: no whole-file buffering
   root: 'public',
   prefix: '/static',  // mount point, stripped before lookup
   spa: true,          // html navigation misses fall back to index.html
+  cacheControl: 'public, max-age=3600',      // stamped on 200/206/304
 }));
 ```
 
-Traversal (`..`) never escapes the root, `index` (default `index.html`) serves directory paths, and misses fall through to `next()` so other routes can answer. Hidden files are refused by default — a request path with a dotfile segment (`.env`, `.git/…`, including percent-encoded forms) falls through instead of being served; opt out with `dotfiles: 'allow'`. Single byte ranges are honored: `Range: bytes=…` answers 206 (or 416 when unsatisfiable), so video seeking works.
+Traversal (`..`) never escapes the root, `index` (default `index.html`) serves directory paths, and misses fall through to `next()` so other routes can answer. Hidden files are refused by default — a request path with a dotfile segment (`.env`, `.git/…`, including percent-encoded forms) falls through instead of being served; opt out with `dotfiles: 'allow'`.
 
-```ts
-serveStatic({ read: createFileReader('public'), dotfiles: 'allow' });
-```
+Byte readers support single byte ranges (`Range: bytes=…` → 206, or 416 when unsatisfiable), so video seeking works — but buffered readers hold the whole file in memory. For large media, `read` may return a `ReadableStream` (see `createFileReader('public', { stream: true })`) and `readRange` streams slice reads. `stat` additionally turns on conditional requests: responses carry `ETag`/`Last-Modified`, and `If-None-Match`/`If-Modified-Since` hits answer 304. A directory path missing its trailing slash gets a 301 to the slash form when the directory index exists (opt out: `redirectToSlash: false`).
 
 ## Batteries
 
@@ -161,6 +178,10 @@ import { createRouteTable } from 's200/route-table';
 import { getCookie, setCookie, getSignedCookie, setSignedCookie } from 's200/cookies';
 import { validate, jsonBody } from 's200/validate';
 import { rateLimit } from 's200/rate-limit';
+import { compress } from 's200/compress';
+import { stream, streamSSE } from 's200/streaming';
+import { requestId } from 's200/request-id';
+import { timeout } from 's200/timeout';
 ```
 
 **CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
@@ -172,7 +193,7 @@ use(app, cors({ origin: ['https://a.example'], maxAge: 600, exposeHeaders: ['x-r
 
 The default `'*'` origin emits the literal wildcard; allowlists and resolvers reflect the request origin and set `Vary: Origin`. Browsers refuse credentialed wildcard origins (fail-closed) — pair `credentials` with an explicit origin. `exposeHeaders` emits `Access-Control-Expose-Headers` so page scripts can read custom response headers.
 
-**Logger** — one line per request (`ISO-time METHOD path status duration`) through a pluggable `sink`/`format`. The status is always the real one — the fallbacks are materialized inside the chain, so the logger sees them.
+**Logger** — one line per request (`ISO-time METHOD path status duration`) through a pluggable `sink`/`format`. The status is always the real one — fallbacks **and error responses** are materialized inside the chain, so the logger sees every request, including 500s.
 
 **Route table** — the `data + functions` payoff: the app is plain data, so it exports as JSON without executing anything:
 
@@ -203,13 +224,41 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 });
 ```
 
-**Rate limit** — sliding-window gate per client key: the `limit + 1`th request in a window is answered in place with `429` + `Retry-After`, and the chain below never runs:
+**Rate limit** — true sliding-window gate per client key: every hit expires `windowMs` after it landed (no fixed boundary, so window edges can't burst), the over-limit request is answered in place with `429` + `Retry-After`, and the chain below never runs:
 
 ```ts
 use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 ```
 
-The default key reads `x-forwarded-for` — only meaningful behind a proxy that overwrites it; pass `key: (ctx) => …` for any other identity (and a `now` clock for tests).
+The default key reads `x-forwarded-for` — only meaningful behind a proxy that overwrites it; pass `key: (ctx) => …` for any other identity (and a `now` clock for tests). The counters live in-process by default — per-instance limits. For shared limits across instances, inject a `store` (atomic `hit(key, now, limit, windowMs) → { count, retryAt }` — the Redis INCR shape).
+
+**Compress** — gzip/deflate response compression via the Web Standard `CompressionStream` (no `node:zlib` — works on Node 18+, Bun, Deno). Negotiates `Accept-Encoding` q-values, skips bodyless/encoded/`no-transform` responses and small bodies (when a content-length is known), and maintains `Vary: Accept-Encoding`:
+
+```ts
+use(app, compress({ minBytes: 1024 }));
+```
+
+**Streaming** — `stream` serves push-driven chunks; `streamSSE` frames Server-Sent Events with backpressure-aware writes:
+
+```ts
+get(app, '/events', (ctx) => streamSSE(ctx, async (writer) => {
+  await writer.writeSSE({ event: 'tick', data: { n } });
+  await writer.heartbeat();
+}));
+```
+
+**Request ID** — canonical correlation id per request (`ctx.state.requestId`), honoring incoming ids and stamping responses — error responses included:
+
+```ts
+use(app, requestId());          // x-request-id
+use(app, requestId({ header: 'x-trace', generator: () => nanoid() }));
+```
+
+**Timeout** — races the chain against a deadline; a late handler gets `503 {"error":"Request timeout"}` (the losing work is not cancelled — cooperative cancellation needs explicit `AbortSignal` plumbing):
+
+```ts
+use(app, timeout(30_000));
+```
 
 ## Errors
 
@@ -245,14 +294,14 @@ Both adapters expose the identical `serve(app, options)` surface; the core's `ha
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/rate-limit`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 9 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 13 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm test:run -- --run     # single run (185 tests)
+pnpm test:run -- --run     # single run (232 tests)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle

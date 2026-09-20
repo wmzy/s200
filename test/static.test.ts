@@ -101,8 +101,12 @@ describe('serveStatic traversal guard', () => {
    * the guard exists for.
    */
   function guardCtx(url: string): Ctx {
+    // Parsed as a NON-special-scheme URL, the path stays dot-unfolded and
+    // percent-encoded — exactly the crafted, never-normalized shape the
+    // guard exists for (a real http(s) Request folds '..' during parsing).
     return {
       req: { url, method: 'GET', headers: new Headers() } as unknown as Request,
+      url: new URL(url),
       params: {},
       query: new URLSearchParams(),
       state: {},
@@ -241,7 +245,8 @@ describe('serveStatic fallthrough and spa', () => {
     res.status.should.equal(200);
     res.headers.get('content-type')!.should.equal('text/html; charset=utf-8');
     (await res.text()).should.equal('<html>spa</html>');
-    reads.should.deep.equal(['some/route', 'index.html']);
+    // miss → directory-redirect probe → spa shell
+    reads.should.deep.equal(['some/route', 'some/route/index.html', 'index.html']);
   });
 
   it('supports a custom spa file under the root', async () => {
@@ -255,7 +260,7 @@ describe('serveStatic fallthrough and spa', () => {
     );
     res.status.should.equal(200);
     (await res.text()).should.equal('shell');
-    reads.should.deep.equal(['public/x', 'public/app.html']);
+    reads.should.deep.equal(['public/x', 'public/x/index.html', 'public/app.html']);
   });
 
   it('skips the SPA shell when the client does not accept html', async () => {
@@ -279,7 +284,7 @@ describe('serveStatic fallthrough and spa', () => {
       }),
     );
     res.status.should.equal(404);
-    reads.should.deep.equal(['some/route']);
+    reads.should.deep.equal(['some/route', 'some/route/index.html']);
   });
 });
 
@@ -388,5 +393,153 @@ describe('serveStatic range requests', () => {
     res.status.should.equal(200);
     (res.headers.get('content-range') === null).should.be.true;
     (res.body === null).should.be.true;
+  });
+});
+
+describe('serveStatic conditional requests', () => {
+  const files: Record<string, string> = { 'page.txt': 'content' };
+  const stat = (path: string) =>
+    Promise.resolve(
+      files[path] === undefined ? null : { size: files[path]!.length, mtimeMs: 1_700_000_000_000 },
+    );
+
+  it('answers 304 with validators when If-None-Match matches', async () => {
+    const reads: string[] = [];
+    const app = createApp();
+    use(app, serveStatic({ read: (p) => (reads.push(p), Promise.resolve(files[p] === undefined ? null : new TextEncoder().encode(files[p]))), stat }));
+    const first = await handle(app, new Request('http://localhost/page.txt'));
+    first.status.should.equal(200);
+    const etag = first.headers.get('etag')!;
+    const second = await handle(app, new Request('http://localhost/page.txt', { headers: { 'if-none-match': etag } }));
+    second.status.should.equal(304);
+    (second.body === null).should.be.true;
+    second.headers.get('etag')!.should.equal(etag);
+  });
+
+  it('weak-compares etags and honors If-Modified-Since', async () => {
+    const app = createApp();
+    use(app, serveStatic({
+      read: (p) => Promise.resolve(files[p] === undefined ? null : new TextEncoder().encode(files[p])),
+      stat,
+    }));
+    const first = await handle(app, new Request('http://localhost/page.txt'));
+    const etag = first.headers.get('etag')!; // W/"7-18bcf3e6080" shape
+    // A strong client tag (no W/) still matches our weak validator.
+    const strong = await handle(app, new Request('http://localhost/page.txt', {
+      headers: { 'if-none-match': etag.slice(2) },
+    }));
+    strong.status.should.equal(304);
+    const miss = await handle(app, new Request('http://localhost/page.txt', {
+      headers: { 'if-none-match': '"7-0000000000000"' },
+    }));
+    miss.status.should.equal(200);
+    const ims = await handle(app, new Request('http://localhost/page.txt', {
+      headers: { 'if-modified-since': 'Wed, 20 Sep 2026 00:00:00 GMT' },
+    }));
+    ims.status.should.equal(304);
+  });
+
+  it('ignores If-Modified-Since when If-None-Match is present and misses', async () => {
+    const app = createApp();
+    use(app, serveStatic({
+      read: (p) => Promise.resolve(files[p] === undefined ? null : new TextEncoder().encode(files[p])),
+      stat,
+    }));
+    const res = await handle(app, new Request('http://localhost/page.txt', {
+      headers: {
+        'if-none-match': '"definitely-not-it"',
+        'if-modified-since': 'Wed, 20 Sep 2026 00:00:00 GMT',
+      },
+    }));
+    res.status.should.equal(200);
+  });
+});
+
+describe('serveStatic streaming and ranges', () => {
+  it('serves a streamed read with content-length from stat', async () => {
+    const app = createApp();
+    use(app, serveStatic({
+      read: (p) =>
+        Promise.resolve(
+          p === 'big.bin' ? new Blob(['streamed-bytes']).stream() : null,
+        ),
+      stat: (p) =>
+        Promise.resolve(p === 'big.bin' ? { size: 14, mtimeMs: 1_700_000_000_000 } : null),
+    }));
+    const res = await handle(app, new Request('http://localhost/big.bin'));
+    res.status.should.equal(200);
+    res.headers.get('content-length')!.should.equal('14');
+    (await res.text()).should.equal('streamed-bytes');
+  });
+
+  it('serves single ranges through readRange without buffering', async () => {
+    const app = createApp();
+    const rangeReads: [string, number, number][] = [];
+    use(app, serveStatic({
+      read: () => Promise.resolve(null),
+      stat: (p) => Promise.resolve(p === 'video.mp4' ? { size: 1000, mtimeMs: 1_700_000_000_000 } : null),
+      readRange: (path, start, end) => {
+        rangeReads.push([path, start, end]);
+        const bytes = new TextEncoder().encode('0123456789');
+        return Promise.resolve(new Blob([bytes.slice(start, end + 1)]).stream());
+      },
+    }));
+    const res = await handle(app, new Request('http://localhost/video.mp4', { headers: { range: 'bytes=2-5' } }));
+    res.status.should.equal(206);
+    res.headers.get('content-range')!.should.equal('bytes 2-5/1000');
+    res.headers.get('content-length')!.should.equal('4');
+    rangeReads.should.deep.equal([['video.mp4', 2, 5]]);
+  });
+
+  it('answers 416 for unsatisfiable ranges against a known size', async () => {
+    const app = createApp();
+    use(app, serveStatic({
+      read: () => Promise.resolve(null),
+      stat: (p) => Promise.resolve(p === 'v' ? { size: 10, mtimeMs: 1 } : null),
+      readRange: () => Promise.resolve(null),
+    }));
+    const res = await handle(app, new Request('http://localhost/v', { headers: { range: 'bytes=100-200' } }));
+    res.status.should.equal(416);
+  });
+});
+
+describe('serveStatic directory redirect and cache control', () => {
+  it('redirects a directory path without the trailing slash to the slash form', async () => {
+    const { app } = makeApp({ 'docs/index.html': 'D' });
+    const res = await handle(app, new Request('http://localhost/docs', { redirect: 'manual' }));
+    res.status.should.equal(301);
+    res.headers.get('location')!.should.equal('http://localhost/docs/');
+  });
+
+  it('falls through when no directory index exists', async () => {
+    const app = createApp();
+    use(app, serveStatic({ read: () => Promise.resolve(null) }));
+    withSentinel(app, 'fell-through');
+    const res = await handle(app, new Request('http://localhost/docs'));
+    (await res.text()).should.equal('fell-through');
+  });
+
+  it('opts out of redirects with redirectToSlash: false', async () => {
+    const app = createApp();
+    use(app, serveStatic({ read: () => Promise.resolve(null), redirectToSlash: false }));
+    withSentinel(app, 'fell-through');
+    const res = await handle(app, new Request('http://localhost/docs'));
+    (await res.text()).should.equal('fell-through');
+  });
+
+  it('stamps cache-control on hits and 304s when configured', async () => {
+    const app = createApp();
+    use(app, serveStatic({
+      read: (p) => Promise.resolve(p === 'a.txt' ? new TextEncoder().encode('A') : null),
+      stat: (p) => Promise.resolve(p === 'a.txt' ? { size: 1, mtimeMs: 1_700_000_000_000 } : null),
+      cacheControl: 'public, max-age=3600',
+    }));
+    const first = await handle(app, new Request('http://localhost/a.txt'));
+    first.headers.get('cache-control')!.should.equal('public, max-age=3600');
+    const second = await handle(app, new Request('http://localhost/a.txt', {
+      headers: { 'if-none-match': first.headers.get('etag')! },
+    }));
+    second.status.should.equal(304);
+    second.headers.get('cache-control')!.should.equal('public, max-age=3600');
   });
 });

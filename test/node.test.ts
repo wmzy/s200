@@ -87,10 +87,18 @@ describe('node adapter (real http)', () => {
   describe('createFileReader', () => {
     it('reads files under the root as bytes', async () => {
       const read = createFileReader(dir);
-      const bytes = await read('/hello.txt');
-      (bytes !== null).should.be.true;
-      new TextDecoder().decode(bytes!).should.equal('hello from disk');
-      new TextDecoder().decode((await read('sub/nested.txt'))!).should.equal('nested');
+      const bytes = (await read('/hello.txt')) as Uint8Array;
+      new TextDecoder().decode(bytes).should.equal('hello from disk');
+      const nested = (await read('sub/nested.txt')) as Uint8Array;
+      new TextDecoder().decode(nested).should.equal('nested');
+    });
+
+    it('streams files under the root with { stream: true }', async () => {
+      const read = createFileReader(dir, { stream: true });
+      const stream = await read('/hello.txt');
+      (stream !== null && !(stream instanceof Uint8Array)).should.be.true;
+      const text = await new Response(stream as BodyInit).text();
+      text.should.equal('hello from disk');
     });
 
     it('returns null for missing paths and directories', async () => {

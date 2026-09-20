@@ -3,14 +3,14 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 
 import type { App } from './app';
+import type { StaticFileInfo } from './static';
 
 import { once } from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { access, readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-
-
 import { pipeline } from 'node:stream/promises';
 
 import { handle } from './app';
@@ -101,15 +101,94 @@ async function writeResponse(res: ServerResponse, response: Response): Promise<v
   await pipeline(Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>), res);
 }
 
-export function createFileReader(root: string): (path: string) => Promise<Uint8Array | null> {
-  return async (path: string): Promise<Uint8Array | null> => {
+/**
+ * Buffered whole-file reader (the default — Buffer is a Uint8Array, so
+ * returning it directly avoids a copy). With `{ stream: true }`, returns a
+ * web stream instead: memory-safe for large files, but without `stat` the
+ * static layer cannot know sizes for HEAD/ranges. A missing file returns
+ * `null` after an existence check — a createReadStream error would surface
+ * mid-response and reset the connection.
+ */
+export function createFileReader(
+  root: string,
+  options: { stream?: boolean } = {}
+): (path: string) => Promise<Uint8Array | ReadableStream<Uint8Array> | null> {
+  const stream = options.stream === true;
+  return async (
+    path: string
+  ): Promise<Uint8Array | ReadableStream<Uint8Array> | null> => {
+    const file = join(root, path);
+    if (stream) {
+      try {
+        await access(file, constants.R_OK);
+      } catch {
+        return null;
+      }
+      return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
+    }
     try {
-      // Buffer is a Uint8Array — returning it directly avoids a copy.
-      return await readFile(join(root, path));
+      return await readFile(file);
     } catch (error) {
       const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) return null;
+      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+        return null;
+      }
       throw error;
     }
+  };
+}
+
+/**
+ * File metadata for {@link serveStatic}'s `stat` injection: size + mtimeMs
+ * (powers ETag/Last-Modified/304 and content-length for streamed
+ * responses). Directories read as missing — the static layer handles them
+ * via its directory-index/redirect logic instead.
+ */
+export function createFileStat(
+  root: string
+): (path: string) => Promise<StaticFileInfo | null> {
+  return async (path: string): Promise<StaticFileInfo | null> => {
+    try {
+      const info = await stat(join(root, path));
+      if (info.isDirectory()) {
+        return null;
+      }
+      return { size: info.size, mtimeMs: info.mtimeMs };
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+        return null;
+      }
+      throw error;
+    }
+  };
+}
+
+/**
+ * Streamed byte-range reader for {@link serveStatic}'s `readRange`
+ * injection: `createReadStream` slices `[start, end]` without buffering the
+ * whole file — the memory-safe Range path for large media.
+ */
+export function createFileRangeReader(
+  root: string
+): (
+  path: string,
+  start: number,
+  end: number
+) => Promise<ReadableStream<Uint8Array> | null> {
+  return async (
+    path: string,
+    start: number,
+    end: number
+  ): Promise<ReadableStream<Uint8Array> | null> => {
+    const file = join(root, path);
+    try {
+      await access(file, constants.R_OK);
+    } catch {
+      return null;
+    }
+    return Readable.toWeb(
+      createReadStream(file, { start, end })
+    ) as ReadableStream<Uint8Array>;
   };
 }

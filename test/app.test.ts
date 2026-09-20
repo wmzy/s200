@@ -655,3 +655,59 @@ describe('respond helpers', () => {
     (perm.headers.get('location') ?? '').should.equal('/new');
   });
 });
+
+describe('error boundary inside the chain', () => {
+  it('middleware unwind code observes error responses (headers, status)', async () => {
+    const app = createApp();
+    use(app, async (ctx, next) => {
+      await next();
+      // The handler threw — but the error boundary below the middlewares
+      // already materialized the response, so the unwind sees the real one.
+      ctx.res!.headers.set('x-observed-status', String(ctx.res!.status));
+    });
+    get(app, '/boom', () => {
+      throw new Error('kaboom');
+    });
+    const res = await handle(app, new Request('http://localhost/boom'));
+    res.status.should.equal(500);
+    res.headers.get('x-observed-status')!.should.equal('500');
+    (await res.json()).should.deep.equal({ error: 'Internal Server Error' });
+  });
+
+  it('still routes a middleware-own throw to onError (outer boundary)', async () => {
+    const boom = new Error('early');
+    let caught: Error | undefined;
+    const app = createApp({
+      onError: (_ctx, error) => {
+        caught = error as Error;
+        return Promise.resolve();
+      },
+    });
+    use(app, async () => {
+      throw boom;
+    });
+    const res = await handle(app, new Request('http://localhost/x'));
+    caught!.should.equal(boom);
+    res.status.should.equal(404); // onError wrote nothing → fallback applies
+  });
+
+  it('exposes the parsed URL and a fresh state bag on ctx', async () => {
+    const app = createApp();
+    get(app, '/u/:id', (ctx) => {
+      ctx.state.seen = ctx.url.pathname;
+      return new Response(`${ctx.state.seen}|${ctx.url.searchParams.get('q') ?? ''}`);
+    });
+    const res = await handle(app, new Request('http://localhost/u/7?q=z'));
+    (await res.text()).should.equal('/u/7|z');
+  });
+
+  it('honors the strict option on createApp', async () => {
+    const tolerant = createApp({ strict: false });
+    get(tolerant, '/a', () => new Response('tolerant'));
+    (await handle(tolerant, new Request('http://localhost/a/'))).status.should.equal(200);
+
+    const strict = createApp();
+    get(strict, '/a', () => new Response('strict'));
+    (await handle(strict, new Request('http://localhost/a/'))).status.should.equal(404);
+  });
+});

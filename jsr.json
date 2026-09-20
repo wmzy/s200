@@ -12,7 +12,11 @@
     "./route-table": "./dist/route-table.mjs",
     "./cookies": "./dist/cookies.mjs",
     "./validate": "./dist/validate.mjs",
-    "./rate-limit": "./dist/rate-limit.mjs"
+    "./rate-limit": "./dist/rate-limit.mjs",
+    "./compress": "./dist/compress.mjs",
+    "./streaming": "./dist/streaming.mjs",
+    "./request-id": "./dist/request-id.mjs",
+    "./timeout": "./dist/timeout.mjs"
   },
   "publish": {
     "include": ["dist", "README.md"]

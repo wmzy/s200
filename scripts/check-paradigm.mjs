@@ -23,6 +23,8 @@ const PLATFORM_CTORS = new Set([
   'ReadableStream',
   'WritableStream',
   'TransformStream',
+  'CompressionStream',
+  'DecompressionStream',
   'AbortController',
   'AbortSignal',
   'Blob',
