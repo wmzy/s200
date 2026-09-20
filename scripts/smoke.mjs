@@ -39,6 +39,14 @@ post(app, '/echo', async (ctx) => {
   json(ctx, await readJson(ctx));
 });
 
+get(app, '/secret', (ctx, next) => {
+  if (ctx.query.get('token') !== 's200') {
+    text(ctx, 'denied', { status: 401 });
+    return; // no next(): the handler must not run
+  }
+  return next();
+}, (ctx) => json(ctx, { secret: 'ok' }));
+
 get(app, '/*all', (ctx) => {
   text(ctx, 'fallback');
 });
@@ -87,6 +95,25 @@ try {
     'onion middleware header on echo',
     echo.headers.get('x-s200') === 'smoke',
     `got ${echo.headers.get('x-s200')}`,
+  );
+
+  const denied = await fetch(`${base}/secret`);
+  const deniedBody = await denied.text();
+  check('route middleware short-circuits with 401', denied.status === 401, `got ${denied.status}`);
+  check('short-circuited 401 body is "denied"', deniedBody === 'denied', deniedBody);
+  check(
+    'app middleware unwind still stamps the short-circuited response',
+    denied.headers.get('x-s200') === 'smoke',
+    `got ${denied.headers.get('x-s200')}`,
+  );
+
+  const secret = await fetch(`${base}/secret?token=s200`);
+  const secretBody = await secret.json();
+  check('route middleware passes through on success', secret.status === 200, `got ${secret.status}`);
+  check(
+    'gated handler body {"secret":"ok"}',
+    JSON.stringify(secretBody) === '{"secret":"ok"}',
+    JSON.stringify(secretBody),
   );
 
   const fallback = await fetch(`${base}/anything/else`);

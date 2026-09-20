@@ -74,6 +74,19 @@ use(app, async (ctx, next) => {
 
 `ctx.state` is a fresh mutable bag per request — the typed hand-off channel between middlewares and handlers.
 
+Routes also accept scoped middlewares: any number of them between the pattern and the terminal handler. They run after the app-level chain (and unwind inside it), only for their own route:
+
+```ts
+const requireAuth = (ctx: Ctx, next: Next) => {
+  if (ctx.state.user === undefined) throw httpError(401, 'Login required');
+  return next();
+};
+
+get(app, '/admin', requireAuth, (ctx) => json(ctx, { ok: true }));
+```
+
+Not calling `next()` skips everything below it — the handler included — so a gate that responds or throws early never reaches the handler (koa short-circuit semantics).
+
 ## Responding
 
 Response helpers write `ctx.res` in place (init headers always win over the defaults):
@@ -157,7 +170,7 @@ Everything is a named export from the core barrel (`s200`) — tree-shaking star
 ```sh
 pnpm build                 # vite lib build (es + cjs, 3 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm test:run -- --run     # single run (112 tests)
+pnpm test:run -- --run     # single run (121 tests)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle

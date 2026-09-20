@@ -8,6 +8,7 @@
 import type {
   Handler,
   MatchResult,
+  Middleware,
   Params,
   Route,
   Segment,
@@ -16,6 +17,10 @@ import type {
 // One pattern segment splits into '/'-separated parts; names must be plain
 // identifiers so they round-trip into object keys without surprises.
 const NAME_RE = /^[A-Za-z0-9_]+$/;
+
+// Shared empty default: the overwhelmingly common route carries no
+// middleware, and `[]` per route would allocate a fresh array each time.
+const NO_MIDDLEWARES: readonly Middleware[] = [];
 
 /** Segment names that carry a param or wildcard capture. */
 type SegmentNames<P extends string> =
@@ -107,25 +112,30 @@ export function createSegments(pattern: string): Segment[] {
 /**
  * Creates a route entry. The method is normalized to uppercase (`'ALL'`
  * matches every method); the pattern is validated via
- * {@link createSegments}. The literal overload types `ctx.params` through
- * {@link ParamsOf}; the returned `Route` is deliberately widened — a typed
- * handler is contravariant in its params, so `Route<{ id: string }>` would
- * not be assignable to the `Route` the matcher consumes.
+ * {@link createSegments}. Optional `middlewares` are scoped to this route —
+ * `handle` runs them between the app-level chain and the handler. The
+ * literal overload types `ctx.params` through {@link ParamsOf}; the returned
+ * `Route` is deliberately widened — a typed handler is contravariant in its
+ * params, so `Route<{ id: string }>` would not be assignable to the `Route`
+ * the matcher consumes.
  */
 export function createRoute<P extends string>(
   method: string,
   pattern: P,
-  handler: Handler<ParamsOf<P>>
+  handler: Handler<ParamsOf<P>>,
+  middlewares?: readonly Middleware[]
 ): Route;
 export function createRoute(
   method: string,
   pattern: string,
-  handler: Handler
+  handler: Handler,
+  middlewares?: readonly Middleware[]
 ): Route;
 export function createRoute(
   method: string,
   pattern: string,
-  handler: Handler
+  handler: Handler,
+  middlewares: readonly Middleware[] = NO_MIDDLEWARES
 ): Route {
   if (method === '') {
     throw new Error("Invalid route: method must not be empty");
@@ -134,6 +144,7 @@ export function createRoute(
     method: method.toUpperCase(),
     pattern,
     segments: createSegments(pattern),
+    middlewares,
     handler,
   };
 }

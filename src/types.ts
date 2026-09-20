@@ -49,6 +49,8 @@ export type Route<P extends Params = Params> = {
   readonly method: string;
   readonly pattern: string;
   readonly segments: readonly Segment[];
+  /** Chain scoped to this route: runs after the app chain, before the handler. */
+  readonly middlewares: readonly Middleware[];
   readonly handler: Handler<P>;
 };
 

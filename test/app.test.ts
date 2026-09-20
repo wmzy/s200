@@ -303,6 +303,180 @@ describe('app dispatch', () => {
   });
 });
 
+describe('route middleware', () => {
+  it('runs between the app chain and the handler, unwinding in reverse', async () => {
+    const order: string[] = [];
+    const app = createApp();
+    use(app, async (_ctx, next) => {
+      order.push('app-in');
+      await next();
+      order.push('app-out');
+    });
+    get(
+      app,
+      '/x',
+      async (_ctx, next) => {
+        order.push('route-in');
+        await next();
+        order.push('route-out');
+      },
+      () => {
+        order.push('handler');
+        // A matched chain that writes nothing is a 500 by contract — write.
+        return new Response('ok');
+      },
+    );
+    const res = await handle(app, new Request('http://localhost/x'));
+    res.status.should.equal(200);
+    order.should.deep.equal(['app-in', 'route-in', 'handler', 'route-out', 'app-out']);
+  });
+
+  it('supports several route middlewares in registration order', async () => {
+    const order: string[] = [];
+    const app = createApp();
+    get(
+      app,
+      '/x',
+      async (_ctx, next) => {
+        order.push('m1-in');
+        await next();
+        order.push('m1-out');
+      },
+      async (_ctx, next) => {
+        order.push('m2-in');
+        await next();
+        order.push('m2-out');
+      },
+      (ctx) => {
+        order.push('handler');
+        text(ctx, 'ok');
+      },
+    );
+    const res = await handle(app, new Request('http://localhost/x'));
+    res.status.should.equal(200);
+    order.should.deep.equal(['m1-in', 'm2-in', 'handler', 'm2-out', 'm1-out']);
+  });
+
+  it('short-circuits: a responding route middleware skips the handler, app unwind still runs', async () => {
+    const order: string[] = [];
+    const app = createApp();
+    use(app, async (_ctx, next) => {
+      await next();
+      order.push('app-out');
+    });
+    get(
+      app,
+      '/secret',
+      (ctx, next) => {
+        if (ctx.query.get('token') !== 's200') {
+          text(ctx, 'denied', { status: 401 });
+          return; // no next(): the handler never runs
+        }
+        return next();
+      },
+      (ctx) => {
+        order.push('handler');
+        json(ctx, { ok: true });
+      },
+    );
+    const denied = await handle(app, new Request('http://localhost/secret'));
+    denied.status.should.equal(401);
+    (await denied.text()).should.equal('denied');
+    order.should.deep.equal(['app-out']);
+
+    const allowed = await handle(app, new Request('http://localhost/secret?token=s200'));
+    allowed.status.should.equal(200);
+    (await allowed.json()).should.deep.equal({ ok: true });
+    order.should.deep.equal(['app-out', 'handler', 'app-out']);
+  });
+
+  it('maps an HttpError thrown from a route middleware to its status', async () => {
+    const app = createApp();
+    get(
+      app,
+      '/admin',
+      () => {
+        throw httpError(403, 'Login required');
+      },
+      (ctx) => json(ctx, { ok: true }),
+    );
+    const res = await handle(app, new Request('http://localhost/admin'));
+    res.status.should.equal(403);
+    (await res.json()).should.deep.equal({ error: 'Login required' });
+  });
+
+  it('is scoped: route middlewares do not run for other routes or unmatched requests', async () => {
+    let ran = false;
+    const app = createApp();
+    get(
+      app,
+      '/a',
+      async (_ctx, next) => {
+        ran = true;
+        await next();
+      },
+      (ctx) => text(ctx, 'a'),
+    );
+    get(app, '/b', (ctx) => text(ctx, 'b'));
+    await handle(app, new Request('http://localhost/b'));
+    ran.should.be.false;
+    await handle(app, new Request('http://localhost/nowhere'));
+    ran.should.be.false;
+    const hit = await handle(app, new Request('http://localhost/a'));
+    (await hit.text()).should.equal('a');
+    ran.should.be.true;
+  });
+
+  it('rejects a double next() inside a route middleware', async () => {
+    const app = createApp();
+    get(
+      app,
+      '/x',
+      async (_ctx, next) => {
+        await next();
+        await next();
+      },
+      (ctx) => text(ctx, 'x'),
+    );
+    const res = await handle(app, new Request('http://localhost/x'));
+    res.status.should.equal(500);
+    (await res.json()).should.deep.equal({ error: 'Internal Server Error' });
+  });
+
+  it('accepts route middlewares through addRoute with a custom method', async () => {
+    const order: string[] = [];
+    const app = createApp();
+    addRoute(
+      app,
+      'PURGE',
+      '/cache/:key',
+      async (_ctx, next) => {
+        order.push('mw');
+        await next();
+      },
+      (ctx) => json(ctx, { purged: ctx.params.key }),
+    );
+    const res = await handle(app, new Request('http://localhost/cache/imgs', { method: 'PURGE' }));
+    (await res.json()).should.deep.equal({ purged: 'imgs' });
+    order.should.deep.equal(['mw']);
+  });
+
+  it('keeps ctx.params typed for the terminal handler behind middlewares', async () => {
+    const app = createApp();
+    get(
+      app,
+      '/users/:id/posts/:postId',
+      async (_ctx, next) => {
+        await next();
+      },
+      // ctx.params.id / ctx.params.postId compile only through ParamsOf inference
+      (ctx) => json(ctx, { id: ctx.params.id, postId: ctx.params.postId }),
+    );
+    const res = await handle(app, new Request('http://localhost/users/7/posts/9'));
+    (await res.json()).should.deep.equal({ id: '7', postId: '9' });
+  });
+});
+
 describe('respond helpers', () => {
   it('send writes body and init through to ctx.res', async () => {
     const app = createApp();

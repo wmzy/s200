@@ -59,75 +59,82 @@ export function usePlugin(app: App, plugin: Plugin): App {
 }
 
 /**
- * Shared body of every route registration. The `Handler<never>` parameter
- * accepts both literal-typed handlers (contravariance: `Ctx<never>` is
- * assignable to every `Ctx<P>`) and the dynamic-pattern `Handler`, so one
- * implementation serves both overloads of each public registrar.
+ * Shared body of every route registration. `chain` is the route's
+ * `[...middlewares, handler]` tuple — every element but the last is a
+ * route-scoped middleware. The `Handler<never>` element accepts both
+ * literal-typed handlers (contravariance: `Ctx<never>` is assignable to
+ * every `Ctx<P>`) and the dynamic-pattern `Handler`, so one implementation
+ * serves both overloads of each public registrar.
  */
-function register(app: App, method: string, pattern: string, handler: Handler<never>): App {
+function register(
+  app: App,
+  method: string,
+  pattern: string,
+  chain: readonly [...Middleware[], Handler<never>]
+): App {
+  const handler = chain[chain.length - 1];
+  if (handler === undefined) {
+    throw new Error(`Invalid route ${method} '${pattern}': a terminal handler is required`);
+  }
+  const middlewares = chain.slice(0, -1) as Middleware[];
   // matchRoutes guarantees the params keys for this pattern; the runtime
   // table stores the erased shape.
-  app.routes.push(createRoute(method, pattern, handler as unknown as Handler));
+  app.routes.push(createRoute(method, pattern, handler as unknown as Handler, middlewares));
   return app;
 }
 
-export function addRoute<P extends string>(
-  app: App,
-  method: string,
-  pattern: P,
-  handler: Handler<ParamsOf<P>>
-): App;
-export function addRoute(app: App, method: string, pattern: string, handler: Handler): App;
-export function addRoute(app: App, method: string, pattern: string, handler: Handler<never>): App {
-  return register(app, method, pattern, handler);
+export function addRoute<P extends string>(app: App, method: string, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function addRoute(app: App, method: string, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function addRoute(app: App, method: string, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, method, pattern, chain);
 }
 
-export function get<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function get(app: App, pattern: string, handler: Handler): App;
-export function get(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'GET', pattern, handler);
+export function get<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function get(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function get(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'GET', pattern, chain);
 }
 
-export function post<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function post(app: App, pattern: string, handler: Handler): App;
-export function post(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'POST', pattern, handler);
+export function post<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function post(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function post(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'POST', pattern, chain);
 }
 
-export function put<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function put(app: App, pattern: string, handler: Handler): App;
-export function put(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'PUT', pattern, handler);
+export function put<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function put(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function put(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'PUT', pattern, chain);
 }
 
-export function patch<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function patch(app: App, pattern: string, handler: Handler): App;
-export function patch(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'PATCH', pattern, handler);
+export function patch<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function patch(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function patch(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'PATCH', pattern, chain);
 }
 
-export function del<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function del(app: App, pattern: string, handler: Handler): App;
-export function del(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'DELETE', pattern, handler);
+export function del<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function del(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function del(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'DELETE', pattern, chain);
 }
 
-export function head<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function head(app: App, pattern: string, handler: Handler): App;
-export function head(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'HEAD', pattern, handler);
+export function head<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function head(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function head(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'HEAD', pattern, chain);
 }
 
-export function options<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function options(app: App, pattern: string, handler: Handler): App;
-export function options(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'OPTIONS', pattern, handler);
+export function options<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function options(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function options(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'OPTIONS', pattern, chain);
 }
 
-export function all<P extends string>(app: App, pattern: P, handler: Handler<ParamsOf<P>>): App;
-export function all(app: App, pattern: string, handler: Handler): App;
-export function all(app: App, pattern: string, handler: Handler<never>): App {
-  return register(app, 'ALL', pattern, handler);
+export function all<P extends string>(app: App, pattern: P, ...chain: [...Middleware[], Handler<ParamsOf<P>>]): App;
+export function all(app: App, pattern: string, ...chain: [...Middleware[], Handler]): App;
+export function all(app: App, pattern: string, ...chain: [...Middleware[], Handler<never>]): App {
+  return register(app, 'ALL', pattern, chain);
 }
 
 export async function handle(app: App, request: Request): Promise<Response> {
@@ -151,7 +158,10 @@ export async function handle(app: App, request: Request): Promise<Response> {
     }
   };
   try {
-    await compose([...app.middlewares, dispatch])(ctx);
+    // Route middlewares sit between the app-level chain and the terminator,
+    // so they are scoped to the matched route only and unwind inside it.
+    const routeMiddlewares = matched === undefined ? [] : matched.route.middlewares;
+    await compose([...app.middlewares, ...routeMiddlewares, dispatch])(ctx);
   } catch (error) {
     if (app.onError === undefined) {
       ctx.res = toErrorResponse(error);

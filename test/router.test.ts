@@ -1,4 +1,4 @@
-import type { Handler } from '../src/types';
+import type { Handler, Middleware } from '../src/types';
 
 import { describe, it, expectTypeOf } from 'vitest';
 
@@ -94,6 +94,13 @@ describe('createRoute', function () {
     const route = createRoute('GET', pattern, handler);
     route.method.should.equal('GET');
     route.pattern.should.equal('/a/:id');
+  });
+
+  it('stores route-scoped middlewares and defaults to an empty chain', function () {
+    const mw: Middleware = async (_ctx, next) => next();
+    createRoute('GET', '/a', noop).middlewares.should.deep.equal([]);
+    const route = createRoute('GET', '/a', noop, [mw]);
+    route.middlewares.should.deep.equal([mw]);
   });
 });
 
