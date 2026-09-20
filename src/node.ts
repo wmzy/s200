@@ -7,10 +7,10 @@ import type { StaticFileInfo } from './static';
 
 import { once } from 'node:events';
 import { constants, createReadStream } from 'node:fs';
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { Readable, type Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import { handle } from './app';
@@ -18,18 +18,39 @@ import { handle } from './app';
 
 export type NodeServer = { server: Server; url: string; port: number; close(): Promise<void> };
 
+/** The http server's `'upgrade'` event callback — see `s200/websocket/node`. */
+export type NodeUpgradeHandler = (
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer
+) => void;
+
+export type NodeServeOptions = {
+  port?: number;
+  host?: string;
+  /**
+   * WebSocket upgrade callback, wired to the server's `'upgrade'` event.
+   * Pass `createUpgradeHandler(app)` from `s200/websocket/node` (or wire
+   * any protocol library of your choice).
+   */
+  upgrade?: NodeUpgradeHandler;
+};
+
 // "Path does not point at a readable file". Anything else (EACCES, EMFILE,
 // ...) still rejects so real failures are not masked as 404s.
 const MISSING_FILE_CODES = ['ENOENT', 'ENOTDIR', 'EISDIR'];
 
 export async function serve(
   app: App,
-  options?: { port?: number; host?: string }
+  options: NodeServeOptions = {}
 ): Promise<NodeServer> {
   const server = createServer((req, res) => {
     void dispatch(app, req, res);
   });
-  server.listen(options?.port ?? 0, options?.host);
+  if (options.upgrade !== undefined) {
+    server.on('upgrade', options.upgrade);
+  }
+  server.listen(options.port ?? 0, options.host);
   // once() also rejects when the server emits 'error' before 'listening'
   // (e.g. EADDRINUSE), so no separate error wiring is needed.
   await once(server, 'listening');
@@ -190,5 +211,41 @@ export function createFileRangeReader(
     return Readable.toWeb(
       createReadStream(file, { start, end })
     ) as ReadableStream<Uint8Array>;
+  };
+}
+
+/**
+ * Symlink escape guard for {@link serveStatic}'s `realPath` injection:
+ * resolves the file's real path and returns `null` whenever it does not
+ * exist or lands outside `root` — so a symlink inside the root pointing
+ * elsewhere falls through instead of being served. The root's own real
+ * path is resolved once and cached; each request still costs one realpath
+ * syscall (the guard is opt-in). Lexical `..` checks hold without it, but
+ * symlinks inside the root are trusted.
+ */
+export function createRealPathGuard(
+  root: string
+): (path: string) => Promise<string | null> {
+  const resolvedRoot = resolve(root);
+  let realRoot: Promise<string | null> | undefined;
+  const getRealRoot = (): Promise<string | null> => {
+    realRoot ??= realpath(resolvedRoot).catch(() => null);
+    return realRoot;
+  };
+  return async (path: string): Promise<string | null> => {
+    const rootReal = await getRealRoot();
+    if (rootReal === null) return null;
+    let real: string;
+    try {
+      real = await realpath(join(resolvedRoot, path));
+    } catch {
+      return null; // missing files fall through like an ordinary miss
+    }
+    // relative(rootReal, real) climbs with '..'/'../…' exactly; a sibling
+    // name like '..x' cannot climb and stays a legitimate in-root file.
+    const rel = relative(rootReal, real);
+    const within =
+      rel === '' || (rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel));
+    return within ? real : null;
   };
 }

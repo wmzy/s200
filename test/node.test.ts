@@ -1,6 +1,6 @@
 import type { NodeServer } from '../src/node';
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, it } from 'vitest';
 
 import { createApp, get, post, use } from '../src/app';
 import { readJson } from '../src/body';
-import { createFileReader, serve } from '../src/node';
+import { createFileReader, createRealPathGuard, serve } from '../src/node';
 import { json, send } from '../src/respond';
 
 describe('node adapter (real http)', () => {
@@ -105,6 +105,44 @@ describe('node adapter (real http)', () => {
       const read = createFileReader(dir);
       (await read('/missing.txt') === null).should.be.true;
       (await read('/sub') === null).should.be.true; // EISDIR
+    });
+  });
+
+  describe('createRealPathGuard', () => {
+    let guardDir: string;
+    let outsideDir: string;
+
+    beforeAll(async () => {
+      guardDir = await mkdtemp(join(tmpdir(), 's200-guard-'));
+      outsideDir = await mkdtemp(join(tmpdir(), 's200-outside-'));
+      await writeFile(join(guardDir, 'ok.txt'), 'ok');
+      await writeFile(join(outsideDir, 'secret.txt'), 'secret');
+      await symlink(join(outsideDir, 'secret.txt'), join(guardDir, 'leak.txt'));
+    });
+
+    afterAll(async () => {
+      await rm(guardDir, { recursive: true, force: true });
+      await rm(outsideDir, { recursive: true, force: true });
+    });
+
+    it('returns the real path for files inside the root', async () => {
+      const guard = createRealPathGuard(guardDir);
+      (await guard('ok.txt') === null).should.be.false;
+    });
+
+    it('returns null for symlinks escaping the root', async () => {
+      const guard = createRealPathGuard(guardDir);
+      (await guard('leak.txt') === null).should.be.true;
+    });
+
+    it('returns null for missing files', async () => {
+      const guard = createRealPathGuard(guardDir);
+      (await guard('missing.txt') === null).should.be.true;
+    });
+
+    it('returns null for everything when the root itself is missing', async () => {
+      const guard = createRealPathGuard(join(guardDir, 'no-such-root'));
+      (await guard('x.txt') === null).should.be.true;
     });
   });
 

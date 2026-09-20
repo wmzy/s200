@@ -16,7 +16,15 @@
     "./compress": "./dist/compress.mjs",
     "./streaming": "./dist/streaming.mjs",
     "./request-id": "./dist/request-id.mjs",
-    "./timeout": "./dist/timeout.mjs"
+    "./timeout": "./dist/timeout.mjs",
+    "./query": "./dist/query.mjs",
+    "./websocket": "./dist/websocket.mjs",
+    "./websocket/node": "./dist/websocket-node.mjs",
+    "./websocket/bun": "./dist/websocket-bun.mjs",
+    "./etag": "./dist/etag.mjs",
+    "./secure-headers": "./dist/secure-headers.mjs",
+    "./auth": "./dist/auth.mjs",
+    "./accepts": "./dist/accepts.mjs"
   },
   "publish": {
     "include": ["dist", "README.md"]

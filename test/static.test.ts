@@ -543,3 +543,51 @@ describe('serveStatic directory redirect and cache control', () => {
     second.headers.get('cache-control')!.should.equal('public, max-age=3600');
   });
 });
+
+describe('serveStatic realPath guard', () => {
+  it('serves when the guard approves — reads happen only after approval', async () => {
+    const approved: string[] = [];
+    const { app, reads } = makeApp(
+      { 'a.txt': 'A' },
+      { realPath: async (path) => { approved.push(path); return path; } }
+    );
+    const res = await handle(app, new Request('http://localhost/a.txt'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('A');
+    approved.should.deep.equal(['a.txt']);
+    reads.should.deep.equal(['a.txt']);
+  });
+
+  it('falls through to next() when the guard returns null (symlink escape)', async () => {
+    const { app } = makeApp(
+      { 'a.txt': 'A' },
+      { realPath: () => Promise.resolve(null) }
+    );
+    withSentinel(app, 'blocked');
+    const res = await handle(app, new Request('http://localhost/a.txt'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('blocked');
+  });
+
+  it('guards directory lookups by their index path', async () => {
+    const approved: string[] = [];
+    const { app } = makeApp(
+      { 'docs/index.html': 'D' },
+      { realPath: async (path) => { approved.push(path); return path; } }
+    );
+    const res = await handle(app, new Request('http://localhost/docs/'));
+    res.status.should.equal(200);
+    approved.should.deep.equal(['docs/index.html']);
+  });
+
+  it('a guard null on the redirect probe falls through instead of 301', async () => {
+    const app = createApp();
+    use(app, serveStatic({
+      read: () => Promise.resolve(null),
+      realPath: () => Promise.resolve(null),
+    }));
+    withSentinel(app, 'fell-through');
+    const res = await handle(app, new Request('http://localhost/docs'));
+    (await res.text()).should.equal('fell-through');
+  });
+});

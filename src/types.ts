@@ -11,6 +11,21 @@ import type { App } from './app';
 /** Path params captured from a route pattern, keyed by `:name` / `*name`. */
 export type Params = Record<string, string>;
 
+/** One query-name list entry: `'page&limit'` → `'page' | 'limit'`. */
+type QueryName<QS extends string> = QS extends `${infer Head}&${infer Tail}`
+  ? Head | QueryName<Tail>
+  : QS;
+
+/**
+ * Compile-time shape of a query string: `QueryOf<'page&limit'>` is
+ * `{ page?: string | string[]; limit?: string | string[] }` — exactly the
+ * shape `parseQuery` (see `s200/query`) produces: repeated keys collect
+ * into arrays, and every key is optional.
+ */
+export type QueryOf<QS extends string> = Partial<
+  Record<QueryName<QS>, string | string[]>
+>;
+
 /**
  * The per-request typed state bag. Extend it per app via declaration
  * merging (koa's DefaultState trick):

@@ -57,6 +57,16 @@ export type ServeStaticOptions = {
    * configuration, not request input, and are exempt.
    */
   dotfiles?: 'deny' | 'allow';
+  /**
+   * Symlink escape guard: when supplied, called with each resolved lookup
+   * path before any read/stat. Returning `null` (missing file, or a real
+   * path outside the served root — a symlink pointing elsewhere) falls
+   * through to next() like a miss. Without it, `..` traversal is still
+   * blocked but a symlink inside the root can point outside it — inject the
+   * adapter's `createRealPathGuard(root)` to close that hole. Best-effort
+   * by nature: the check and the read are separate operations.
+   */
+  realPath?: (path: string) => Promise<string | null>;
 };
 
 const DEFAULT_INDEX = 'index.html';
@@ -354,6 +364,7 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
         : options.spa;
   const cacheControl = options.cacheControl;
   const redirectToSlash = options.redirectToSlash !== false;
+  const realPath = options.realPath;
 
   return async (ctx: Ctx, next) => {
     const method = ctx.req.method.toUpperCase();
@@ -372,6 +383,13 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
     if (lookup === undefined) return next();
     const directoryPath = rest.endsWith('/');
     if (directoryPath) lookup = lookup === '' ? index : `${lookup}/${index}`;
+
+    // Symlink guard: the path checks above are lexical; a symlink inside
+    // the root can still resolve outside it. When the guard is injected,
+    // every read/stat is gated on the real path staying under root.
+    if (realPath !== undefined && (await realPath(lookup)) === null) {
+      return next();
+    }
 
     // Conditional requests and streamed ranges need file metadata; when the
     // injector provides `stat`, it runs first and a miss short-circuits.

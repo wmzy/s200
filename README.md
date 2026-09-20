@@ -41,9 +41,9 @@ npm install s200
 
 - Node.js ≥ 20.3 (adapter: `s200/node`), Bun (adapter: `s200/bun`). Deno/edge runtimes can consume the core directly — it only touches Web Standard `Request`/`Response`.
 - `s200` — the runtime-agnostic core
-- `s200/node` — node:http adapter (`serve`, `createFileReader`)
-- `s200/bun` — Bun.serve adapter (`serve`, `createFileReader`)
-- `s200/cors` / `s200/logger` / `s200/route-table` — opt-in batteries (see [Batteries](#batteries))
+- `s200/node` — node:http adapter (`serve`, `createFileReader`, `createRealPathGuard`, …)
+- `s200/bun` — Bun.serve adapter (`serve`, `createFileReader`, `createRealPathGuard`, …)
+- `s200/cors` / `s200/logger` / `s200/route-table` / `s200/query` / `s200/websocket` / `s200/etag` / … — opt-in batteries (see [Batteries](#batteries))
 
 ## Routing
 
@@ -132,6 +132,8 @@ send(ctx, bytes, { headers: { 'content-type': 'application/pdf' } });
 
 Handlers may also simply **return** a `Response` — it is written for you when nothing has been written yet. If a matched chain finishes without writing anything, s200 answers `500 {"error":"No response written"}`; an unmatched, unwritten request goes to `onNotFound` (default `404`). The fallbacks are materialized inside the chain, so middlewares on the unwind (logger, cors) see and stamp the real response.
 
+The helpers set `content-length` explicitly when the size is known (platforms serialize it lazily, so a bare `new Response('…')` carries none): HEAD responses keep the would-be size, and size-aware middlewares (`compress`'s `minBytes`, `s200/etag`) can see it.
+
 ## Body parsing
 
 ```ts
@@ -165,6 +167,14 @@ use(app, serveStatic({
 
 Traversal (`..`) never escapes the root, `index` (default `index.html`) serves directory paths, and misses fall through to `next()` so other routes can answer. Hidden files are refused by default — a request path with a dotfile segment (`.env`, `.git/…`, including percent-encoded forms) falls through instead of being served; opt out with `dotfiles: 'allow'`.
 
+Lexical checks can't see through symlinks: a symlink inside the root can point anywhere. When the served root can contain symlinks, inject the adapter's realpath guard — every lookup is resolved, and a real path outside the root falls through like a miss (opt-in: it costs one realpath per request):
+
+```ts
+import { createRealPathGuard } from 's200/node';   // or 's200/bun'
+
+use(app, serveStatic({ …, realPath: createRealPathGuard('public') }));
+```
+
 Byte readers support single byte ranges (`Range: bytes=…` → 206, or 416 when unsatisfiable), so video seeking works — but buffered readers hold the whole file in memory. For large media, `read` may return a `ReadableStream` (see `createFileReader('public', { stream: true })`) and `readRange` streams slice reads. `stat` additionally turns on conditional requests: responses carry `ETag`/`Last-Modified`, and `If-None-Match`/`If-Modified-Since` hits answer 304. A directory path missing its trailing slash gets a 301 to the slash form when the directory index exists (opt out: `redirectToSlash: false`).
 
 ## Batteries
@@ -177,11 +187,19 @@ import { logger } from 's200/logger';
 import { createRouteTable } from 's200/route-table';
 import { getCookie, setCookie, getSignedCookie, setSignedCookie } from 's200/cookies';
 import { validate, jsonBody } from 's200/validate';
+import { parseQuery, queryParams } from 's200/query';
 import { rateLimit } from 's200/rate-limit';
 import { compress } from 's200/compress';
 import { stream, streamSSE } from 's200/streaming';
 import { requestId } from 's200/request-id';
 import { timeout } from 's200/timeout';
+import { upgradeWebSocket } from 's200/websocket';
+import { createUpgradeHandler } from 's200/websocket/node';
+import { createBunWebSocketBridge } from 's200/websocket/bun';
+import { etag } from 's200/etag';
+import { secureHeaders } from 's200/secure-headers';
+import { basicAuth, bearerAuth } from 's200/auth';
+import { accepts } from 's200/accepts';
 ```
 
 **CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
@@ -222,6 +240,60 @@ const sid = await getSignedCookie(ctx, 'sid', SECRET);   // undefined unless ver
 post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
   json(ctx, { saved: ctx.state.validated });
 });
+```
+
+**Query** — the query-string twin of `validate`: `parseQuery(ctx)` turns the query into a plain record (repeated keys collect into arrays), `queryParams` wraps a schema around it as a gate, and `QueryOf<'page&tag'>` types a query-string literal at compile time:
+
+```ts
+get(app, '/list', queryParams((q) => ({
+  page: Number(q.page ?? 1),
+  tags: q.tag ?? [],                    // repeated ?tag=a&tag=b → ['a','b']
+})), (ctx) => json(ctx, ctx.state.validated));
+```
+
+**WebSocket** — `upgradeWebSocket(app, pattern, handler)` registers a ws route (router pattern syntax, first registration wins); the handler gets a `send`/`close`/`onMessage`/`onClose`/`onError` socket plus a request-shaped `ctx` (params/query/url). Node wires a zero-dependency RFC 6455 server through the adapter's `upgrade` option; Bun plugs into `Bun.serve` through the bridge:
+
+```ts
+import { upgradeWebSocket } from 's200/websocket';
+import { createUpgradeHandler } from 's200/websocket/node';   // node
+import { createBunWebSocketBridge } from 's200/websocket/bun'; // bun
+
+upgradeWebSocket(app, '/chat/:room', (socket, ctx) => {
+  socket.onMessage((data) => socket.send(`[${ctx.params.room}] ${data}`));
+});
+
+await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });            // node
+serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
+```
+
+The node server implements the protocol essentials — handshake, text/binary with fragmentation, ping/pong, close handshake, a `maxPayload` budget (default 64 MiB, 1009 beyond it). No permessage-deflate or subprotocols: bring `ws` and wire the raw `upgrade` option yourself when you need those.
+
+**ETag** — stamps a weak SHA-1 entity tag on byte-backed responses and answers `If-None-Match` hits with 304. Byte-backed means an explicit `content-length` — s200's respond helpers (`json`/`text`/`html`/`send`) set it, and a bare `new Response('…')` needs it set by hand (platforms serialize content-length lazily). Chunked/streamed responses (SSE, `s200/streaming`) are skipped, not buffered:
+
+```ts
+use(app, etag());                    // W/"…" by default
+use(app, etag({ strong: true }));    // "…"
+```
+
+**Secure headers** — a safe-by-default baseline stamped on the unwind (fallback responses included); handlers' own headers always win, and `false` drops one:
+
+```ts
+use(app, secureHeaders());  // nosniff, DENY framing, strict-origin-when-cross-origin
+use(app, secureHeaders({ strictTransportSecurity: 'max-age=31536000' }));  // HSTS is opt-in
+```
+
+**Auth** — `basicAuth`/`bearerAuth` gates: the `verify` function decides, failures answer `401` + `WWW-Authenticate` in place and the chain below never runs:
+
+```ts
+use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
+use(app, bearerAuth(async (token) => token === API_TOKEN));
+```
+
+**Accepts** — RFC 9110 content negotiation over `Accept` / `Accept-Encoding` / `Accept-Language`: q-values, wildcards, prefix ranges, and the specific-q=0-overrides-wildcard precedence:
+
+```ts
+const want = accepts(ctx);
+const type = want.type(['application/json', 'text/html']) ?? 'application/json';
 ```
 
 **Rate limit** — true sliding-window gate per client key: every hit expires `windowMs` after it landed (no fixed boundary, so window edges can't burst), the over-limit request is answered in place with `429` + `Retry-After`, and the chain below never runs:
@@ -294,14 +366,14 @@ Both adapters expose the identical `serve(app, options)` surface; the core's `ha
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 13 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 21 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm test:run -- --run     # single run (232 tests)
+pnpm vitest run            # single run (297 tests)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle

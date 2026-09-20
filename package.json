@@ -135,6 +135,86 @@
         "types": "./dist/types/timeout.d.ts",
         "default": "./dist/timeout.cjs"
       }
+    },
+    "./query": {
+      "import": {
+        "types": "./dist/types/query.d.mts",
+        "default": "./dist/query.mjs"
+      },
+      "require": {
+        "types": "./dist/types/query.d.ts",
+        "default": "./dist/query.cjs"
+      }
+    },
+    "./websocket": {
+      "import": {
+        "types": "./dist/types/websocket.d.mts",
+        "default": "./dist/websocket.mjs"
+      },
+      "require": {
+        "types": "./dist/types/websocket.d.ts",
+        "default": "./dist/websocket.cjs"
+      }
+    },
+    "./websocket/node": {
+      "import": {
+        "types": "./dist/types/websocket-node.d.mts",
+        "default": "./dist/websocket-node.mjs"
+      },
+      "require": {
+        "types": "./dist/types/websocket-node.d.ts",
+        "default": "./dist/websocket-node.cjs"
+      }
+    },
+    "./websocket/bun": {
+      "import": {
+        "types": "./dist/types/websocket-bun.d.mts",
+        "default": "./dist/websocket-bun.mjs"
+      },
+      "require": {
+        "types": "./dist/types/websocket-bun.d.ts",
+        "default": "./dist/websocket-bun.cjs"
+      }
+    },
+    "./etag": {
+      "import": {
+        "types": "./dist/types/etag.d.mts",
+        "default": "./dist/etag.mjs"
+      },
+      "require": {
+        "types": "./dist/types/etag.d.ts",
+        "default": "./dist/etag.cjs"
+      }
+    },
+    "./secure-headers": {
+      "import": {
+        "types": "./dist/types/secure-headers.d.mts",
+        "default": "./dist/secure-headers.mjs"
+      },
+      "require": {
+        "types": "./dist/types/secure-headers.d.ts",
+        "default": "./dist/secure-headers.cjs"
+      }
+    },
+    "./auth": {
+      "import": {
+        "types": "./dist/types/auth.d.mts",
+        "default": "./dist/auth.mjs"
+      },
+      "require": {
+        "types": "./dist/types/auth.d.ts",
+        "default": "./dist/auth.cjs"
+      }
+    },
+    "./accepts": {
+      "import": {
+        "types": "./dist/types/accepts.d.mts",
+        "default": "./dist/accepts.mjs"
+      },
+      "require": {
+        "types": "./dist/types/accepts.d.ts",
+        "default": "./dist/accepts.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -196,7 +276,7 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "5.6 KB"
+      "limit": "5.7 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",

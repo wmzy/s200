@@ -184,6 +184,51 @@ try {
   } finally {
     await staticServer.close();
   }
+
+  // WebSocket round-trip: the bun bridge on bun, the RFC 6455 server on
+  // node. Needs a WebSocket client (bun always; node >= 22).
+  if (typeof WebSocket !== 'undefined') {
+    const wsMod = await import('../dist/websocket.mjs');
+    const wsApp = createApp();
+    wsMod.upgradeWebSocket(wsApp, '/ws/:id', (socket, ctx) => {
+      socket.onMessage((data) => socket.send(`${ctx.params.id}:${data}`));
+    });
+    let wsServer;
+    if (globalThis.Bun) {
+      const { createBunWebSocketBridge } = await import('../dist/websocket-bun.mjs');
+      wsServer = adapter.serve(wsApp, {
+        port: 0,
+        websocket: createBunWebSocketBridge(wsApp),
+      });
+    } else {
+      const { createUpgradeHandler } = await import('../dist/websocket-node.mjs');
+      wsServer = await adapter.serve(wsApp, {
+        port: 0,
+        upgrade: createUpgradeHandler(wsApp),
+      });
+    }
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${wsServer.port}/ws/42`);
+      const reply = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('ws timeout')), 3000);
+        ws.addEventListener('open', () => ws.send('hi'));
+        ws.addEventListener('message', (event) => {
+          clearTimeout(timer);
+          resolve(event.data);
+        });
+        ws.addEventListener('error', () => {
+          clearTimeout(timer);
+          reject(new Error('ws error'));
+        });
+      });
+      check('websocket upgrade + echo with params', reply === '42:hi', `got ${reply}`);
+      ws.close();
+    } finally {
+      await wsServer.close();
+    }
+  } else {
+    console.log('skip websocket round-trip (no WebSocket client on this runtime)');
+  }
 } finally {
   await server.close();
 }

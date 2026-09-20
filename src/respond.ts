@@ -1,5 +1,16 @@
 import type { Ctx } from './types';
 
+/** Byte length of a UTF-8 string: the ASCII fast path skips the encoder
+ * allocation — JSON/HTML responses are overwhelmingly ASCII. */
+function utf8Length(value: string): number {
+  for (let i = 0; i < value.length; i += 1) {
+    if (value.charCodeAt(i) > 0x7f) {
+      return new TextEncoder().encode(value).byteLength;
+    }
+  }
+  return value.length;
+}
+
 /**
  * `Uint8Array` is widened beyond lib-dom's `BodyInit` because TS 5.7 made
  * plain `Uint8Array` mean `Uint8Array<ArrayBufferLike>` while `BodyInit`
@@ -12,40 +23,76 @@ export function send(
   body: BodyInit | Uint8Array | null,
   init?: ResponseInit
 ): Response {
-  ctx.res = new Response(body as BodyInit, init);
+  const headers = new Headers(init?.headers);
+  // Platforms set content-length lazily at serialization (undici), so
+  // HEAD responses and size-aware middlewares (etag, compress) would never
+  // see it. The size is known here — advertise it explicitly.
+  let length: number | undefined;
+  if (typeof body === 'string') {
+    length = utf8Length(body);
+  } else if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
+    length = body.byteLength;
+  } else if (body === null) {
+    length = 0;
+  }
+  if (length !== undefined) {
+    headers.set('content-length', String(length));
+  }
+  ctx.res = new Response(body as BodyInit, {
+    status: init?.status,
+    statusText: init?.statusText,
+    headers,
+  });
   return ctx.res;
 }
 
 export function json(ctx: Ctx, data: unknown, init?: ResponseInit): Response {
-  ctx.res = Response.json(data, init);
+  const body = JSON.stringify(data);
+  const headers = new Headers(init?.headers);
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  headers.set('content-length', String(utf8Length(body)));
+  ctx.res = new Response(body, {
+    status: init?.status,
+    statusText: init?.statusText,
+    headers,
+  });
   return ctx.res;
 }
 
-/**
- * Merges a default content-type into an init unless the caller provided one —
- * explicit headers win over defaults.
- */
-function withContentType(init: ResponseInit | undefined, fallback: string): ResponseInit {
-  if (init === undefined) {
-    return { headers: { 'content-type': fallback } };
-  }
-  if (init.headers === undefined) {
-    return { ...init, headers: { 'content-type': fallback } };
-  }
-  const headers = new Headers(init.headers);
+/** Builds a Headers view of `init` with a default content-type filled in —
+ * explicit headers always win over defaults. */
+function defaultedHeaders(
+  init: ResponseInit | undefined,
+  fallback: string
+): Headers {
+  const headers = new Headers(init?.headers);
   if (!headers.has('content-type')) {
     headers.set('content-type', fallback);
   }
-  return { ...init, headers };
+  return headers;
 }
 
 export function text(ctx: Ctx, body: string, init?: ResponseInit): Response {
-  ctx.res = new Response(body, withContentType(init, 'text/plain; charset=utf-8'));
+  const headers = defaultedHeaders(init, 'text/plain; charset=utf-8');
+  headers.set('content-length', String(utf8Length(body)));
+  ctx.res = new Response(body, {
+    status: init?.status,
+    statusText: init?.statusText,
+    headers,
+  });
   return ctx.res;
 }
 
 export function html(ctx: Ctx, body: string, init?: ResponseInit): Response {
-  ctx.res = new Response(body, withContentType(init, 'text/html; charset=utf-8'));
+  const headers = defaultedHeaders(init, 'text/html; charset=utf-8');
+  headers.set('content-length', String(utf8Length(body)));
+  ctx.res = new Response(body, {
+    status: init?.status,
+    statusText: init?.statusText,
+    headers,
+  });
   return ctx.res;
 }
 

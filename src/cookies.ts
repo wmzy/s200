@@ -118,13 +118,33 @@ export async function signCookie(value: string, secret: string): Promise<string>
   return base64url(new Uint8Array(digest));
 }
 
-/** Checks a stored signature against a recomputed one. */
+/**
+ * Constant-time comparison for HMAC signatures: a plain `===` leaks byte
+ * agreement through its runtime, letting an attacker iteratively forge a
+ * signature. The loop is fixed-count over equal-length inputs; unequal
+ * lengths bail early — the length of a signature is public (the format is
+ * fixed) and carries no secret bits.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const ua = new TextEncoder().encode(a);
+  const ub = new TextEncoder().encode(b);
+  let diff = 0;
+  for (let i = 0; i < ua.length; i += 1) {
+    diff |= (ua[i] ?? 0) ^ (ub[i] ?? 0);
+  }
+  return diff === 0;
+}
+
+/** Checks a stored signature against a recomputed one, constant-time. */
 export async function verifyCookieSignature(
   value: string,
   signature: string,
   secret: string
 ): Promise<boolean> {
-  return (await signCookie(value, secret)) === signature;
+  return timingSafeEqual(await signCookie(value, secret), signature);
 }
 
 /**

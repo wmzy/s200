@@ -1,0 +1,43 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint:ci
+      - run: pnpm check:paradigm
+      - run: pnpm typecheck
+
+      # Bounded workers: the router micro-bench and smoke run in the same
+      # job, and GitHub's runners have ~7 GB to share.
+      - run: pnpm vitest run --maxWorkers=2
+
+      - run: pnpm build
+      - run: pnpm verify:tree-shaking
+      - run: pnpm size
+
+      # Router dispatch regression gate: ROUTES/ITERATIONS are fixed so
+      # micro-benchmark noise stays comparable across runs.
+      - name: Router bench regression
+        run: pnpm bench
+        env:
+          ROUTES: 200
+          ITERATIONS: 100000
+
+      # smoke exercises the built dist under node AND bun (bun also covers
+      # the s200/websocket/bun bridge).
+      - uses: oven-sh/setup-bun@v2
+      - run: pnpm smoke
