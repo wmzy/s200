@@ -37,6 +37,7 @@ export default defineConfig({
         'secure-headers': resolve(dirname, 'src/secure-headers.ts'),
         auth: resolve(dirname, 'src/auth.ts'),
         accepts: resolve(dirname, 'src/accepts.ts'),
+        serialize: resolve(dirname, 'src/serialize.ts'),
       },
       name: 's200',
       formats: ['es', 'cjs'],

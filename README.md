@@ -60,7 +60,7 @@ Trailing-slash strictness is configurable per app (`strict: false` tolerates `/a
 const app = createApp({ strict: false });
 ```
 
-The pattern literal drives the type: `ParamsOf<'/users/:id/posts/:postId'>` is `{ id: string; postId: string }`, so `ctx.params` is fully typed inside literal-pattern handlers. The router itself is replaceable — pass a custom `match` to `createApp` and the whole matching strategy is yours:
+The pattern literal drives the type: `ParamsOf<'/users/:id/posts/:postId'>` is `{ id: string; postId: string }`, so `ctx.params` is fully typed inside literal-pattern handlers. Routes can be removed again — `removeRoute(app, 'GET', '/users/:id')` — and the table is snapshot-immutable: registration replaces the frozen route/middleware arrays, so the dispatch caches are versioned by array identity and can never go stale (a direct `push` on the arrays throws instead of silently corrupting matching). The router itself is replaceable — pass a custom `match` to `createApp` and the whole matching strategy is yours:
 
 ```ts
 const app = createApp({ match: myTrieMatcher });
@@ -101,6 +101,19 @@ use(app, async (ctx, next) => {
 declare module 's200' {
   interface State { user: User }
 }
+```
+
+Apps that must not share one global shape pass a per-app interface to `createApp` instead — `ctx.state` is then that interface throughout the app's middlewares, handlers, and error policy, with no module merge (define it as an `interface`):
+
+```ts
+interface AdminState extends State {
+  user: User;
+}
+const app = createApp<AdminState>({
+  onError: (ctx, error) => { /* ctx.state.user: User */ },
+});
+use(app, (ctx, next) => { ctx.state.user; return next(); });
+get(app, '/me', (ctx) => json(ctx, ctx.state.user));
 ```
 
 `ctx.url` is the parsed request URL (reuse it — no re-parsing). After `await next()` settles, `ctx.res` is always materialized — the handler's response, the 404/405/500 fallback, **or the error response**: an error boundary inside the chain maps thrown errors before the unwind, so middlewares observe (and may overwrite) the real response even for 500s. This is what lets logger/CORS/request-id stamp error responses.
@@ -200,6 +213,7 @@ import { etag } from 's200/etag';
 import { secureHeaders } from 's200/secure-headers';
 import { basicAuth, bearerAuth } from 's200/auth';
 import { accepts } from 's200/accepts';
+import { serialize, jsonRaw } from 's200/serialize';
 ```
 
 **CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
@@ -304,6 +318,19 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 
 The default key reads `x-forwarded-for` — only meaningful behind a proxy that overwrites it; pass `key: (ctx) => …` for any other identity (and a `now` clock for tests). The counters live in-process by default — per-instance limits. For shared limits across instances, inject a `store` (atomic `hit(key, now, limit, windowMs) → { count, retryAt }` — the Redis INCR shape).
 
+**Serialize** — schema-driven JSON serialization: `serialize(schema)` compiles a serializer for a JSON-Schema-shaped subset (objects, arrays, primitives, `nullable`), and `jsonRaw` writes the result as a response with an exact `content-length`. The payoff is the declared shape, not raw speed — the output carries exactly the declared keys (undeclared ones are dropped, so an internal field can never leak), and the schema drives the input type at compile time. Modern engines' `JSON.stringify` stays competitive on typical payloads, so use it when the shape contract matters, not as a speed hack:
+
+```ts
+const toUser = serialize({
+  type: 'object',
+  properties: { id: { type: 'integer' }, name: { type: 'string' } },
+  required: ['id', 'name'] as const,   // as const: the array literal drives optionality
+});
+get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
+```
+
+It is a serialization shape, not a validator: type mismatches are not checked, and `NaN`/`Infinity` serialize as `null` (JSON semantics).
+
 **Compress** — gzip/deflate response compression via the Web Standard `CompressionStream` (no `node:zlib` — works on Node 18+, Bun, Deno). Negotiates `Accept-Encoding` q-values, skips bodyless/encoded/`no-transform` responses and small bodies (when a content-length is known), and maintains `Vary: Accept-Encoding`:
 
 ```ts
@@ -366,21 +393,24 @@ Both adapters expose the identical `serve(app, options)` surface; the core's `ha
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 21 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 22 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm vitest run            # single run (297 tests)
+pnpm vitest run            # single run (313 tests)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle
 pnpm smoke                 # runs scripts/smoke.mjs under node AND bun
 pnpm bench                 # router dispatch micro-benchmark (ROUTES/ITERATIONS env)
+pnpm bench:http            # whole-request throughput vs hono/express (isolated processes)
 pnpm publish:jsr           # build + prepare declarations for JSR + npx jsr publish
 ```
+
+See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, and the [migration guides](docs/) when coming from Express, Koa, or Hono.
 
 ## License
 

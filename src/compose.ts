@@ -4,7 +4,7 @@
  * @module
  */
 
-import type { Ctx, Middleware, Next } from './types';
+import type { Ctx, Middleware, Next, Params, State } from './types';
 
 /**
  * Composes middlewares into one callable chain. Downstream first, upstream
@@ -17,10 +17,10 @@ import type { Ctx, Middleware, Next } from './types';
  * outer chain, so a composed chain is itself composable:
  * `compose([outer, compose([inner])])` runs `outer → inner → unwind`.
  */
-export function compose(
-  middlewares: readonly Middleware[]
-): (ctx: Ctx, next?: Next) => Promise<void> {
-  return (ctx: Ctx, next?: Next): Promise<void> => {
+export function compose<S extends State = State>(
+  middlewares: readonly Middleware<S>[]
+): (ctx: Ctx<Params, S>, next?: Next) => Promise<void> {
+  return (ctx: Ctx<Params, S>, next?: Next): Promise<void> => {
     // Last index handed out; a re-entry at or below it is a double next().
     let index = -1;
     const dispatch = (i: number): Promise<void> => {

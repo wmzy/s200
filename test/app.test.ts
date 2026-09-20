@@ -1,6 +1,7 @@
 import type { App } from '../src/app';
+import type { Middleware, Route, State } from '../src/types';
 
-import { describe, it, vi } from 'vitest';
+import { describe, expectTypeOf, it, vi } from 'vitest';
 
 import {
   addRoute,
@@ -14,9 +15,16 @@ import {
   patch,
   post,
   put,
+  removeRoute,
   use,
   usePlugin,
 } from '../src/app';
+import { createRoute } from '../src/router';
+import { compress } from '../src/compress';
+import { cors } from '../src/cors';
+import { logger } from '../src/logger';
+import { requestId } from '../src/request-id';
+import { secureHeaders } from '../src/secure-headers';
 import { html, json, redirect, send, text } from '../src/respond';
 import { httpError } from '../src/errors';
 
@@ -416,6 +424,102 @@ describe('chain caching', () => {
       (await res.text()).should.equal(String(i + 1));
     }
     runs.should.equal(3);
+  });
+});
+
+describe('route removal and snapshot immutability', () => {
+  it('removes a route and reflects it on the next dispatch, even with a warm index', async () => {
+    const app = createApp();
+    get(app, '/keep', () => new Response('keep'));
+    get(app, '/drop', () => new Response('drop'));
+    // Warm the route-index cache before mutating the table.
+    const warm = await handle(app, new Request('http://localhost/drop'));
+    warm.status.should.equal(200);
+    removeRoute(app, 'GET', '/drop');
+    const removed = await handle(app, new Request('http://localhost/drop'));
+    removed.status.should.equal(404);
+    const kept = await handle(app, new Request('http://localhost/keep'));
+    kept.status.should.equal(200);
+    (await kept.text()).should.equal('keep');
+  });
+
+  it('normalizes the method case on removal', async () => {
+    const app = createApp();
+    get(app, '/x', () => new Response('x'));
+    removeRoute(app, 'get', '/x');
+    const res = await handle(app, new Request('http://localhost/x'));
+    res.status.should.equal(404);
+  });
+
+  it('is a no-op for an unregistered method/pattern and returns the app', async () => {
+    const app = createApp();
+    get(app, '/x', () => new Response('x'));
+    removeRoute(app, 'DELETE', '/x').should.equal(app);
+    removeRoute(app, 'GET', '/nope');
+    const res = await handle(app, new Request('http://localhost/x'));
+    res.status.should.equal(200);
+  });
+
+  it('rejects direct array mutation with a TypeError instead of corrupting caches', async () => {
+    const app = createApp();
+    get(app, '/x', () => new Response('x'));
+    // Warm both caches, then attempt the old-style in-place mutation.
+    await handle(app, new Request('http://localhost/x'));
+    (() => {
+      (app.routes as Route[]).push(
+        createRoute('GET', '/evil', () => new Response('evil')),
+      );
+    }).should.throw(TypeError);
+    (() => {
+      (app.middlewares as Middleware[]).push(async (_ctx, next) => next());
+    }).should.throw(TypeError);
+    // Dispatch still sees the registered table.
+    const res = await handle(app, new Request('http://localhost/x'));
+    res.status.should.equal(200);
+  });
+});
+
+describe('per-app state typing', () => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- must be an interface: type aliases get no implicit index signature and would fail the `S extends State` constraint
+  interface UserState extends State {
+    user: { id: number };
+  }
+
+  it('types ctx.state as the app state in middleware, handlers, and error policy', () => {
+    const app = createApp<UserState>({
+      onError: (ctx, error) => {
+        void error;
+        expectTypeOf(ctx.state.user).toExtend<{ id: number }>();
+      },
+      onNotFound: (ctx) => {
+        expectTypeOf(ctx.state.user).toExtend<{ id: number }>();
+      },
+    });
+    expectTypeOf(app).toExtend<App<UserState>>();
+    use(app, (ctx, next) => {
+      expectTypeOf(ctx.state.user).toExtend<{ id: number }>();
+      return next();
+    });
+    get(app, '/users/:id', (ctx) => {
+      expectTypeOf(ctx.params.id).toExtend<string>();
+      expectTypeOf(ctx.state.user).toExtend<{ id: number }>();
+      return json(ctx, { id: ctx.state.user.id, param: ctx.params.id });
+    });
+    // handle() carries the state through the full dispatch surface.
+    void handle(app, new Request('http://localhost/users/1'));
+  });
+
+  it('accepts default-State batteries in a typed-state app', () => {
+    const app = createApp<UserState>();
+    use(app, logger());
+    use(app, requestId());
+    use(app, cors());
+    use(app, compress({ minBytes: 1 }));
+    use(app, secureHeaders());
+    get(app, '/x', (ctx) => {
+      expectTypeOf(ctx.state.user).toExtend<{ id: number }>();
+      return new Response('ok');
+    });
   });
 });
 

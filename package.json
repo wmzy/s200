@@ -215,6 +215,16 @@
         "types": "./dist/types/accepts.d.ts",
         "default": "./dist/accepts.cjs"
       }
+    },
+    "./serialize": {
+      "import": {
+        "types": "./dist/types/serialize.d.mts",
+        "default": "./dist/serialize.mjs"
+      },
+      "require": {
+        "types": "./dist/types/serialize.d.ts",
+        "default": "./dist/serialize.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -235,6 +245,7 @@
     "attw": "attw --pack . --profile node16",
     "size": "size-limit",
     "bench": "pnpm build && node scripts/bench-router.mjs",
+    "bench:http": "pnpm build && node scripts/bench-http.mjs",
     "prepublish:jsr": "node scripts/prep-jsr.mjs",
     "publish:jsr": "pnpm build && pnpm prepublish:jsr && npx jsr publish",
     "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
@@ -276,7 +287,7 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "5.7 KB"
+      "limit": "6 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
@@ -288,7 +299,9 @@
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
       "path": "dist/node.mjs",
-      "ignore": ["node:*"],
+      "ignore": [
+        "node:*"
+      ],
       "gzip": true,
       "limit": "2 KB"
     },
@@ -315,6 +328,12 @@
       "path": "dist/timeout.mjs",
       "gzip": true,
       "limit": "0.6 KB"
+    },
+    {
+      "name": "serialize battery (min+gz)",
+      "path": "dist/serialize.mjs",
+      "gzip": true,
+      "limit": "1.2 KB"
     }
   ],
   "lint-staged": {
@@ -329,6 +348,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@hono/node-server": "^2.1.1",
     "@size-limit/esbuild": "^13.0.3",
     "@size-limit/file": "^13.0.3",
     "@types/node": "^26.5.1",
@@ -336,7 +356,9 @@
     "commitizen": "^4.3.2",
     "cz-conventional-changelog": "^3.3.0",
     "eslint": "^10.10.0",
+    "express": "^5.2.1",
     "globals": "^16.5.0",
+    "hono": "^4.13.8",
     "husky": "^9.1.7",
     "lint-staged": "^17.5.0",
     "publint": "^0.3.24",

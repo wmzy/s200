@@ -1,7 +1,5 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
-import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
-
 import type { App } from './app';
 import type { StaticFileInfo } from './static';
 
@@ -11,7 +9,6 @@ import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Readable, type Duplex } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 
 import { handle } from './app';
 
@@ -114,12 +111,29 @@ async function writeResponse(res: ServerResponse, response: Response): Promise<v
   // which is not a legal cookie list — keep them as an array.
   const setCookies = response.headers.getSetCookie();
   if (setCookies.length > 0) headers['set-cookie'] = setCookies;
-  res.writeHead(response.status, response.statusText, headers);
   if (response.body === null) {
+    res.writeHead(response.status, response.statusText, headers);
     res.end();
     return;
   }
-  await pipeline(Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>), res);
+  // Direct reader loop instead of Readable.fromWeb + pipeline: the
+  // stream-to-node-stream conversion costs a real per-request allocation
+  // and two event loops — at keep-alive throughput it is measurable
+  // (hono's node adapter does the same reader loop). Backpressure is
+  // honored through the drain event; a socket death mid-write rejects and
+  // dispatch() destroys the response.
+  const reader = response.body.getReader();
+  res.writeHead(response.status, response.statusText, headers);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      res.end();
+      return;
+    }
+    if (!res.write(value)) {
+      await once(res, 'drain');
+    }
+  }
 }
 
 /**

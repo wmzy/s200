@@ -24,7 +24,8 @@
     "./etag": "./dist/etag.mjs",
     "./secure-headers": "./dist/secure-headers.mjs",
     "./auth": "./dist/auth.mjs",
-    "./accepts": "./dist/accepts.mjs"
+    "./accepts": "./dist/accepts.mjs",
+    "./serialize": "./dist/serialize.mjs"
   },
   "publish": {
     "include": ["dist", "README.md"]

@@ -1,8 +1,9 @@
 import type { Ctx } from './types';
 
 /** Byte length of a UTF-8 string: the ASCII fast path skips the encoder
- * allocation — JSON/HTML responses are overwhelmingly ASCII. */
-function utf8Length(value: string): number {
+ * allocation — JSON/HTML responses are overwhelmingly ASCII. Exported for
+ * batteries that advertise content-length on strings they build. */
+export function utf8Length(value: string): number {
   for (let i = 0; i < value.length; i += 1) {
     if (value.charCodeAt(i) > 0x7f) {
       return new TextEncoder().encode(value).byteLength;

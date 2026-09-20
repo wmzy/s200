@@ -319,10 +319,14 @@ type RouteIndex = {
   readonly seq: WeakMap<Route, number>;
 };
 
-// The index is cached per routes array and versions on length — routes are
-// push-only by contract (same assumption as the app chain cache). A route
-// object hand-built without `createRoute` still gets a position here, so
-// array order stays authoritative for mixed tables.
+// The index is cached per routes array and versions on array identity:
+// app-managed tables are snapshot-immutable (registration replaces the
+// frozen array), so identity changes exactly when content does. For
+// hand-built arrays passed straight to `matchRoutes`, the append-only
+// contract is additionally guarded by a length check — the best a pure
+// function can do over data it does not own. A route object built without
+// `createRoute` still gets a position here, so array order stays
+// authoritative for mixed tables.
 const indexCache = new WeakMap<
   readonly Route[],
   { readonly count: number; readonly index: RouteIndex }

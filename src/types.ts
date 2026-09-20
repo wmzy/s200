@@ -27,14 +27,20 @@ export type QueryOf<QS extends string> = Partial<
 >;
 
 /**
- * The per-request typed state bag. Extend it per app via declaration
- * merging (koa's DefaultState trick):
+ * The default per-request typed state bag. Extend it per app via
+ * declaration merging (koa's `DefaultState` trick):
  *
  * ```ts
  * declare module 's200' {
  *   interface State { user: User }
  * }
  * ```
+ *
+ * For apps that must not share one global shape, skip the merge and pass a
+ * per-app interface to `createApp<MyState>()` instead — `ctx.state` is then
+ * `MyState` throughout that app's middlewares, handlers, and error policy.
+ * Per-app states are interfaces (like this one): only interfaces satisfy
+ * the `[key: string]: unknown` index-signature constraint.
  */
 // eslint-disable-next-line @typescript-eslint/consistent-type-definitions, @typescript-eslint/consistent-indexed-object-style -- must be an interface with an index signature: declaration merging (koa's DefaultState pattern) only extends interfaces, and `type State = Record<...>` cannot be augmented
 export interface State {
@@ -44,28 +50,39 @@ export interface State {
 /** Continuation into the next middleware — the onion's inner layer. */
 export type Next = () => Promise<void>;
 
-/** Onion middleware: runs before and/or after `await next()`. */
-export type Middleware = (ctx: Ctx, next: Next) => Promise<void> | void;
+/**
+ * Onion middleware: runs before and/or after `await next()`. The `S` type
+ * parameter carries the per-app state shape — it defaults to the global
+ * {@link State} interface, so batteries typed `Middleware` plug into any
+ * app; an app with `createApp<MyState>()` types its own middlewares as
+ * `Middleware<MyState>`.
+ */
+export type Middleware<S extends State = State> = (
+  ctx: Ctx<Params, S>,
+  next: Next
+) => Promise<void> | void;
 
 /**
  * Route terminal handler. May return a `Response` — `handle` adopts it as
  * `ctx.res` when nothing was written yet.
  */
-export type Handler<P extends Params = Params> = (
-  ctx: Ctx<P>
+export type Handler<P extends Params = Params, S extends State = State> = (
+  ctx: Ctx<P, S>
 ) => unknown | Promise<unknown>;
 
 /**
  * Per-request context. The unit of mutation: middlewares and handlers write
  * `state` and `res` in place; `req` stays pinned to the incoming request.
  * `url` is the request URL parsed once — reuse it instead of re-parsing.
+ * `S` is the per-app state shape (`createApp<MyState>()`); batteries that
+ * stay on the default `State` are assignable to any app.
  */
-export type Ctx<P extends Params = Params> = {
+export type Ctx<P extends Params = Params, S extends State = State> = {
   readonly req: Request;
   readonly url: URL;
   params: P;
   query: URLSearchParams;
-  state: State;
+  state: S;
   res: Response | undefined;
 };
 
@@ -103,10 +120,15 @@ export type MatchFn = (
 ) => MatchResult | undefined;
 
 /** Maps a thrown value to a response; may write `ctx.res` itself. */
-export type ErrorHandler = (ctx: Ctx, error: unknown) => Promise<void> | void;
+export type ErrorHandler<S extends State = State> = (
+  ctx: Ctx<Params, S>,
+  error: unknown
+) => Promise<void> | void;
 
 /** Last chance to answer an unmatched request; default is a 404. */
-export type NotFoundHandler = (ctx: Ctx) => Promise<void> | void;
+export type NotFoundHandler<S extends State = State> = (
+  ctx: Ctx<Params, S>
+) => Promise<void> | void;
 
 /** Extension hook over the mutable `App` data structure. */
-export type Plugin = (app: App) => void;
+export type Plugin<S extends State = State> = (app: App<S>) => void;

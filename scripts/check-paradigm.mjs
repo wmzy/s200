@@ -58,6 +58,9 @@ const PLATFORM_CTORS = new Set([
   'DataView',
   'TextEncoder',
   'TextDecoder',
+  // Language builtin used by src/serialize.ts for startup-time codegen —
+  // a schema compiled once is a platform constructor, not an OOP pattern.
+  'Function',
 ]);
 
 const RULES = [
