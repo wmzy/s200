@@ -26,6 +26,8 @@ jobs:
       - run: pnpm vitest run --maxWorkers=2
 
       - run: pnpm build
+      - run: pnpm lint:pkg
+      - run: pnpm attw
       - run: pnpm verify:tree-shaking
       - run: pnpm size
 

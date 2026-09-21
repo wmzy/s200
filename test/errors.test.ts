@@ -1,6 +1,7 @@
 import { describe, it } from 'vitest';
 
 import { httpError, isHttpError, toErrorResponse } from '../src/errors';
+import { escapeHtml } from '../src/respond';
 
 describe('httpError', function () {
   it('builds tagged data with the given status and message', function () {
@@ -92,5 +93,17 @@ describe('toErrorResponse', function () {
         error: 'Internal Server Error',
       });
     }
+  });
+});
+
+describe('escapeHtml', () => {
+  it('escapes the five HTML-significant characters', () => {
+    escapeHtml(`<a href="x" title='y'>&`).should.equal(
+      '&lt;a href=&quot;x&quot; title=&#39;y&#39;&gt;&amp;'
+    );
+  });
+
+  it('leaves plain text untouched', () => {
+    escapeHtml('hello, world 123').should.equal('hello, world 123');
   });
 });

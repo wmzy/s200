@@ -24,7 +24,7 @@
 
 import type { Ctx } from './types';
 
-import { utf8Length } from './respond';
+import { newResponse, utf8Length } from './respond';
 
 /** Primitive JSON types in the schema subset. */
 export type PrimitiveType = 'string' | 'number' | 'integer' | 'boolean' | 'null';
@@ -228,7 +228,7 @@ export function jsonRaw(ctx: Ctx, json: string, init?: ResponseInit): Response {
     headers.set('content-type', 'application/json');
   }
   headers.set('content-length', String(utf8Length(json)));
-  ctx.res = new Response(json, {
+  ctx.res = newResponse(ctx, json, {
     status: init?.status,
     statusText: init?.statusText,
     headers,

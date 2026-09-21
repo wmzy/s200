@@ -16,6 +16,8 @@
 
 import type { Ctx, Middleware } from './types';
 
+import { newResponse } from './respond';
+
 export type EtagOptions = {
   /** Emit a strong entity tag instead of the default weak one. */
   readonly strong?: boolean;
@@ -61,14 +63,14 @@ export function etag(options: EtagOptions = {}): Middleware {
     headers.set('etag', tag);
     const ifNoneMatch = ctx.req.headers.get('if-none-match');
     if (ifNoneMatch !== null && tagMatches(ifNoneMatch, tag)) {
-      ctx.res = new Response(null, {
+      ctx.res = newResponse(ctx, null, {
         status: 304,
         statusText: 'Not Modified',
         headers,
       });
       return;
     }
-    ctx.res = new Response(bytes, {
+    ctx.res = newResponse(ctx, bytes, {
       status: res.status,
       statusText: res.statusText,
       headers,

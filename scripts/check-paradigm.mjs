@@ -61,6 +61,11 @@ const PLATFORM_CTORS = new Set([
   // Language builtin used by src/serialize.ts for startup-time codegen —
   // a schema compiled once is a platform constructor, not an OOP pattern.
   'Function',
+  // Light-mode platform stand-ins (src/light.ts): class mimics of the
+  // platform Request/Response, constructed exactly where the platform
+  // constructors would be — the opt-in fast path, not an OOP pattern.
+  'LightRequest',
+  'LightResponse',
 ]);
 
 const RULES = [
@@ -202,8 +207,16 @@ function listTsFiles(dir) {
 
 const srcDir = new URL('../src', import.meta.url).pathname;
 const files = listTsFiles(srcDir).sort();
+// The light-mode stand-ins (src/light.ts) are deliberate class mimics of
+// the platform's Request/Response — they exist to duck-type the Web
+// Standard surface on the opt-in fast path, not to introduce an OOP
+// pattern into the framework's data surface. Everything else stays gated.
+const PLATFORM_STANDINS = new Set(['light.ts']);
 const violations = [];
 for (const file of files) {
+  if (PLATFORM_STANDINS.has(file.split('/').pop() ?? '')) {
+    continue;
+  }
   const stripped = stripCommentsAndStrings(readFileSync(file, 'utf8'));
   stripped.split('\n').forEach((line, index) => {
     for (const rule of RULES) {

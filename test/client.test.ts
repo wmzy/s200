@@ -1,7 +1,12 @@
 import { describe, expectTypeOf, it } from 'vitest';
 
 import { createApp, get, post, all, del, mount, removeRoute, use } from '../src/app';
-import { createClient, type ClientInit } from '../src/client';
+import {
+  createClient,
+  type ClientInit,
+  type ClientResponse,
+} from '../src/client';
+import { json } from '../src/respond';
 
 describe('client (typed fetch)', () => {
   function capture() {
@@ -114,7 +119,9 @@ describe('client (typed fetch)', () => {
     const withMw = use(app, async (ctx, next) => next());
     const withGet = get(withMw, '/users/:id', (ctx) => new Response(ctx.params.id));
     const full = post(withGet, '/users/:id?', () => new Response('ok'));
-    const client = createClient(full);
+    // Stubbed fetch: the compile-time calls below must not hit the network
+    // (a relative URL would reject unhandled and pollute the suite).
+    const client = createClient(full, { fetch: async () => new Response('ok') });
     type Get = typeof client.get;
     // A required-param route demands typed args (the optional-param route
     // is also callable for that path — contravariance keeps the union
@@ -125,5 +132,51 @@ describe('client (typed fetch)', () => {
     // Compile-time calls: wrong shapes fail the build.
     void client.get('/users/:id', { id: 'x' }, { query: { a: '1' } });
     void client.post('/users/:id?', {});
+  });
+
+  it('types response bodies from json-branded handlers', () => {
+    const app = createApp();
+    // Sync and async handlers both resolve: the brand survives the
+    // Promise unwrap in ResolveOut.
+    const withSync = get(app, '/users/:id', (ctx) =>
+      json(ctx, { id: Number(ctx.params.id), name: 'ada' })
+    );
+    const withAsync = get(withSync, '/ping', async (ctx) => json(ctx, { ok: true }));
+    // A plain Response handler stays untyped (unknown, not any).
+    const full = get(withAsync, '/plain', () => new Response('ok'));
+    // Stubbed fetch: the typed call below must not hit the network.
+    const client = createClient(full, { fetch: async () => new Response('ok') });
+    void client.get('/users/:id', { id: '1' });
+
+    expectTypeOf<typeof client.get>().toExtend<
+      (
+        path: '/users/:id',
+        args: { id: string },
+        init?: ClientInit
+      ) => Promise<ClientResponse<{ id: number; name: string }>>
+    >();
+    expectTypeOf<typeof client.get>().toExtend<
+      (path: '/ping', init?: ClientInit) => Promise<ClientResponse<{ ok: boolean }>>
+    >();
+    expectTypeOf<typeof client.get>().toExtend<
+      (path: '/plain', init?: ClientInit) => Promise<ClientResponse<unknown>>
+    >();
+  });
+
+  it('keeps response-body types through mount', () => {
+    const sub = createApp();
+    const subWithGet = get(sub, '/item/:id', (ctx) => json(ctx, { id: ctx.params.id }));
+    const app = createApp();
+    const mounted = mount(app, '/v1', subWithGet);
+    const client = createClient(mounted, { fetch: async () => new Response('ok') });
+    void client.get('/v1/item/:id', { id: '7' });
+
+    expectTypeOf<typeof client.get>().toExtend<
+      (
+        path: '/v1/item/:id',
+        args: { id: string },
+        init?: ClientInit
+      ) => Promise<ClientResponse<{ id: string }>>
+    >();
   });
 });

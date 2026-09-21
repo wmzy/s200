@@ -249,3 +249,77 @@ describe('node adapter TLS', () => {
     (error as Error | undefined)?.message.should.match(/HTTP\/1\.1-only/);
   });
 });
+
+describe('node adapter light mode', () => {
+  let light: NodeServer;
+
+  beforeAll(async () => {
+    const app = createApp();
+    use(app, async (ctx, next) => {
+      await next();
+      ctx.res?.headers.append('x-s200', 'light');
+    });
+    get(app, '/hello/:name', (ctx) => json(ctx, { hello: ctx.params.name }));
+    get(app, '/text', (ctx) => send(ctx, 'plain', { status: 201 }));
+    get(app, '/empty', (ctx) => send(ctx, null));
+    post(app, '/echo', async (ctx) => json(ctx, await readJson(ctx)));
+    get(app, '/boom', () => {
+      throw new Error('boom');
+    });
+    get(app, '/nope', () => undefined);
+    light = await serve(app, { port: 0, light: true });
+  });
+
+  afterAll(async () => {
+    await light.close();
+  });
+
+  it('serves JSON, text, params and middleware headers', async () => {
+    const res = await fetch(`${light.url}/hello/world`);
+    res.status.should.equal(200);
+    res.headers.get('x-s200')?.should.equal('light');
+    res.headers.get('content-type')?.should.contain('application/json');
+    res.headers.get('content-length')?.should.equal('17');
+    (await res.json()).should.deep.equal({ hello: 'world' });
+  });
+
+  it('serves plain text with status and bodyless responses', async () => {
+    const text = await fetch(`${light.url}/text`);
+    text.status.should.equal(201);
+    (await text.text()).should.equal('plain');
+    text.headers.get('content-length')?.should.equal('5');
+
+    const empty = await fetch(`${light.url}/empty`);
+    empty.status.should.equal(200);
+    empty.headers.get('content-length')?.should.equal('0');
+  });
+
+  it('round-trips a POST JSON body', async () => {
+    const res = await fetch(`${light.url}/echo`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ a: 1 }),
+    });
+    (await res.json()).should.deep.equal({ a: 1 });
+  });
+
+  it('answers 404 and 500 through the light fallback path', async () => {
+    const missing = await fetch(`${light.url}/missing`);
+    missing.status.should.equal(404);
+    (await missing.json()).should.deep.equal({ error: 'Not Found' });
+
+    const boom = await fetch(`${light.url}/boom`);
+    boom.status.should.equal(500);
+
+    // A matched route that never wrote a response hits the 500 fallback.
+    const nope = await fetch(`${light.url}/nope`);
+    nope.status.should.equal(500);
+  });
+
+  it('handles HEAD with content-length and no body', async () => {
+    const res = await fetch(`${light.url}/hello/world`, { method: 'HEAD' });
+    res.status.should.equal(200);
+    res.headers.get('content-length')?.should.equal('17');
+    (await res.text()).should.equal('');
+  });
+});

@@ -35,13 +35,17 @@ import {
 
 /** The `server` Bun hands its `fetch` handler — the upgrade authority. */
 export type BunUpgrader = {
-  upgrade(request: Request, options?: { data?: unknown }): boolean;
+  upgrade(
+    request: Request,
+    options?: { data?: unknown; headers?: Record<string, string> }
+  ): boolean;
 };
 
 /** Bun's per-connection socket, narrowed to the members used. */
 export type BunWs = {
-  send(data: string | ArrayBuffer | Uint8Array): unknown;
-  close(code?: number, reason?: string): void;
+  send(data: string | Uint8Array): void;
+  close(code: number, reason: string): void;
+  ping(data?: string | Uint8Array): void;
 };
 
 /** The `websocket` option Bun.serve accepts, narrowed to the members used. */
@@ -49,6 +53,7 @@ export type BunWsHandlers = {
   open?: (ws: BunWs) => void;
   message?: (ws: BunWs, data: string | Uint8Array) => void;
   close?: (ws: BunWs, code: number, reason: string) => void;
+  pong?: (ws: BunWs) => void;
 };
 
 /**
@@ -66,6 +71,7 @@ type BunSession = {
   readonly onMessage: WsMessageCb[];
   readonly onClose: WsCloseCb[];
   readonly onError: WsErrorCb[];
+  readonly onPong: (() => void)[];
 };
 
 /** The per-upgrade record carried through Bun's ws.data to `open`. */
@@ -74,6 +80,7 @@ type UpgradePayload = {
   readonly params: Params;
   readonly url: URL;
   readonly req: Request;
+  readonly protocol?: string;
 };
 
 /**
@@ -91,9 +98,24 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
     if (matched === undefined) {
       return false;
     }
+    // Subprotocol negotiation (server preference order), mirrored from the
+    // node adapter so both runtimes pick identically.
+    const offered = req.headers.get('sec-websocket-protocol');
+    const clientProtocols =
+      offered === null
+        ? []
+        : offered.split(',').map((item) => item.trim()).filter((item) => item !== '');
+    let protocol: string | undefined;
+    for (const candidate of matched.route.protocols ?? []) {
+      if (clientProtocols.includes(candidate)) {
+        protocol = candidate;
+        break;
+      }
+    }
     // The data record reaches `open` via Bun's ws.data.
     return server.upgrade(req, {
-      data: { route: matched.route, params: matched.params, url, req },
+      data: { route: matched.route, params: matched.params, url, req, protocol },
+      headers: protocol === undefined ? undefined : { 'sec-websocket-protocol': protocol },
     });
   };
 
@@ -103,14 +125,19 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
         | UpgradePayload
         | undefined;
       if (payload === undefined) return;
-      const session: BunSession = { onMessage: [], onClose: [], onError: [] };
+      const session: BunSession = { onMessage: [], onClose: [], onError: [], onPong: [] };
       sessions.set(ws, session);
       const socket: WsSocket = {
         send(data: WsData) {
-          ws.send(data);
+          // Bun's send accepts string|Uint8Array; ArrayBuffer needs the view.
+          ws.send(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
         },
         close(code, reason) {
-          ws.close(code, reason);
+          ws.close(code ?? 1000, reason ?? '');
+        },
+        protocol: payload.protocol,
+        ping(payloadData) {
+          ws.ping(payloadData);
         },
         onMessage(cb) {
           session.onMessage.push(cb);
@@ -120,6 +147,9 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
         },
         onError(cb) {
           session.onError.push(cb);
+        },
+        onPong(cb) {
+          session.onPong.push(cb);
         },
       };
       const ctx = createWsCtx(payload.req, payload.url, payload.params);
@@ -142,6 +172,11 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
       sessions.delete(ws);
       if (session === undefined) return;
       for (const cb of session.onClose) cb(code, reason);
+    },
+    pong(ws) {
+      const session = sessions.get(ws);
+      if (session === undefined) return;
+      for (const cb of session.onPong) cb();
     },
   };
 

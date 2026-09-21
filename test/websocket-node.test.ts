@@ -1,4 +1,5 @@
 import { once } from 'node:events';
+import { randomBytes } from 'node:crypto';
 import { connect, type Socket } from 'node:net';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
@@ -13,7 +14,7 @@ const HOST = '127.0.0.1';
 const KEY = 'dGhlIHNhbXBsZSBub25jZQ==';
 const ACCEPT = 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=';
 
-type ServerFrame = { opcode: number; payload: Buffer };
+type ServerFrame = { opcode: number; payload: Buffer; rsv1: boolean };
 
 /** Parses ONE complete server frame (unmasked) from the front of `data`. */
 function parseFrame(
@@ -23,6 +24,7 @@ function parseFrame(
   const b0 = data[0] ?? 0;
   const b1 = data[1] ?? 0;
   const opcode = b0 & 0x0f;
+  const rsv1 = (b0 & 0x40) !== 0;
   let len = b1 & 0x7f;
   let offset = 2;
   if (len === 126) {
@@ -36,26 +38,27 @@ function parseFrame(
   }
   if (data.length < offset + len) return undefined;
   return {
-    frame: { opcode, payload: data.subarray(offset, offset + len) },
+    frame: { opcode, payload: data.subarray(offset, offset + len), rsv1 },
     rest: data.subarray(offset + len),
   };
 }
 
 /** One client→server frame, always masked (clients MUST mask). */
-function clientFrame(opcode: number, payload: Buffer | string, fin = true): Buffer {
+function clientFrame(opcode: number, payload: Buffer | string, fin = true, rsv1 = false): Buffer {
   const bytes = typeof payload === 'string' ? Buffer.from(payload) : payload;
   const mask = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+  const b0 = (fin ? 0x80 : 0) | (rsv1 ? 0x40 : 0) | opcode;
   let header: Buffer;
   if (bytes.length < 126) {
-    header = Buffer.from([(fin ? 0x80 : 0) | opcode, 0x80 | bytes.length]);
+    header = Buffer.from([b0, 0x80 | bytes.length]);
   } else if (bytes.length < 65536) {
     header = Buffer.alloc(4);
-    header[0] = (fin ? 0x80 : 0) | opcode;
+    header[0] = b0;
     header[1] = 0x80 | 126;
     header.writeUInt16BE(bytes.length, 2);
   } else {
     header = Buffer.alloc(10);
-    header[0] = (fin ? 0x80 : 0) | opcode;
+    header[0] = b0;
     header[1] = 0x80 | 127;
     header.writeBigUInt64BE(BigInt(bytes.length), 2);
   }
@@ -67,7 +70,7 @@ function clientFrame(opcode: number, payload: Buffer | string, fin = true): Buff
 }
 
 /** Opens a raw socket and sends the upgrade request. */
-function openSocket(port: number, path: string): Socket {
+function openSocket(port: number, path: string, extraHeaders = ''): Socket {
   const socket = connect(port, HOST);
   socket.write(
     `GET ${path} HTTP/1.1\r\n` +
@@ -76,6 +79,7 @@ function openSocket(port: number, path: string): Socket {
       'Connection: Upgrade\r\n' +
       `Sec-WebSocket-Key: ${KEY}\r\n` +
       'Sec-WebSocket-Version: 13\r\n' +
+      extraHeaders +
       '\r\n'
   );
   return socket;
@@ -166,6 +170,26 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
         droppedCode = code;
       });
     });
+    upgradeWebSocket(
+      app,
+      '/proto',
+      (socket) => {
+        socket.onMessage(() => socket.send(socket.protocol ?? 'none'));
+      },
+      { protocols: ['graphql-ws', 'chat'] }
+    );
+    upgradeWebSocket(
+      app,
+      '/deflate',
+      (socket) => {
+        socket.onMessage((data) => socket.send(data));
+      },
+      { perMessageDeflate: true }
+    );
+    upgradeWebSocket(app, '/heartbeat', (socket) => {
+      socket.onMessage(() => socket.ping('beat'));
+      socket.onPong(() => socket.send('got-pong'));
+    });
     get(app, '/', () => new Response('http'));
     server = await serve(app, { port: 0, upgrade: createUpgradeHandler(app) });
   });
@@ -194,7 +218,7 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     const { rest } = await readHead(socket);
     const read = frameReader(socket, rest);
     socket.write(clientFrame(0x1, 'ping'));
-    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('ping') });
+    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('ping'), rsv1: false });
     socket.destroy();
   });
 
@@ -215,7 +239,7 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     const { rest } = await readHead(socket);
     const read = frameReader(socket, rest);
     socket.write(clientFrame(0x9, 'hb'));
-    (await read()).should.deep.equal({ opcode: 0xa, payload: Buffer.from('hb') });
+    (await read()).should.deep.equal({ opcode: 0xa, payload: Buffer.from('hb'), rsv1: false });
     socket.destroy();
   });
 
@@ -261,7 +285,7 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     const read = frameReader(socket, rest);
     socket.write(clientFrame(0x1, 'hel', false));
     socket.write(clientFrame(0x0, 'lo', true));
-    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('hello') });
+    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('hello'), rsv1: false });
     socket.destroy();
   });
 
@@ -270,7 +294,7 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     const { rest } = await readHead(socket);
     const read = frameReader(socket, rest);
     socket.write(clientFrame(0x1, 'go'));
-    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('42:z') });
+    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('42:z'), rsv1: false });
     socket.destroy();
   });
 
@@ -334,7 +358,7 @@ describe('websocket node maxPayload', () => {
     const { rest } = await readHead(socket);
     const read = frameReader(socket, rest);
     socket.write(clientFrame(0x1, '1234'));
-    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('1234') });
+    (await read()).should.deep.equal({ opcode: 0x1, payload: Buffer.from('1234'), rsv1: false });
     socket.destroy();
   });
 
@@ -346,6 +370,136 @@ describe('websocket node maxPayload', () => {
     const frame = await read();
     frame.opcode.should.equal(0x8);
     frame.payload.readUInt16BE(0).should.equal(1009);
+    socket.destroy();
+  });
+});
+
+describe('websocket negotiation (subprotocol, deflate, heartbeat)', () => {
+  let server: NodeServer;
+
+  beforeAll(async () => {
+    const app = createApp();
+    upgradeWebSocket(
+      app,
+      '/proto',
+      (socket) => {
+        socket.onMessage(() => socket.send(socket.protocol ?? 'none'));
+      },
+      { protocols: ['graphql-ws', 'chat'] }
+    );
+    upgradeWebSocket(
+      app,
+      '/deflate',
+      (socket) => {
+        socket.onMessage((data) => socket.send(data));
+      },
+      { perMessageDeflate: true }
+    );
+    upgradeWebSocket(app, '/heartbeat', (socket) => {
+      socket.onMessage(() => socket.ping('beat'));
+      socket.onPong(() => socket.send('got-pong'));
+    });
+    server = await serve(app, { port: 0, upgrade: createUpgradeHandler(app) });
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it('negotiates the subprotocol by server preference', async () => {
+    const socket = openSocket(
+      server.port,
+      '/proto',
+      'Sec-WebSocket-Protocol: chat, graphql-ws\r\n'
+    );
+    const { head, rest } = await readHead(socket);
+    head.should.contain('Sec-WebSocket-Protocol: graphql-ws');
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'which?'));
+    (await read()).should.deep.equal({
+      opcode: 0x1,
+      payload: Buffer.from('graphql-ws'),
+      rsv1: false,
+    });
+    socket.destroy();
+  });
+
+  it('leaves the protocol unset when no route protocol matches', async () => {
+    const socket = openSocket(
+      server.port,
+      '/proto',
+      'Sec-WebSocket-Protocol: mqtt\r\n'
+    );
+    const { head, rest } = await readHead(socket);
+    head.should.not.contain('Sec-WebSocket-Protocol');
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'which?'));
+    (await read()).should.deep.equal({
+      opcode: 0x1,
+      payload: Buffer.from('none'),
+      rsv1: false,
+    });
+    socket.destroy();
+  });
+
+  it('negotiates permessage-deflate and echoes a compressed message', async () => {
+    const { deflateRawSync, inflateRawSync } = await import('node:zlib');
+    const socket = openSocket(
+      server.port,
+      '/deflate',
+      'Sec-WebSocket-Extensions: permessage-deflate\r\n'
+    );
+    const { head, rest } = await readHead(socket);
+    head.should.contain('Sec-WebSocket-Extensions: permessage-deflate');
+    head.should.contain('client_no_context_takeover');
+    head.should.contain('server_no_context_takeover');
+    const read = frameReader(socket, rest);
+
+    // Compressible text: the echo must come back compressed (rsv1 set) and
+    // inflate to the original.
+    const text = 'compress me '.repeat(20);
+    const compressed = deflateRawSync(Buffer.from(text));
+    socket.write(clientFrame(0x1, compressed, true, true));
+    const frame = await read();
+    frame.opcode.should.equal(0x1);
+    frame.rsv1.should.equal(true);
+    inflateRawSync(frame.payload).toString().should.equal(text);
+
+    // Genuinely random bytes cannot shrink under deflate: the echo must
+    // come back raw (no rsv1).
+    const random = randomBytes(300);
+    socket.write(clientFrame(0x2, random));
+    const raw = await read();
+    raw.opcode.should.equal(0x2);
+    raw.rsv1.should.equal(false);
+    raw.payload.should.deep.equal(random);
+    socket.destroy();
+  });
+
+  it('rejects RSV1 frames when deflate was not negotiated', async () => {
+    const socket = openSocket(server.port, '/proto');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'x', true, true));
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1002);
+    socket.destroy();
+  });
+
+  it('surfaces pings and pongs through the heartbeat surface', async () => {
+    const socket = openSocket(server.port, '/heartbeat');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    // A message triggers a server ping; the client answers with a pong,
+    // which the server reports through onPong.
+    socket.write(clientFrame(0x1, 'hb'));
+    const ping = await read();
+    ping.opcode.should.equal(0x9);
+    ping.payload.toString().should.equal('beat');
+    socket.write(clientFrame(0xa, 'beat'));
+    const reply = await read();
+    reply.should.deep.equal({ opcode: 0x1, payload: Buffer.from('got-pong'), rsv1: false });
     socket.destroy();
   });
 });

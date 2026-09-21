@@ -18,6 +18,8 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from 'n
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Readable, type Duplex } from 'node:stream';
 
+import { LightRequest, LightResponse, setCachedUrl } from './light';
+
 import { handle } from './app';
 
 
@@ -56,6 +58,16 @@ export type NodeServeOptions = {
    * any protocol library of your choice).
    */
   upgrade?: NodeUpgradeHandler;
+  /**
+   * Fast path: the adapter constructs light-weight `Request`/`Response`
+   * objects (see `docs/benchmarks.md` — the platform constructors' cost is
+   * the whole gap to the patched class). Opt-in and per-app: nothing
+   * global is patched, handlers still see `Request`/`Response` shapes, and
+   * the Web Standard contract stays the default. Caveats: response
+   * `clone()` works only for byte-backed bodies, and exotic `BodyInit`
+   * shapes (Blob/FormData) pay one real `Response` construction.
+   */
+  light?: boolean;
   /**
    * Serve TLS: `node:https` by default, or `node:http2`'s secure server
    * with `http2: true` — the same dispatch pipeline either way, so
@@ -102,7 +114,7 @@ export async function serve(
     );
   }
   const handler = (req: IncomingMessage | Http2ServerRequest, res: ServerResponse | Http2ServerResponse) => {
-    void dispatch(app, req, res);
+    void dispatch(app, req, res, options.light === true);
   };
   const server: NodeServerKind =
     options.https !== undefined
@@ -133,18 +145,23 @@ function closeServer(server: NodeServerKind): Promise<void> {
   });
 }
 
-async function dispatch(app: App, req: RequestLike, res: ResponseLike): Promise<void> {
+async function dispatch(
+  app: App,
+  req: RequestLike,
+  res: ResponseLike,
+  light: boolean
+): Promise<void> {
   try {
     // handle() maps every error to a Response, so only the socket write can
     // throw here (client gone mid-response) — nothing left to answer.
-    const response = await handle(app, toRequest(req));
+    const response = await handle(app, toRequest(req, light));
     await writeResponse(res, response);
   } catch {
     res.destroy();
   }
 }
 
-function toRequest(req: RequestLike): Request {
+function toRequest(req: RequestLike, light: boolean): Request {
   // http2 compat requests expose `:authority` where http1 exposes `host`.
   const authority = (req.headers as Record<string, string | string[] | undefined>)[
     ':authority'
@@ -167,6 +184,21 @@ function toRequest(req: RequestLike): Request {
     headerPairs.push([name, value]);
   }
   const method = req.method ?? 'GET';
+  if (light) {
+    const request = new LightRequest({
+      method,
+      url,
+      headers: headerPairs,
+      body:
+        method !== 'GET' && method !== 'HEAD'
+          ? (Readable.toWeb(
+              req as unknown as import('node:stream').Readable
+            ) as unknown as ReadableStream<Uint8Array>)
+          : null,
+    });
+    setCachedUrl(request as unknown as Request, new URL(url));
+    return request as unknown as Request;
+  }
   const init: RequestInit & { duplex?: 'half' } = {
     method,
     headers: headerPairs,
@@ -181,7 +213,9 @@ function toRequest(req: RequestLike): Request {
     ) as unknown as ReadableStream;
     init.duplex = 'half';
   }
-  return new Request(url, init);
+  const request = new Request(url, init);
+  setCachedUrl(request, new URL(url));
+  return request;
 }
 
 async function writeResponse(res: ResponseLike, response: Response): Promise<void> {
@@ -193,6 +227,27 @@ async function writeResponse(res: ResponseLike, response: Response): Promise<voi
   // which is not a legal cookie list — keep them as an array.
   const setCookies = response.headers.getSetCookie();
   if (setCookies.length > 0) headers['set-cookie'] = setCookies;
+  if (response instanceof LightResponse) {
+    // Light fast path: byte-backed bodies skip the reader loop entirely —
+    // write the bytes straight to the socket.
+    const bytes = response.bytesSync();
+    if (bytes !== null) {
+      res.writeHead(response.status, response.statusText, headers);
+      if (!res.write(bytes)) {
+        await once(
+          res as unknown as import('node:events').EventEmitter,
+          'drain'
+        );
+      }
+      res.end();
+      return;
+    }
+    if (response.body === null) {
+      res.writeHead(response.status, response.statusText, headers);
+      res.end();
+      return;
+    }
+  }
   if (response.body === null) {
     res.writeHead(response.status, response.statusText, headers);
     res.end();
@@ -216,6 +271,20 @@ async function writeResponse(res: ResponseLike, response: Response): Promise<voi
       await once(res as unknown as import('node:events').EventEmitter, 'drain');
     }
   }
+}
+
+/**
+ * Brotli encoder for {@link compress} (`s200/compress`): the platform
+ * `CompressionStream` has no brotli, `node:zlib` does. Loaded lazily so
+ * non-brotli apps never pay the import.
+ */
+export async function brotliCompress(bytes: Uint8Array): Promise<Uint8Array> {
+  const zlib = await import('node:zlib');
+  return new Promise<Uint8Array>((resolve, reject) => {
+    zlib.brotliCompress(bytes, (error, out) =>
+      error === null ? resolve(out) : reject(error)
+    );
+  });
 }
 
 /**

@@ -31,7 +31,7 @@ import { execFileSync } from 'node:child_process';
 const CONCURRENCY = Number(process.env.CONCURRENCY ?? 32);
 const REQUESTS = Number(process.env.REQUESTS ?? 30_000);
 
-const VARIANTS = ['s200', 'hono', 'hono-patched', 'express', 'fastify', 'elysia'];
+const VARIANTS = ['s200', 's200-light', 'hono', 'hono-patched', 'express', 'fastify', 'elysia'];
 
 // ── client ─────────────────────────────────────────────────────────────────
 
@@ -81,13 +81,13 @@ function bench(url, path) {
 
 // ── servers ────────────────────────────────────────────────────────────────
 
-async function buildS200() {
+async function buildS200({ light }) {
   const { createApp, get, json } = await import('../dist/index.mjs');
   const { serve } = await import('../dist/node.mjs');
   const app = createApp();
   get(app, '/', (ctx) => json(ctx, { message: 'hello' }));
   get(app, '/users/:id', (ctx) => json(ctx, { id: ctx.params.id, name: 'ada' }));
-  return serve(app, { port: 0, host: '127.0.0.1' });
+  return serve(app, { port: 0, host: '127.0.0.1', ...(light ? { light: true } : {}) });
 }
 
 async function buildHono({ patched }) {
@@ -159,7 +159,8 @@ async function runServer(variant) {
   let server;
   switch (variant) {
     case 's200':
-      server = await buildS200();
+    case 's200-light':
+      server = await buildS200({ light: variant === 's200-light' });
       break;
     case 'hono':
     case 'hono-patched':
@@ -178,7 +179,7 @@ async function runServer(variant) {
     default:
       throw new Error(`Unknown variant ${variant}`);
   }
-  if (variant === 's200') {
+  if (variant === 's200' || variant === 's200-light') {
     // s200's serve() returns a { server, url, close } wrapper (it force-
     // closes idle keep-alive sockets on close, unlike a bare Server.close).
     return { url: server.url, close: () => server.close() };

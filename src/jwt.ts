@@ -1,13 +1,14 @@
 /**
- * JWT (HS256/384/512) as an opt-in battery over WebCrypto — no crypto
- * dependency, Node/Bun/Deno/edge alike. `signJwt`/`verifyJwt` are the pure
- * functions; `jwtAuth` is the gate middleware, storing the verified
- * payload on `ctx.state.jwt` and answering 401 before the chain below runs.
+ * JWT over WebCrypto — HS (HMAC), RS (RSASSA-PKCS1-v1_5), PS (RSA-PSS),
+ * and ES (ECDSA) families, plus a JWKS resolver for key rotation. No
+ * crypto dependency: key import, signing, and verification run through
+ * `crypto.subtle`.
  *
- * Verification is strict by default: `alg` must be one of HS256/384/512
- * (the `none` family is always rejected), `exp`/`nbf` are enforced, and
- * `aud`/`iss` are checked when requested. Failures throw a plain `Error`
- * named `JwtError` — check {@link isJwtError}.
+ * Algorithm/key pairing is enforced by family — the `alg` header picks the
+ * family, and the supplied key must match it (HMAC requires a secret
+ * string; RS/PS require an RSA key; ES requires an EC key). This closes
+ * the HS/RSA algorithm-confusion attack without a caller-maintained
+ * allowlist (an allowlist can still narrow the default "everything").
  *
  * @module
  */
@@ -24,22 +25,21 @@ for (let i = 0; i < B64_ALPHABET.length; i += 1) {
   B64_DECODE[B64_ALPHABET.charCodeAt(i)] = i;
 }
 
-/** Base64url encode, no padding: 3 bytes → 4 alphabet chars. */
+/** Base64url encode, no padding: 3 bytes → 4 alphabet chars, with the
+ * trailing group emitting 2 chars for 1 leftover byte and 3 for 2. */
 function b64url(bytes: Uint8Array): string {
   let out = '';
   for (let i = 0; i < bytes.length; i += 3) {
-    const b0 = bytes[i] ?? 0;
-    const b1 = bytes[i + 1] ?? 0;
-    const b2 = bytes[i + 2] ?? 0;
-    const n = (b0 << 16) | (b1 << 8) | b2;
     const rest = bytes.length - i;
-    out += B64_ALPHABET[(n >> 18) & 63];
-    out += B64_ALPHABET[(n >> 12) & 63];
+    const n =
+      ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
+    out += B64_ALPHABET.charAt((n >> 18) & 63);
+    out += B64_ALPHABET.charAt((n >> 12) & 63);
     if (rest >= 2) {
-      out += B64_ALPHABET[(n >> 6) & 63];
+      out += B64_ALPHABET.charAt((n >> 6) & 63);
     }
     if (rest >= 3) {
-      out += B64_ALPHABET[n & 63];
+      out += B64_ALPHABET.charAt(n & 63);
     }
   }
   return out;
@@ -79,9 +79,46 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-const ALG_HASH = { HS256: 'SHA-256', HS384: 'SHA-384', HS512: 'SHA-512' } as const;
+type AlgInfo =
+  | { readonly kind: 'hmac'; readonly hash: 'SHA-256' | 'SHA-384' | 'SHA-512' }
+  | {
+      readonly kind: 'rsa';
+      readonly hash: 'SHA-256' | 'SHA-384' | 'SHA-512';
+      readonly algName: 'RSASSA-PKCS1-v1_5' | 'RSA-PSS';
+    }
+  | {
+      readonly kind: 'ec';
+      readonly hash: 'SHA-256' | 'SHA-384' | 'SHA-512';
+      readonly curve: 'P-256' | 'P-384' | 'P-521';
+    };
 
-export type JwtAlgorithm = keyof typeof ALG_HASH;
+const ALG_INFO = {
+  HS256: { kind: 'hmac', hash: 'SHA-256' },
+  HS384: { kind: 'hmac', hash: 'SHA-384' },
+  HS512: { kind: 'hmac', hash: 'SHA-512' },
+  RS256: { kind: 'rsa', hash: 'SHA-256', algName: 'RSASSA-PKCS1-v1_5' },
+  RS384: { kind: 'rsa', hash: 'SHA-384', algName: 'RSASSA-PKCS1-v1_5' },
+  RS512: { kind: 'rsa', hash: 'SHA-512', algName: 'RSASSA-PKCS1-v1_5' },
+  PS256: { kind: 'rsa', hash: 'SHA-256', algName: 'RSA-PSS' },
+  PS384: { kind: 'rsa', hash: 'SHA-384', algName: 'RSA-PSS' },
+  PS512: { kind: 'rsa', hash: 'SHA-512', algName: 'RSA-PSS' },
+  ES256: { kind: 'ec', hash: 'SHA-256', curve: 'P-256' },
+  ES384: { kind: 'ec', hash: 'SHA-384', curve: 'P-384' },
+  ES512: { kind: 'ec', hash: 'SHA-512', curve: 'P-521' },
+} as const satisfies Record<string, AlgInfo>;
+
+export type JwtAlgorithm = keyof typeof ALG_INFO;
+
+/** Key material: an HMAC secret, an imported `CryptoKey`, or a JWK. */
+export type JwtKey = string | Uint8Array | CryptoKey | JsonWebKey;
+
+/** A JWK with the `kid` rotation field (TS's dom `JsonWebKey` lacks it). */
+type JwkWithKid = JsonWebKey & { readonly kid?: string };
+
+/** PSS salt lengths per RFC 7518 §3.5: the hash's digest size. */
+function pssSaltLength(hash: 'SHA-256' | 'SHA-384' | 'SHA-512'): number {
+  return hash === 'SHA-256' ? 32 : hash === 'SHA-384' ? 48 : 64;
+}
 
 function jwtError(message: string): Error {
   const error = new Error(message);
@@ -96,10 +133,14 @@ export function isJwtError(error: unknown): boolean {
 
 const keyCache = new Map<string, Promise<CryptoKey>>();
 
-/** One imported HMAC key per (secret text, alg) — importing per signature
- * would cost a key-derivation pass on every request. */
-function getHmacKey(secretText: string, hash: string): Promise<CryptoKey> {
-  const cacheKey = `${hash}:${secretText}`;
+/** One imported HMAC key per (secret text, hash, usage) — importing per
+ * signature would cost a key-derivation pass on every request. */
+function getHmacKey(
+  secretText: string,
+  hash: string,
+  usages: readonly KeyUsage[]
+): Promise<CryptoKey> {
+  const cacheKey = `${hash}:${usages.join('+')}:${secretText}`;
   let key = keyCache.get(cacheKey);
   if (key === undefined) {
     key = crypto.subtle.importKey(
@@ -107,8 +148,42 @@ function getHmacKey(secretText: string, hash: string): Promise<CryptoKey> {
       new TextEncoder().encode(secretText),
       { name: 'HMAC', hash },
       false,
-      ['sign']
+      usages
     );
+    keyCache.set(cacheKey, key);
+  }
+  return key;
+}
+
+/** One imported asymmetric key per (alg, JWK, usage). */
+function importAsymKey(
+  jwk: JsonWebKey,
+  alg: JwtAlgorithm,
+  usages: readonly KeyUsage[]
+): Promise<CryptoKey> {
+  const info = ALG_INFO[alg];
+  const cacheKey = `${alg}:${usages.join('+')}:${JSON.stringify(jwk)}`;
+  let key = keyCache.get(cacheKey);
+  if (key === undefined) {
+    if (info.kind === 'rsa') {
+      key = crypto.subtle.importKey(
+        'jwk',
+        jwk,
+        { name: info.algName, hash: info.hash },
+        false,
+        usages
+      );
+    } else if (info.kind === 'ec') {
+      key = crypto.subtle.importKey(
+        'jwk',
+        jwk,
+        { name: 'ECDSA', namedCurve: info.curve },
+        false,
+        usages
+      );
+    } else {
+      throw jwtError(`HMAC key material cannot be imported as a JWK (${alg})`);
+    }
     keyCache.set(cacheKey, key);
   }
   return key;
@@ -118,8 +193,76 @@ function secretText(secret: string | Uint8Array): string {
   return typeof secret === 'string' ? secret : b64url(secret);
 }
 
+function isSecretKey(key: JwtKey): key is string | Uint8Array {
+  return typeof key === 'string' || key instanceof Uint8Array;
+}
+
+/** True when a CryptoKey's algorithm family matches the JWT alg. */
+function keyMatches(key: CryptoKey, info: AlgInfo): boolean {
+  const name = key.algorithm.name;
+  switch (info.kind) {
+    case 'hmac':
+      return name === 'HMAC';
+    case 'rsa':
+      return name === info.algName;
+    case 'ec':
+      return name === 'ECDSA';
+  }
+}
+
+/** Resolves signing key material for an algorithm, rejecting mismatches. */
+async function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
+  const info = ALG_INFO[alg];
+  if (info.kind === 'hmac') {
+    if (!isSecretKey(key)) {
+      throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
+    }
+    return getHmacKey(secretText(key), info.hash, ['sign']);
+  }
+  if (key instanceof CryptoKey) {
+    if (!keyMatches(key, info)) {
+      throw jwtError(`key does not match algorithm ${alg}`);
+    }
+    return key;
+  }
+  const jwk = key as JsonWebKey;
+  const expected = info.kind === 'rsa' ? 'RSA' : 'EC';
+  if (jwk.kty !== expected) {
+    throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
+  }
+  return importAsymKey(jwk, alg, ['sign']);
+}
+
+/** Resolves verification key material, rejecting family mismatches (this
+ * is the algorithm-confusion defense: an RS header can never be verified
+ * with HMAC secret bytes, and vice versa). */
+async function getVerifyKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
+  const info = ALG_INFO[alg];
+  if (info.kind === 'hmac') {
+    if (!isSecretKey(key)) {
+      throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
+    }
+    // HMAC verification re-signs and compares constant-time, so the key
+    // needs the sign usage (verify comes along for free).
+    return getHmacKey(secretText(key), info.hash, ['sign', 'verify']);
+  }
+  if (key instanceof CryptoKey) {
+    if (!keyMatches(key, info)) {
+      throw jwtError(`key does not match algorithm ${alg}`);
+    }
+    return key;
+  }
+  const jwk = key as JsonWebKey;
+  const expected = info.kind === 'rsa' ? 'RSA' : 'EC';
+  if (jwk.kty !== expected) {
+    throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
+  }
+  return importAsymKey(jwk, alg, ['verify']);
+}
+
 export type JwtSignOptions = {
-  /** HMAC algorithm; default HS256. */
+  /** Algorithm; default HS256. Required when signing with a `CryptoKey`
+   * or JWK (it cannot be derived safely). */
   readonly alg?: JwtAlgorithm;
   /** Lifetime in seconds from now (sets `exp`). */
   readonly expiresIn?: number;
@@ -145,16 +288,19 @@ export type RegisteredClaims = {
 };
 
 /**
- * Signs a payload as a compact JWT: `b64url(header).b64url(payload).b64url(HMAC)`.
+ * Signs a payload as a compact JWT: `b64url(header).b64url(payload).b64url(signature)`.
  * Claims from the options override same-named payload keys.
  */
 export async function signJwt(
   payload: Record<string, unknown>,
-  secret: string | Uint8Array,
+  key: JwtKey,
   options: JwtSignOptions = {}
 ): Promise<string> {
+  if (options.alg === undefined && !isSecretKey(key)) {
+    throw jwtError('signJwt: the alg option is required when signing with a CryptoKey or JWK');
+  }
   const alg = options.alg ?? 'HS256';
-  const hash = ALG_HASH[alg];
+  const info = ALG_INFO[alg];
   const now = Math.floor(Date.now() / 1000);
   const claims: Record<string, unknown> = { ...payload };
   if (options.issuedAt !== false) {
@@ -181,16 +327,26 @@ export async function signJwt(
   const encoder = new TextEncoder();
   const headerText = b64url(encoder.encode(JSON.stringify({ alg, typ: 'JWT' })));
   const payloadText = b64url(encoder.encode(JSON.stringify(claims)));
-  const key = await getHmacKey(secretText(secret), hash);
+  const signingKey = await getSignKey(key, alg);
+  const data = encoder.encode(`${headerText}.${payloadText}`);
+  const params: AlgorithmIdentifier | string =
+    info.kind === 'hmac'
+      ? 'HMAC'
+      : info.kind === 'rsa'
+        ? info.algName === 'RSA-PSS'
+          ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
+          : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
+        : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
   const sig = new Uint8Array(
-    await crypto.subtle.sign('HMAC', key, encoder.encode(`${headerText}.${payloadText}`))
+    await crypto.subtle.sign(params, signingKey, data)
   );
   return `${headerText}.${payloadText}.${b64url(sig)}`;
 }
 
 export type JwtVerifyOptions = {
-  /** Allowed algorithms; default every HS variant. The `none` family is
-   * rejected unconditionally. */
+  /** Allowed algorithms; default every supported one. `none` is rejected
+   * unconditionally. Key-family matching still guards against confusion:
+   * the supplied key must match the header's algorithm family. */
   readonly algorithms?: readonly JwtAlgorithm[];
   /** Required audience(s) — the token's `aud` must intersect. */
   readonly audience?: string | readonly string[];
@@ -216,11 +372,13 @@ function hasValue<T>(list: readonly T[] | undefined, value: unknown, what: strin
 /**
  * Verifies a compact JWT: structure, algorithm, signature, expiry,
  * not-before, and requested audience/issuer. Returns the payload plus its
- * registered claims; throws a `JwtError` on any failure.
+ * registered claims; throws a `JwtError` on any failure. HMAC verification
+ * compares constant-time against a re-signed digest; asymmetric families
+ * verify through `crypto.subtle.verify`.
  */
 export async function verifyJwt<T = Record<string, unknown>>(
   token: string,
-  secret: string | Uint8Array,
+  key: JwtKey,
   options: JwtVerifyOptions = {}
 ): Promise<T & RegisteredClaims> {
   const parts = token.split('.');
@@ -239,22 +397,38 @@ export async function verifyJwt<T = Record<string, unknown>>(
   }
   if (
     typeof header.alg !== 'string' ||
-    !(header.alg in ALG_HASH) ||
+    !(header.alg in ALG_INFO) ||
     (options.algorithms !== undefined && !options.algorithms.includes(header.alg as JwtAlgorithm))
   ) {
     throw jwtError(`unsupported algorithm '${String(header.alg)}'`);
   }
   const alg = header.alg as JwtAlgorithm;
-  const key = await getHmacKey(secretText(secret), ALG_HASH[alg]);
-  const expected = new Uint8Array(
-    await crypto.subtle.sign(
-      'HMAC',
-      key,
-      encoder.encode(`${headerText}.${payloadText}`)
-    )
-  );
-  if (!equalBytes(expected, sigBytes)) {
-    throw jwtError('invalid signature');
+  const info = ALG_INFO[alg];
+  const verifyingKey = await getVerifyKey(key, alg);
+  const data = encoder.encode(`${headerText}.${payloadText}`);
+  if (info.kind === 'hmac') {
+    const expected = new Uint8Array(
+      await crypto.subtle.sign('HMAC', verifyingKey, data)
+    );
+    if (!equalBytes(expected, sigBytes)) {
+      throw jwtError('invalid signature');
+    }
+  } else {
+    const params: AlgorithmIdentifier | string =
+      info.kind === 'rsa'
+        ? info.algName === 'RSA-PSS'
+          ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
+          : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
+        : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
+    const ok = await crypto.subtle.verify(
+      params,
+      verifyingKey,
+      sigBytes as Uint8Array<ArrayBuffer>,
+      data as Uint8Array<ArrayBuffer>
+    );
+    if (!ok) {
+      throw jwtError('invalid signature');
+    }
   }
   let payload: T & RegisteredClaims;
   try {
@@ -296,19 +470,110 @@ export async function verifyJwt<T = Record<string, unknown>>(
   return payload;
 }
 
+/** The token header a key resolver sees. */
+export type JwtHeader = {
+  readonly alg: string;
+  readonly kid?: string;
+};
+
+/** Resolves key material from a token header — the key-rotation hook. */
+export type KeyResolver = (header: JwtHeader) => JwtKey | Promise<JwtKey>;
+
+export type JwksOptions = {
+  /** Cache lifetime in ms; default 5 minutes. */
+  readonly ttlMs?: number;
+  /** Fetch implementation; default the global fetch. */
+  readonly fetchFn?: typeof fetch;
+};
+
+const jwksCache = new Map<
+  string,
+  { readonly exp: number; readonly keys: JwkWithKid[] }
+>();
+
+/**
+ * Builds a {@link KeyResolver} over a JWKS endpoint: fetches the key set,
+ * caches it for `ttlMs`, and picks by `kid` (first key when the token
+ * carries none). Fetches are cached per URL module-wide, so many app
+ * instances in one process share the rotation.
+ */
+export function createJwksResolver(
+  url: string,
+  options: JwksOptions = {}
+): KeyResolver {
+  const ttl = options.ttlMs ?? 300_000;
+  const fetchFn = options.fetchFn ?? globalThis.fetch;
+  return async (header) => {
+    const now = Date.now();
+    let cached = jwksCache.get(url);
+    if (cached === undefined || cached.exp <= now) {
+      const res = await fetchFn(url);
+      if (!res.ok) {
+        throw jwtError(`jwks fetch failed: HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as { keys?: JwkWithKid[] };
+      if (!Array.isArray(body.keys) || body.keys.length === 0) {
+        throw jwtError('malformed jwks: missing keys');
+      }
+      cached = { exp: now + ttl, keys: body.keys };
+      jwksCache.set(url, cached);
+    }
+    const candidates =
+      header.kid === undefined
+        ? cached.keys
+        : cached.keys.filter((key) => key.kid === header.kid);
+    const key = candidates[0];
+    if (key === undefined) {
+      throw jwtError(
+        header.kid === undefined
+          ? 'no jwks key available'
+          : `no jwks key for kid '${header.kid}'`
+      );
+    }
+    return key;
+  };
+}
+
 export type JwtAuthOptions = {
-  /** HMAC secret — required unless `verify` is provided. */
+  /** HMAC secret — one of `secret`/`key`/`keyResolver`/`jwks` is required
+   * unless `verify` is provided. */
   readonly secret?: string | Uint8Array;
+  /** Static key material (CryptoKey/JWK for RS/PS/ES, secret for HS). */
+  readonly key?: JwtKey;
+  /** Per-token key resolution (key rotation, multi-issuer). */
+  readonly keyResolver?: KeyResolver;
+  /** JWKS endpoint — shorthand for {@link createJwksResolver}. */
+  readonly jwks?: string | { readonly url: string; readonly ttlMs?: number };
+  /** Algorithms the gate accepts; default every supported one. */
+  readonly algorithms?: readonly JwtAlgorithm[];
   /** Header carrying the token; default `authorization`. */
   readonly header?: string;
   /** Scheme prefix stripped from the header value; default `'Bearer '`. */
   readonly prefix?: string;
   /** Cookie name to fall back to when the header is absent. */
   readonly cookie?: string;
-  /** Custom verification (key rotation, asymmetric keys, another library) —
-   * the returned value lands on `ctx.state.jwt`. */
+  /** Custom verification (another library, exotic tokens) — the returned
+   * value lands on `ctx.state.jwt`. */
   readonly verify?: (token: string) => unknown | Promise<unknown>;
 };
+
+function parseHeaderOf(token: string): JwtHeader {
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    throw jwtError('malformed token');
+  }
+  try {
+    const header = JSON.parse(
+      new TextDecoder().decode(b64urlDecode(parts[0] ?? ''))
+    ) as { alg?: unknown; kid?: unknown };
+    return {
+      alg: typeof header.alg === 'string' ? header.alg : '',
+      kid: typeof header.kid === 'string' ? header.kid : undefined,
+    };
+  } catch {
+    throw jwtError('malformed token header');
+  }
+}
 
 /**
  * The JWT gate middleware: extracts the token (header `Authorization:
@@ -318,14 +583,32 @@ export type JwtAuthOptions = {
  * below never runs.
  */
 export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
-  if (options.secret === undefined && options.verify === undefined) {
-    throw new Error('jwtAuth: provide a secret or a custom verify function');
+  const configured =
+    options.secret !== undefined ||
+    options.key !== undefined ||
+    options.keyResolver !== undefined ||
+    options.jwks !== undefined ||
+    options.verify !== undefined;
+  if (!configured) {
+    throw new Error(
+      'jwtAuth: provide a secret, key, keyResolver, jwks, or a custom verify function'
+    );
   }
   const headerName = options.header ?? 'authorization';
   const prefix = options.prefix ?? 'Bearer ';
   const cookieName = options.cookie;
   const verify = options.verify;
-  const secret = options.secret;
+  const staticKey: JwtKey | undefined = options.key ?? options.secret;
+  const resolver: KeyResolver | undefined =
+    options.keyResolver ??
+    (options.jwks !== undefined
+      ? createJwksResolver(
+          typeof options.jwks === 'string' ? options.jwks : options.jwks.url,
+          typeof options.jwks === 'string'
+            ? undefined
+            : { ttlMs: options.jwks.ttlMs }
+        )
+      : undefined);
   return async (ctx: Ctx, next) => {
     let token: string | undefined;
     const headerValue = ctx.req.headers.get(headerName);
@@ -341,7 +624,13 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
       ctx.state.jwt =
         verify !== undefined
           ? await verify(token)
-          : await verifyJwt(token, secret as string | Uint8Array);
+          : await verifyJwt(
+              token,
+              resolver !== undefined
+                ? await resolver(parseHeaderOf(token))
+                : (staticKey as JwtKey),
+              { algorithms: options.algorithms }
+            );
     } catch (error) {
       if (isJwtError(error)) {
         throw httpError(401, 'Invalid token');

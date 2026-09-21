@@ -28,6 +28,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import { createHash } from 'node:crypto';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 import {
   createWsCtx,
@@ -117,11 +118,48 @@ function acceptUpgrade(
   }
 
   const accept = createHash('sha1').update(key + WS_GUID).digest('base64');
+
+  // Subprotocol negotiation: server preference order — the first protocol
+  // the route declares that the client also offered wins.
+  const offered = req.headers['sec-websocket-protocol'];
+  const clientProtocols =
+    typeof offered === 'string'
+      ? offered.split(',').map((item) => item.trim()).filter((item) => item !== '')
+      : [];
+  let protocol: string | undefined;
+  for (const candidate of matched.route.protocols ?? []) {
+    if (clientProtocols.includes(candidate)) {
+      protocol = candidate;
+      break;
+    }
+  }
+
+  // permessage-deflate (RFC 7692): accept only as no-context-takeover in
+  // both directions — stateless per-message compression, no shared window
+  // state to maintain. server_max_window_bits is echoed only when the
+  // client offered it (§7.1.2.2: a server must not include it otherwise).
+  let deflate = false;
+  let extensionHeader = '';
+  if (matched.route.perMessageDeflate === true) {
+    const extHeader = req.headers['sec-websocket-extensions'];
+    const offer =
+      typeof extHeader === 'string' ? extHeader.toLowerCase() : '';
+    if (offer.split(',').some((ext) => ext.trim().startsWith('permessage-deflate'))) {
+      deflate = true;
+      const windowBits = offer.includes('server_max_window_bits')
+        ? '; server_max_window_bits=15'
+        : '';
+      extensionHeader = `Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover${windowBits}\r\n`;
+    }
+  }
+
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +
       'Upgrade: websocket\r\n' +
       'Connection: Upgrade\r\n' +
       `Sec-WebSocket-Accept: ${accept}\r\n` +
+      (protocol === undefined ? '' : `Sec-WebSocket-Protocol: ${protocol}\r\n`) +
+      extensionHeader +
       '\r\n'
   );
 
@@ -140,25 +178,28 @@ function acceptUpgrade(
     socket,
     head,
     maxPayload,
+    deflate,
+    protocol,
     matched.route.handler,
     createWsCtx(request, url, matched.params)
   );
 }
 
-/** One server-side frame: FIN+opcode byte, length, payload. */
-function frameHeader(opcode: number, length: number): Buffer {
+/** One server-side frame: FIN+RSV+opcode byte, length, payload. */
+function frameHeader(opcode: number, length: number, rsv1 = false): Buffer {
+  const b0 = 0x80 | (rsv1 ? 0x40 : 0) | opcode;
   if (length < 126) {
-    return Buffer.from([0x80 | opcode, length]);
+    return Buffer.from([b0, length]);
   }
   if (length < 65536) {
     const header = Buffer.alloc(4);
-    header[0] = 0x80 | opcode;
+    header[0] = b0;
     header[1] = 126;
     header.writeUInt16BE(length, 2);
     return header;
   }
   const header = Buffer.alloc(10);
-  header[0] = 0x80 | opcode;
+  header[0] = b0;
   header[1] = 127;
   header.writeBigUInt64BE(BigInt(length), 2);
   return header;
@@ -179,12 +220,15 @@ function runConnection(
   socket: Duplex,
   head: Buffer,
   maxPayload: number,
+  deflate: boolean,
+  protocol: string | undefined,
   handler: WebSocketHandler,
   ctx: Ctx
 ): void {
   const messageCbs: WsMessageCb[] = [];
   const closeCbs: WsCloseCb[] = [];
   const errorCbs: WsErrorCb[] = [];
+  const pongCbs: (() => void)[] = [];
 
   let pending = head;
   let finished = false;
@@ -194,10 +238,25 @@ function runConnection(
   let fragOpcode = 0; // 0 = no fragmented message in progress
   let fragChunks: Buffer[] = [];
   let fragSize = 0;
+  let msgRsv1 = false; // first frame of the in-progress message had RSV1
 
-  const writeFrame = (opcode: number, payload: Uint8Array): void => {
+  const writeFrame = (opcode: number, payload: Uint8Array, rsv1 = false): void => {
     if (finished) return;
-    socket.write(Buffer.concat([frameHeader(opcode, payload.byteLength), Buffer.from(payload)]));
+    socket.write(Buffer.concat([frameHeader(opcode, payload.byteLength, rsv1), Buffer.from(payload)]));
+  };
+
+  /** Compressed send per RFC 7692 + no-context-takeover: each message is
+   * deflated statelessly; a payload that does not shrink is sent raw
+   * (RSV1 unset — the peer inflates only what is flagged). */
+  const sendMessage = (opcode: number, payload: Uint8Array): void => {
+    if (deflate && payload.byteLength > 0) {
+      const compressed = deflateRawSync(payload);
+      if (compressed.byteLength < payload.byteLength) {
+        writeFrame(opcode, compressed, true);
+        return;
+      }
+    }
+    writeFrame(opcode, payload);
   };
 
   const sendClose = (code: number, reason: string): void => {
@@ -225,7 +284,25 @@ function runConnection(
     errorCbs.length = 0;
   };
 
-  const deliver = (opcode: number, payload: Buffer): void => {
+  const deliver = (opcode: number, payload: Buffer, inflate: boolean): void => {
+    if (inflate) {
+      // Stateless inflate (client_no_context_takeover was negotiated):
+      // bound the decompressed size so a compressed bomb cannot balloon
+      // past maxPayload — Node reports the overflow as ERR_BUFFER_TOO_LARGE.
+      try {
+        payload = inflateRawSync(payload, { maxOutputLength: maxPayload + 1 });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE'
+        ) {
+          failTooBig();
+        } else {
+          failProtocol();
+        }
+        return;
+      }
+    }
     let data: WsData;
     if (opcode === 0x1) {
       try {
@@ -262,6 +339,7 @@ function runConnection(
       const b0 = pending[0] ?? 0;
       const b1 = pending[1] ?? 0;
       const fin = (b0 & 0x80) !== 0;
+      const rsv1 = (b0 & 0x40) !== 0;
       const opcode = b0 & 0x0f;
       const masked = (b1 & 0x80) !== 0;
       let len = b1 & 0x7f;
@@ -287,6 +365,17 @@ function runConnection(
         failProtocol();
         return;
       }
+      // §5.2: RSV2/RSV3 are extensions we never negotiate; RSV1 means
+      // permessage-deflate — legal only when negotiated, on the FIRST frame
+      // of a data message, never on control frames or continuations.
+      if ((b0 & 0x30) !== 0) {
+        failProtocol();
+        return;
+      }
+      if (rsv1 && (!deflate || opcode >= 0x8 || opcode === 0x0)) {
+        failProtocol();
+        return;
+      }
       // §5.1: every client frame MUST be masked.
       if (!masked) {
         failProtocol();
@@ -309,7 +398,8 @@ function runConnection(
 
       switch (opcode) {
         case 0x0: {
-          // Continuation: only legal mid-fragmentation.
+          // Continuation: only legal mid-fragmentation, and never with
+          // RSV1 (it flags only a message's first frame).
           if (fragOpcode === 0) {
             failProtocol();
             return;
@@ -326,7 +416,9 @@ function runConnection(
             fragSize = 0;
             const op = fragOpcode;
             fragOpcode = 0;
-            deliver(op, message);
+            const inflate = msgRsv1;
+            msgRsv1 = false;
+            deliver(op, message, inflate);
           }
           break;
         }
@@ -340,6 +432,7 @@ function runConnection(
             fragOpcode = opcode;
             fragChunks = [payload];
             fragSize = len;
+            msgRsv1 = rsv1;
             if (fragSize > maxPayload) {
               failTooBig();
               return;
@@ -349,7 +442,7 @@ function runConnection(
               failTooBig();
               return;
             }
-            deliver(opcode, payload);
+            deliver(opcode, payload, rsv1);
           }
           break;
         }
@@ -388,7 +481,8 @@ function runConnection(
           writeFrame(0xa, payload);
           break;
         case 0xa:
-          // Pong: nothing to do.
+          // Pong: surface to the heartbeat watchers.
+          for (const cb of pongCbs) cb();
           break;
         default:
           failProtocol();
@@ -427,13 +521,23 @@ function runConnection(
   const socketApi: WsSocket = {
     send(data) {
       if (typeof data === 'string') {
-        writeFrame(0x1, TEXT_ENCODER.encode(data));
+        sendMessage(0x1, TEXT_ENCODER.encode(data));
       } else {
-        writeFrame(0x2, data instanceof Uint8Array ? data : new Uint8Array(data));
+        sendMessage(0x2, data instanceof Uint8Array ? data : new Uint8Array(data));
       }
     },
     close(code, reason) {
       sendClose(code ?? 1000, reason ?? '');
+    },
+    protocol,
+    ping(payload) {
+      const bytes =
+        payload === undefined
+          ? new Uint8Array(0)
+          : typeof payload === 'string'
+            ? TEXT_ENCODER.encode(payload)
+            : payload;
+      writeFrame(0x9, bytes);
     },
     onMessage(cb) {
       messageCbs.push(cb);
@@ -443,6 +547,9 @@ function runConnection(
     },
     onError(cb) {
       errorCbs.push(cb);
+    },
+    onPong(cb) {
+      pongCbs.push(cb);
     },
   };
 

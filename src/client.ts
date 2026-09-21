@@ -41,14 +41,33 @@ export type ClientOptions = {
 
 /** One route's call signature: params required exactly when the pattern
  * captures them (`:id`), optional when the pattern declares them (`:id?`),
- * absent for plain patterns (the `init` moves up one position). */
+ * absent for plain patterns (the `init` moves up one position). The
+ * returned `Response` carries a typed `json()` when the handler returned a
+ * branded {@link JsonResponse} — `unknown` otherwise. */
 type RouteCall<D extends RouteDef> = D extends {
   readonly pattern: infer P extends string;
 }
   ? keyof ParamsOf<P> extends never
-    ? (path: P, init?: ClientInit) => Promise<Response>
-    : (path: P, args: ParamsOf<P>, init?: ClientInit) => Promise<Response>
+    ? (path: P, init?: ClientInit) => Promise<ClientResponse<DefOut<D>>>
+    : (
+        path: P,
+        args: ParamsOf<P>,
+        init?: ClientInit
+      ) => Promise<ClientResponse<DefOut<D>>>
   : never;
+
+/** The response-body type a route def carries, `unknown` when untyped. */
+type DefOut<D extends RouteDef> = D extends { readonly out: infer O }
+  ? O
+  : unknown;
+
+/**
+ * A `Response` whose `json()` resolves to the route's declared body type —
+ * a type-level view over the real fetch response (hono's `ClientResponse`
+ * shape). Untyped routes resolve `unknown`, not `any`: the body is real,
+ * its shape is unproven.
+ */
+export type ClientResponse<O> = Response & { json(): Promise<O> };
 
 /** Union → intersection: a union of signatures is not an overload (calls
  * require an argument matching the *intersection* of the parameters); an

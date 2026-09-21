@@ -30,9 +30,16 @@
     "./csrf": "./dist/csrf.mjs",
     "./jwt": "./dist/jwt.mjs",
     "./cache": "./dist/cache.mjs",
-    "./trust-proxy": "./dist/trust-proxy.mjs"
+    "./trust-proxy": "./dist/trust-proxy.mjs",
+    "./meta": "./dist/meta.mjs",
+    "./openapi": "./dist/openapi.mjs",
+    "./deno": "./dist/deno.mjs",
+    "./cloudflare": "./dist/cloudflare.mjs"
   },
   "publish": {
-    "include": ["dist", "README.md"]
+    "include": [
+      "dist",
+      "README.md"
+    ]
   }
 }

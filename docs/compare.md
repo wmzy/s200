@@ -20,15 +20,16 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | Router | static-prefix trie, every static segment indexed | RegExpRouter / TrieRouter | path-to-regexp | find-my-way radix | koa-router (path-to-regexp) |
 | Optional params `:id?` | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Typed params from pattern literal | ✅ `ParamsOf` | ✅ (infer) | ❌ | ✅ (typebox schemas) | ❌ |
-| Typed HTTP client from the app | ✅ `s200/client` | ✅ `hc` (RPC) | ❌ | ❌ | ❌ |
+| Typed HTTP client from the app | ✅ paths + params + query + JSON bodies | ✅ `hc` (full RPC) | ❌ | ❌ | ❌ |
 | Route removal | ✅ `removeRoute` | ❌ | partial | ❌ | ❌ |
-| Route table as data | ✅ JSON-exportable | ❌ | ❌ | ✅ | ❌ |
+| Route table as data | ✅ JSON-exportable + OpenAPI | ❌ | ❌ | ✅ | ❌ |
 | HTTPS / HTTP/2 in adapter | ✅ | ✅ | ✅ | ✅ | 3rd-party |
-| WebSocket | ✅ zero-dep RFC 6455 node + bun | ✅ | 3rd-party | 3rd-party | 3rd-party |
+| WebSocket | ✅ zero-dep RFC 6455 node + bun (subprotocols, permessage-deflate, heartbeat) | ✅ | 3rd-party | 3rd-party | 3rd-party |
 | Batteries | 22 opt-in (cors, cookies, csrf, jwt, cache, etag, compress, rate-limit, …) | ~20 (incl. csrf/jwt/cache) | ecosystem | plugin ecosystem | ecosystem |
-| Throughput class (see benchmarks) | Web Standard object class | same (patched: 1.5×) | ~0.6× | patched class | below |
+| Throughput class (see benchmarks) | Web Standard object class; opt-in light mode ~1.3× | same (patched: 1.5×) | ~0.6× | patched class | below |
 | Core size (min+gz) | 2.9 kB | ~10 kB+ | — | — | tiny, no batteries |
 | Validation integration | generic gate over any parser | zod/valibot/typebox built-in | ecosystem | JSON Schema native | ecosystem |
+| OpenAPI | ✅ native 3.1 from the route table | zod-openapi (dep) | ❌ | swagger plugin | ❌ |
 | JSX / SSG / dev server | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Ecosystem size | young | large | huge | large | large |
 
@@ -41,8 +42,10 @@ calls, zero dependencies, every module tree-shakable and replaceable.
   Hono's `onError` sits outside the chain.
 - **Every static segment indexed**: `/:tenant/resourceN` tables don't
   degrade to linear scans (see `docs/benchmarks.md` router numbers).
-- **The app is data**: export the route table as JSON, type a fetch client
-  from it, or translate it to another language — no execution needed.
+- **The app is data**: export the route table as JSON, emit the OpenAPI 3.1
+  document from it, type a fetch client from it, or translate it to another
+  language — no execution needed. No schema library: route annotations reuse
+  the `SerializeSchema` DSL that already compiles serializers and infers types.
 - **Replaceable everything**: custom matcher, custom error/404 policy,
   injected I/O for static files — the batteries prove the pattern.
 
@@ -50,9 +53,11 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 
 - **No JSX/SSG/dev-server story** — Hono's frontend-adjacent features are
   out of scope; s200 is a server framework.
-- **No full RPC inference** — `s200/client` types paths, params, and
-  query-building, but not response bodies from handler types (a Hono
-  `hc`/Elysia Eden-class inference is a much larger type project).
+- **No full RPC inference** — `s200/client` types paths, params, query-
+  building, and JSON response bodies (handlers returning `json(ctx, data)`
+  brand the body type; plain `Response` handlers stay `unknown`), but input
+  validation types and Hono `hc`/Elysia Eden-class end-to-end inference are
+  a much larger type project.
 - **Throughput behind the patched class** — s200 always uses the
   platform's real `Request`/`Response`; fastify/elysia/hono-patched avoid
   undici's constructor cost with lighter objects. The gap is per-request

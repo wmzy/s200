@@ -40,23 +40,47 @@ export type WsSocket = {
   /** Starts the close handshake: a close frame is sent and the
    * connection ends once the peer answers (or the runtime gives up). */
   readonly close: (code?: number, reason?: string) => void;
+  /** The negotiated subprotocol (`Sec-WebSocket-Protocol`), when the
+   * route declared protocols and the client offered one — `undefined`
+   * otherwise. */
+  readonly protocol: string | undefined;
+  /** Sends a ping frame — the keep-alive primitive. The peer's automatic
+   * pong surfaces through {@link onPong}; pair them to detect dead peers. */
+  readonly ping: (payload?: string | Uint8Array) => void;
   readonly onMessage: (cb: WsMessageCb) => void;
   /** Fires once, with the negotiated close code (1006 when the
    * connection dropped without a close frame). */
   readonly onClose: (cb: WsCloseCb) => void;
   /** Transport/processing errors on this connection. */
   readonly onError: (cb: WsErrorCb) => void;
+  /** Pong frames received — replies to {@link ping} (RFC 6455 §5.5.3). */
+  readonly onPong: (cb: () => void) => void;
 };
 
 /** A WebSocket route handler: receives the socket plus a request-shaped
  * context (`params`, `query`, `url`, `req` from the upgrade request). */
 export type WebSocketHandler = (socket: WsSocket, ctx: Ctx) => void | Promise<void>;
 
+export type WebSocketRouteOptions = {
+  /** Subprotocols the route speaks, in server preference order — the
+   * first one the client also offered wins the negotiation. */
+  readonly protocols?: readonly string[];
+  /**
+   * Enable permessage-deflate (RFC 7692). Negotiated as no-context-
+   * takeover both ways, so each message compresses/inflates statelessly.
+   * Implemented by the node adapter (`s200/websocket/node`); the bun
+   * bridge leaves compression to Bun's native negotiation.
+   */
+  readonly perMessageDeflate?: boolean;
+};
+
 /** One registered WebSocket route: pattern, parsed segments, handler. */
 export type WebSocketRoute = {
   readonly pattern: string;
   readonly segments: readonly Segment[];
   readonly handler: WebSocketHandler;
+  readonly protocols?: readonly string[];
+  readonly perMessageDeflate?: boolean;
 };
 
 /** A matched WebSocket route plus the captured path params. */
@@ -72,18 +96,25 @@ const registry = new WeakMap<App, WebSocketRoute[]>();
 
 /**
  * Registers a WebSocket handler for `pattern` (`:param` / terminal `*rest`
- * segments; first registration wins, like HTTP routes). Returns the app.
+ * segments; first registration wins, like HTTP routes). Options declare
+ * the route's subprotocols (server preference order) and whether the node
+ * adapter may negotiate permessage-deflate. Returns the app.
  */
 export function upgradeWebSocket(
   app: App,
   pattern: string,
-  handler: WebSocketHandler
+  handler: WebSocketHandler,
+  options: WebSocketRouteOptions = {}
 ): App {
   const list = registry.get(app);
   const route: WebSocketRoute = {
     pattern,
     segments: createSegments(pattern),
     handler,
+    ...(options.protocols !== undefined && options.protocols.length > 0
+      ? { protocols: options.protocols }
+      : {}),
+    ...(options.perMessageDeflate === true ? { perMessageDeflate: true } : {}),
   };
   if (list === undefined) {
     registry.set(app, [route]);

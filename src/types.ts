@@ -64,11 +64,13 @@ export type Middleware<S extends State = State> = (
 
 /**
  * Route terminal handler. May return a `Response` — `handle` adopts it as
- * `ctx.res` when nothing was written yet.
+ * `ctx.res` when nothing was written yet. `O` is the return type; when it
+ * is a branded {@link JsonResponse}, the route's phantom log entry records
+ * the body type for `s200/client` (`ResolveOut`).
  */
-export type Handler<P extends Params = Params, S extends State = State> = (
+export type Handler<P extends Params = Params, S extends State = State, O = unknown> = (
   ctx: Ctx<P, S>
-) => unknown | Promise<unknown>;
+) => O | Promise<O>;
 
 /**
  * Per-request context. The unit of mutation: middlewares and handlers write
@@ -95,10 +97,27 @@ export type Segment =
 
 /**
  * One registered route's compile-time signature: normalized method plus the
- * pattern literal. Carried by {@link App}'s phantom `R` parameter so
- * `s200/client` can type paths and params from the app itself.
+ * pattern literal, and — when the terminal handler returned a branded
+ * {@link JsonResponse} — the response body type (`out`). Carried by
+ * {@link App}'s phantom `R` parameter so `s200/client` can type paths,
+ * params, and `json()` bodies from the app itself.
  */
-export type RouteDef = { readonly method: string; readonly pattern: string };
+export type RouteDef = {
+  readonly method: string;
+  readonly pattern: string;
+  readonly out?: unknown;
+};
+
+/**
+ * The response-body type carried out of a handler return type: unwraps the
+ * Promise, extracts a branded {@link JsonResponse}'s body, and falls back
+ * to `unknown` for everything else (plain `Response`, `redirect`, streams).
+ */
+export type ResolveOut<O> = [O] extends [Promise<infer P>]
+  ? ResolveOut<P>
+  : O extends { readonly _out?: infer T }
+    ? T
+    : unknown;
 
 /** `R` minus the routes registered for method `M` + pattern `P` — the
  * compile-time twin of `removeRoute`'s runtime filter. */
@@ -118,7 +137,8 @@ export type MountBase<B extends string> =
   B extends '' | '/' ? '' : B extends `${infer Rest}/` ? MountBase<Rest> : B;
 
 /** The route defs of a mounted sub-app, patterns prefixed under `Base`
- * (the sub-app root `/` collapses onto the bare prefix). */
+ * (the sub-app root `/` collapses onto the bare prefix). `out` rides along
+ * so a mounted app's client keeps its response-body types. */
 export type MountedDefs<
   R extends readonly RouteDef[],
   Base extends string
@@ -130,7 +150,7 @@ export type MountedDefs<
           readonly pattern: Head['pattern'] extends '/'
             ? Base
             : `${Base}${Head['pattern']}`;
-        },
+        } & (Head extends { readonly out: infer O } ? { readonly out: O } : unknown),
         ...MountedDefs<Tail, Base>
       ]
     : [];

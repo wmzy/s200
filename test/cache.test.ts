@@ -144,3 +144,64 @@ describe('cache', () => {
     runs.should.equal(2);
   });
 });
+
+describe('cache store injection', () => {
+  it('uses an injected store for reads and writes', async () => {
+    let runs = 0;
+    const entries = new Map<string, import('../src/cache').CacheEntry>();
+    const store: import('../src/cache').CacheStore = {
+      get: (key: string) => entries.get(key),
+      set: (key, entry) => {
+        entries.set(key, entry);
+      },
+      delete: (key) => {
+        entries.delete(key);
+      },
+    };
+    const app = createApp();
+    use(app, cache({ store }));
+    get(app, '/data', (ctx) => {
+      runs += 1;
+      return json(ctx, { n: runs });
+    });
+
+    const first = await handle(app, new Request('http://localhost/data'));
+    (await first.json()).should.deep.equal({ n: 1 });
+
+    // A brand-new app sharing the store serves the cached entry without
+    // running its own handler.
+    const app2 = createApp();
+    use(app2, cache({ store }));
+    get(app2, '/data', (ctx) => {
+      runs += 1;
+      return json(ctx, { n: runs });
+    });
+    const second = await handle(app2, new Request('http://localhost/data'));
+    (await second.json()).should.deep.equal({ n: 1 });
+    runs.should.equal(1);
+  });
+
+  it('honours expiry through an injected store', async () => {
+    let runs = 0;
+    const entries = new Map<string, import('../src/cache').CacheEntry>();
+    const store: import('../src/cache').CacheStore = {
+      get: (key: string) => entries.get(key),
+      set: (key, entry) => {
+        entries.set(key, entry);
+      },
+      delete: (key) => {
+        entries.delete(key);
+      },
+    };
+    const app = createApp();
+    use(app, cache({ store, ttl: 0 }));
+    get(app, '/data', () => {
+      runs += 1;
+      return new Response('ok');
+    });
+    await handle(app, new Request('http://localhost/data'));
+    await handle(app, new Request('http://localhost/data'));
+    runs.should.equal(2);
+    entries.size.should.equal(1);
+  });
+});

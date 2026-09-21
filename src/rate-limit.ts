@@ -62,6 +62,7 @@ const MAX_BUCKETS = 10_000;
  */
 function memoryStore(): RateLimitStore {
   const buckets = new Map<string, number[]>();
+  let hits = 0;
   return {
     hit(key, now, limit, windowMs) {
       let timestamps = buckets.get(key);
@@ -82,7 +83,11 @@ function memoryStore(): RateLimitStore {
       }
       timestamps.push(now);
       const count = timestamps.length;
-      if (count > limit && buckets.size > MAX_BUCKETS) {
+      // Sweep on over-limit AND on a hit counter: an under-limit-only
+      // workload would otherwise never trigger cleanup once the map
+      // passed MAX_BUCKETS, leaking one deque per distinct key forever.
+      hits += 1;
+      if (buckets.size > MAX_BUCKETS && (count > limit || hits % 256 === 0)) {
         for (const [candidate, entries] of buckets) {
           while (entries.length > 0 && (entries[0] ?? 0) <= cutoff) {
             entries.shift();

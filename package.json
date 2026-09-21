@@ -266,6 +266,46 @@
         "default": "./dist/cache.cjs"
       }
     },
+    "./meta": {
+      "import": {
+        "types": "./dist/types/meta.d.mts",
+        "default": "./dist/meta.mjs"
+      },
+      "require": {
+        "types": "./dist/types/meta.d.ts",
+        "default": "./dist/meta.cjs"
+      }
+    },
+    "./openapi": {
+      "import": {
+        "types": "./dist/types/openapi.d.mts",
+        "default": "./dist/openapi.mjs"
+      },
+      "require": {
+        "types": "./dist/types/openapi.d.ts",
+        "default": "./dist/openapi.cjs"
+      }
+    },
+    "./deno": {
+      "import": {
+        "types": "./dist/types/deno.d.mts",
+        "default": "./dist/deno.mjs"
+      },
+      "require": {
+        "types": "./dist/types/deno.d.ts",
+        "default": "./dist/deno.cjs"
+      }
+    },
+    "./cloudflare": {
+      "import": {
+        "types": "./dist/types/cloudflare.d.mts",
+        "default": "./dist/cloudflare.mjs"
+      },
+      "require": {
+        "types": "./dist/types/cloudflare.d.ts",
+        "default": "./dist/cloudflare.cjs"
+      }
+    },
     "./trust-proxy": {
       "import": {
         "types": "./dist/types/trust-proxy.d.mts",
@@ -337,14 +377,14 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "6.5 KB"
+      "limit": "7.5 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
       "path": "src/index.ts",
       "import": "{ createApp, use, get, handle }",
       "gzip": true,
-      "limit": "3 KB"
+      "limit": "4 KB"
     },
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
@@ -353,19 +393,19 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "2.5 KB"
+      "limit": "3.5 KB"
     },
     {
       "name": "compress battery (min+gz)",
       "path": "dist/compress.mjs",
       "gzip": true,
-      "limit": "1 KB"
+      "limit": "1.5 KB"
     },
     {
       "name": "streaming battery (min+gz)",
       "path": "dist/streaming.mjs",
       "gzip": true,
-      "limit": "1.2 KB"
+      "limit": "1.4 KB"
     },
     {
       "name": "request-id battery (min+gz)",
@@ -383,7 +423,14 @@
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
-      "limit": "1.2 KB"
+      "limit": "1.6 KB"
+    },
+    {
+      "name": "openapi battery: meta + openapi (min+gz)",
+      "path": "src/openapi.ts",
+      "import": "{ openapiSpec, openapiJson }",
+      "gzip": true,
+      "limit": "1.8 KB"
     }
   ],
   "lint-staged": {

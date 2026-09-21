@@ -156,6 +156,8 @@ redirect(ctx, '/login');                 // 302
 send(ctx, bytes, { headers: { 'content-type': 'application/pdf' } });
 ```
 
+`html` does **not** escape — interpolating user input is a template's job (or run `escapeHtml(value)` first), mirroring `hono/html`'s explicit-escape contract: `html(ctx, \`<p>${escapeHtml(user)}</p>\`)`.
+
 Handlers may also simply **return** a `Response` — it is written for you when nothing has been written yet. If a matched chain finishes without writing anything, s200 answers `500 {"error":"No response written"}`; an unmatched, unwritten request goes to `onNotFound` (default `404`). The fallbacks are materialized inside the chain, so middlewares on the unwind (logger, cors) see and stamp the real response.
 
 The helpers set `content-length` explicitly when the size is known (platforms serialize it lazily, so a bare `new Response('…')` carries none): HEAD responses keep the would-be size, and size-aware middlewares (`compress`'s `minBytes`, `s200/etag`) can see it.
@@ -230,9 +232,13 @@ import { accepts } from 's200/accepts';
 import { serialize, jsonRaw } from 's200/serialize';
 import { createClient } from 's200/client';
 import { createCsrf } from 's200/csrf';
+import { describeRoute, describeApp } from 's200/meta';
+import { openapiSpec, openapiJson } from 's200/openapi';
 import { signJwt, verifyJwt, jwtAuth } from 's200/jwt';
 import { cache } from 's200/cache';
 import { trustProxy } from 's200/trust-proxy';
+import { serve as serveDeno } from 's200/deno';
+import { createHandler } from 's200/cloudflare';
 ```
 
 **CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
@@ -253,7 +259,19 @@ createRouteTable(app);
 // { routes: [{ method: 'GET', pattern: '/users/:id', params: ['id'], middlewareCount: 1 }, …] }
 ```
 
-Handy for OpenAPI generation, route listing, or cross-language translation.
+Handy for route listing or cross-language translation — and `s200/openapi` builds the OpenAPI 3.1 document from the same table (see below).
+
+**OpenAPI** — the route table is the API surface, so the OpenAPI 3.1 document comes out of it directly: `describeRoute` annotates (summary, tags, query/body schemas in the `SerializeSchema` DSL, response shapes), `openapiSpec` emits the spec, and unannotated routes still appear with their params and a bare 200:
+
+```ts
+describeApp(app, { title: 'Users API', version: '1.0.0' });
+describeRoute(app, 'GET', '/users/:id', {
+  summary: 'Fetch one user',
+  responses: { 200: { description: 'ok',
+    schema: { type: 'object', properties: { id: { type: 'integer' } }, required: ['id'] } } },
+});
+get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
+```
 
 **Cookies** — read, write, and sign as pure functions. Writing appends a proper `Set-Cookie` header (repeat calls stay separate headers, never comma-joined); call it once the response exists — the natural spot is the unwind, after `await next()`:
 
@@ -299,7 +317,13 @@ await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });           
 serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
 ```
 
-The node server implements the protocol essentials — handshake, text/binary with fragmentation, ping/pong, close handshake, a `maxPayload` budget (default 64 MiB, 1009 beyond it). No permessage-deflate or subprotocols: bring `ws` and wire the raw `upgrade` option yourself when you need those.
+The node server implements the protocol — handshake, text/binary with fragmentation, ping/pong, close handshake, a `maxPayload` budget (default 64 MiB, 1009 beyond it) — plus opt-in subprotocol negotiation and permessage-deflate (RFC 7692, no-context-takeover both ways), and a heartbeat surface (`socket.ping()` / `socket.onPong()`):
+
+```ts
+upgradeWebSocket(app, '/graphql', (socket) => socket.onMessage(handle),
+  { protocols: ['graphql-ws', 'graphql-transport-ws'], perMessageDeflate: true });
+// socket.protocol carries the negotiated subprotocol; bun negotiates it too
+```
 
 **ETag** — stamps a weak SHA-1 entity tag on byte-backed responses and answers `If-None-Match` hits with 304. Byte-backed means an explicit `content-length` — s200's respond helpers (`json`/`text`/`html`/`send`) set it, and a bare `new Response('…')` needs it set by hand (platforms serialize content-length lazily). Chunked/streamed responses (SSE, `s200/streaming`) are skipped, not buffered:
 
@@ -330,19 +354,26 @@ use(app, csrf.middleware);
 get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="${await csrf.token(ctx)}">`));
 ```
 
-**JWT** — HS256/384/512 over WebCrypto, zero dependencies. `signJwt`/`verifyJwt` are the pure functions (verification rejects `alg:none` unconditionally, enforces `exp`/`nbf`, and checks `aud`/`iss` on request); `jwtAuth` is the gate, storing the payload on `ctx.state.jwt` and answering `401` before the chain below runs:
+**JWT** — HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, zero dependencies. `signJwt`/`verifyJwt` take a secret string, a `CryptoKey`, or a JWK; verification rejects `alg:none` unconditionally, enforces `exp`/`nbf`, checks `aud`/`iss` on request, and key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key — the confusion attack is structurally closed). `jwtAuth` is the gate, storing the payload on `ctx.state.jwt` and answering `401` before the chain below runs:
 
 ```ts
 const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });
 use(app, jwtAuth({ secret: JWT_SECRET }));              // Authorization: Bearer …
 get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
+
+// Key rotation: a JWKS endpoint resolves keys by kid (cached, module-wide).
+use(app, jwtAuth({ jwks: 'https://idp.example/.well-known/jwks.json' }));
+// …or a custom resolver: jwtAuth({ keyResolver: (header) => … })
 ```
 
-**Cache** — in-memory response cache with TTL + LRU-ish eviction and a bounded body size. Safe by default: GET/200-only, `Set-Cookie` responses are never stored, `Authorization` requests never served, `Cache-Control: no-cache` forces a pass:
+**Cache** — response cache with TTL + LRU-ish eviction and a bounded body size. Safe by default: GET/200-only, `Set-Cookie` responses are never stored, `Authorization` requests never served, `Cache-Control: no-cache` forces a pass:
 
 ```ts
 use(app, cache({ ttl: 60, max: 1000 }));
+use(app, cache({ store: redisCacheStore }));   // shared store across instances
 ```
+
+The default store is in-process; a custom `store` (`get`/`set`/`delete` over `{ exp, status, headers, body }` entries) shares the cache across instances — expiry is still checked by the middleware on every read.
 
 **Trust proxy** — corrects `ctx.url`'s protocol/host from `X-Forwarded-Proto`/`X-Forwarded-Host` and records the client address in `ctx.state.proxy`, with hop counting for `X-Forwarded-For`. Register it before `s200/csrf`, `s200/secure-headers`, and anything that builds absolute URLs:
 
@@ -378,11 +409,15 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 
 It is a serialization shape, not a validator: type mismatches are not checked, and `NaN`/`Infinity` serialize as `null` (JSON semantics).
 
-**Compress** — gzip/deflate response compression via the Web Standard `CompressionStream` (no `node:zlib` — works on Node 18+, Bun, Deno). Negotiates `Accept-Encoding` q-values, skips bodyless/encoded/`no-transform` responses and small bodies (when a content-length is known), and maintains `Vary: Accept-Encoding`:
+**Compress** — gzip/deflate response compression via the Web Standard `CompressionStream` (no `node:zlib` — works on Node 18+, Bun, Deno), plus opt-in brotli through an injected encoder (`CompressionStream` has no brotli; `s200/node` ships `brotliCompress` over `node:zlib`). Negotiates `Accept-Encoding` q-values, skips bodyless/encoded/`no-transform` responses and small bodies (when a content-length is known), and maintains `Vary: Accept-Encoding`:
 
 ```ts
 use(app, compress({ minBytes: 1024 }));
+import { brotliCompress } from 's200/node';
+use(app, compress({ minBytes: 1024, brotli: { compress: brotliCompress } }));
 ```
+
+Brotli is a buffered path — it applies to byte-backed responses only (a declared content-length); streamed responses fall back to gzip/deflate.
 
 **Streaming** — `stream` serves push-driven chunks; `streamSSE` frames Server-Sent Events with backpressure-aware writes:
 
@@ -416,10 +451,11 @@ const api = post(b, '/users/:id?', () => new Response('ok'));
 
 const client = createClient(api, { baseUrl: 'http://localhost:3000' });
 const res = await client.get('/users/:id', { id: '42' }, { query: { expand: 'posts' } });
+const body = await res.json();                 // typed: { id: string }
 await client.post('/users/:id?', {});          // id optional — absent is allowed
 ```
 
-The client talks plain `fetch` — any server speaking the same patterns answers, not just an s200 app. Typing flows from the registrars' return types, so **thread the returns** (as above) to keep the route log; `usePlugin`-registered routes and `removeRoute` erasure are the documented exceptions. Response bodies are not inferred from handler types — this is typed paths + params + query building, not full RPC inference.
+The client talks plain `fetch` — any server speaking the same patterns answers, not just an s200 app. Typing flows from the registrars' return types, so **thread the returns** (as above) to keep the route log; `usePlugin`-registered routes and `removeRoute` erasure are the documented exceptions. Response bodies are typed when the handler returns `json(ctx, data)` — the branded return carries the body shape into the route log and `client.get(...).json()` resolves it (`unknown` for plain `Response` handlers). Full RPC inference (input/validation types) remains out of scope: this is typed paths + params + query + JSON bodies.
 
 ## Errors
 
@@ -455,7 +491,9 @@ import { serve } from 's200/bun';
 const server = serve(app, { port: 3000 });
 ```
 
-Both adapters expose the identical `serve(app, options)` surface; the core's `handle(app, request)` is the entire integration contract for any runtime with a fetch-shaped handler.
+Both adapters expose the identical `serve(app, options)` surface; the core's `handle(app, request)` is the entire integration contract for any runtime with a fetch-shaped handler — `s200/deno` (`serve(app)` over `Deno.serve`) and `s200/cloudflare` (`createHandler(app)` as the module worker's default export) are the one-line adapters for those runtimes.
+
+`s200/node` has an opt-in **light mode** — `serve(app, { light: true })` swaps the platform's per-request `Request`/`Response` constructors for light-weight duck-typed ones (nothing global is patched, the Web Standard contract stays the default). See `docs/benchmarks.md`: it buys ~28% whole-request throughput and lands between the real-Web-Standard class and the patched one.
 
 `s200/node` also serves TLS — HTTPS, or HTTP/2 over TLS — through the same dispatch pipeline (`upgrade` stays HTTP/1.1-only and cannot combine with `https`):
 
@@ -472,7 +510,7 @@ await serve(app, {
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 

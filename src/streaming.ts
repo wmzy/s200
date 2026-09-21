@@ -14,6 +14,8 @@
 
 import type { Ctx } from './types';
 
+import { newResponse } from './respond';
+
 /** Chunk writer handed to a `stream` pump. */
 export type StreamWriter = {
   /**
@@ -140,7 +142,7 @@ export function stream(
   init?: ResponseInit
 ): Response {
   const body = runPump<StreamWriter>((base) => base, pump);
-  ctx.res = new Response(body, {
+  ctx.res = newResponse(ctx, body, {
     ...init,
     headers: {
       'content-type': 'application/octet-stream',
@@ -167,7 +169,7 @@ export function streamSSE(
     heartbeat: (message = 'heartbeat') =>
       base.write(`: ${message}\n\n`),
   }), pump);
-  ctx.res = new Response(body, {
+  ctx.res = newResponse(ctx, body, {
     ...init,
     headers: {
       'content-type': 'text/event-stream',

@@ -91,3 +91,34 @@ describe('compress', function () {
     noDe.headers.get('content-encoding')!.should.equal('deflate');
   });
 });
+
+describe('compress brotli', () => {
+  it('negotiates br through the injected encoder', async () => {
+    const app = createApp();
+    use(app, compress({ minBytes: 0, brotli: { compress: async (bytes) => new Uint8Array(bytes).reverse() } }));
+    get(app, '/', () => new Response('hello brotli world '.repeat(10), { headers: { 'content-length': '200' } }));
+    const res = await handle(app, new Request('http://localhost/', { headers: accept('br') }));
+    res.headers.get('content-encoding')!.should.equal('br');
+    // The fake encoder reverses; reversing twice restores the body.
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const restored = Buffer.from(bytes).reverse().toString();
+    restored.should.equal('hello brotli world '.repeat(10));
+  });
+
+  it('falls back to gzip for streamed bodies when only br is offered', async () => {
+    const app = createApp();
+    use(app, compress({ brotli: { compress: async () => new Uint8Array(0) } }));
+    get(app, '/', () => new Response('no content-length here'));
+    const res = await handle(app, new Request('http://localhost/', { headers: accept('br') }));
+    // No declared length → brotli disallowed → nothing negotiated.
+    res.headers.has('content-encoding').should.be.false;
+  });
+
+  it('prefers gzip over br on ties', async () => {
+    const app = createApp();
+    use(app, compress({ minBytes: 0, brotli: { compress: async (b) => b } }));
+    get(app, '/', () => new Response('x'.repeat(200), { headers: { 'content-length': '200' } }));
+    const res = await handle(app, new Request('http://localhost/', { headers: accept('gzip, br') }));
+    res.headers.get('content-encoding')!.should.equal('gzip');
+  });
+});

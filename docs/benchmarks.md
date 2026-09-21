@@ -13,12 +13,13 @@ Two benchmarks, both runnable locally and both honest about what they measure:
 ```
 node v22.23.2 | concurrency=32 requests=30000/scenario
 
-s200          hello     9119 req/s   param     9131 req/s
-hono          hello    10040 req/s   param     9769 req/s
-hono-patched  hello    14484 req/s   param    14025 req/s
-express       hello     6447 req/s   param     6359 req/s
-fastify       hello    14242 req/s   param    14272 req/s
-elysia        hello    14011 req/s   param    13944 req/s
+s200          hello     9254 req/s   param     9095 req/s
+s200-light    hello    11844 req/s   param    11744 req/s
+hono          hello    10067 req/s   param     9956 req/s
+hono-patched  hello    14130 req/s   param    13762 req/s
+express       hello     6476 req/s   param     6355 req/s
+fastify       hello    14115 req/s   param    14064 req/s
+elysia        hello    14420 req/s   param    14135 req/s
 ```
 
 Machine: AMD Ryzen 7 8745HS, Fedora 42, Node 22.23.2, 2026-09-21.
@@ -33,19 +34,27 @@ Readings:
 
 - **s200 ≈ hono on the real Web Standard path.** `hono` here runs
   `@hono/node-server` with `overrideGlobalObjects: false` — i.e. real
-  `Request`/`Response` objects, which is what s200 always uses. Within the
-  same class, s200 wins `param`, hono wins `hello`.
+  `Request`/`Response` objects, which is what s200 uses by default. Within
+  the same class, s200 wins `param`, hono wins `hello`.
+- **`s200-light` is the opt-in fast path** (`serve(app, { light: true })`):
+  the node adapter constructs light-weight `Request`/`Response` objects
+  (nothing global is patched) and writes byte-backed bodies straight to the
+  socket. It lands ~1.3× over the default class and beats hono on real Web
+  Standard objects by ~18% — the remaining gap to the patched class is
+  `Headers` construction and the adapter floor.
 - **`hono-patched` is hono's default fast path**: the adapter replaces the
   global `Request`/`Response` with its own minimal classes. It is ~1.5×
   faster than either framework on real Web Standard objects — the cost is
   measured per-request in undici's full-featured `Request`/`Response`
-  constructors, not in routing or dispatch. s200 will not patch globals:
-  the core's contract is the platform's `Request`/`Response`.
+  constructors, not in routing or dispatch. s200 does not patch globals:
+  the default contract is the platform's `Request`/`Response`, and the
+  opt-in light mode pays for its speed with narrower caveats (see README).
 - **`fastify` and `elysia` land in the same ~14k class** as `hono-patched`:
   fastify plumbs raw `IncomingMessage`s (no Web Standard objects at all),
   and elysia's srvx adapter ships its own lightweight request classes.
-  Both avoid undici's constructor cost the way hono's patch does — that
-  cost is the whole gap between the two classes in this benchmark.
+  Both avoid undici's constructor cost the way hono's patch and s200's
+  light mode do — that cost is the whole gap between the two classes in
+  this benchmark.
 - **express trails both** — its routing (path-to-regexp) and per-request
   stream plumbing cost roughly double at saturation.
 

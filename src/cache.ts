@@ -15,10 +15,13 @@
 
 import type { Ctx, Middleware } from './types';
 
+import { newResponse } from './respond';
+
 export type CacheOptions = {
   /** Entry lifetime in seconds; default 60. */
   readonly ttl?: number;
-  /** Maximum entries; oldest evicted beyond it. Default 1000. */
+  /** Maximum entries; oldest evicted beyond it. Default 1000. The
+   * in-memory store's concern only — a custom `store` evicts itself. */
   readonly max?: number;
   /** Maximum cached body size in bytes; default 1 MiB. */
   readonly sizeLimit?: number;
@@ -28,16 +31,61 @@ export type CacheOptions = {
   readonly key?: (ctx: Ctx) => string;
   /** Extra skip predicate (runs before every lookup and store). */
   readonly skip?: (ctx: Ctx) => boolean;
+  /**
+   * Storage backend (shared counters across instances, e.g. Redis) behind
+   * the same contract as `s200/rate-limit`'s store. Expiry is checked by
+   * the middleware on every read — the store may also evict early.
+   * The default is a bounded in-memory Map with LRU-ish refresh on hit.
+   */
+  readonly store?: CacheStore;
 };
 
-type CacheEntry = {
+export type CacheEntry = {
   readonly exp: number;
   readonly status: number;
   readonly headers: [string, string][];
   readonly body: Uint8Array;
 };
 
+/** Hit accounting — see {@link CacheOptions.store}. `get`/`delete` may be
+ * async (a networked store is); `set` stores the whole entry atomically. */
+export type CacheStore = {
+  readonly get: (
+    key: string
+  ) => CacheEntry | undefined | Promise<CacheEntry | undefined>;
+  readonly set: (key: string, entry: CacheEntry) => void | Promise<void>;
+  readonly delete: (key: string) => void | Promise<void>;
+};
+
 const DEFAULT_METHODS = ['GET'];
+
+/** The default store: a bounded Map with refresh-on-hit recency (LRU-ish —
+ * Map iteration order is insertion order, eviction drops the oldest). */
+function createMemoryStore(max: number) {
+  const map = new Map<string, CacheEntry>();
+  return {
+    get(key: string): CacheEntry | undefined {
+      return map.get(key);
+    },
+    set(key: string, entry: CacheEntry): void {
+      map.set(key, entry);
+      while (map.size > max) {
+        const oldest = map.keys().next().value;
+        if (oldest === undefined) {
+          break;
+        }
+        map.delete(oldest);
+      }
+    },
+    delete(key: string): void {
+      map.delete(key);
+    },
+    refresh(key: string, entry: CacheEntry): void {
+      map.delete(key);
+      map.set(key, entry);
+    },
+  };
+}
 
 /**
  * The response-cache middleware. Store semantics are deliberately
@@ -49,7 +97,8 @@ export function cache(options: CacheOptions = {}): Middleware {
   const max = options.max ?? 1000;
   const sizeLimit = options.sizeLimit ?? 1024 * 1024;
   const methods = new Set(options.methods ?? DEFAULT_METHODS);
-  const store = new Map<string, CacheEntry>();
+  const memory = options.store === undefined ? createMemoryStore(max) : undefined;
+  const store: CacheStore = options.store ?? (memory as CacheStore);
 
   const shouldSkip = (ctx: Ctx): boolean => {
     if (options.skip?.(ctx) === true) {
@@ -73,23 +122,18 @@ export function cache(options: CacheOptions = {}): Middleware {
     }
     const key = options.key?.(ctx) ?? `${method} ${ctx.url.pathname}${ctx.url.search}`;
     const now = Date.now();
-    const entry = store.get(key);
+    const entry = await store.get(key);
     if (entry !== undefined) {
       if (entry.exp > now) {
-        // Refresh recency (LRU-ish): Map order is insertion order and
-        // eviction removes the oldest.
-        store.delete(key);
-        store.set(key, entry);
-        ctx.res =
-          method === 'HEAD'
-            ? new Response(null, { status: entry.status, headers: entry.headers })
-            : new Response(entry.body as BodyInit, {
-                status: entry.status,
-                headers: entry.headers,
-              });
+        // Refresh recency (LRU-ish) — the default store's concern only.
+        memory?.refresh(key, entry);
+        ctx.res = newResponse(ctx, method === 'HEAD' ? null : entry.body, {
+          status: entry.status,
+          headers: entry.headers,
+        });
         return;
       }
-      store.delete(key);
+      await store.delete(key);
     }
     await next();
     const res = ctx.res;
@@ -132,13 +176,6 @@ export function cache(options: CacheOptions = {}): Middleware {
       // set it — this covers bare `new Response(...)` bodies).
       headers.push(['content-length', String(bytes.byteLength)]);
     }
-    store.set(key, { exp: now + ttl, status: res.status, headers, body: bytes });
-    while (store.size > max) {
-      const oldest = store.keys().next().value;
-      if (oldest === undefined) {
-        break;
-      }
-      store.delete(oldest);
-    }
+    await store.set(key, { exp: now + ttl, status: res.status, headers, body: bytes });
   };
 }
