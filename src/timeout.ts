@@ -27,7 +27,12 @@ export function timeout(ms: number): Middleware {
         reject(httpError(503, 'Request timeout'));
       }, ms);
     });
-    return Promise.race([next(), deadline]).finally(() => {
+    // The losing member must not reject unhandled: a chain that fails after
+    // the deadline already won would otherwise surface as an
+    // unhandledRejection (fatal under --unhandled-rejections=throw).
+    const chain = next();
+    chain.catch(() => undefined);
+    return Promise.race([chain, deadline]).finally(() => {
       clearTimeout(timer);
     });
   };

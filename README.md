@@ -184,12 +184,13 @@ use(app, serveStatic({
   read: createFileReader('public'),
   stat: createFileStat('public'),            // ETag/Last-Modified + 304s
   readRange: createFileRangeReader('public'), // streamed ranges: no whole-file buffering
-  root: 'public',
   prefix: '/static',  // mount point, stripped before lookup
   spa: true,          // html navigation misses fall back to index.html
   cacheControl: 'public, max-age=3600',      // stamped on 200/206/304
 }));
 ```
+
+`root` is embedded into the lookup path handed to `read` — leave it unset (as above) when the injected readers are already rooted at a directory. Pass it (e.g. `root: 'assets'`) when the `read` function expects root-prefixed keys, like an in-memory map.
 
 Traversal (`..`) never escapes the root, `index` (default `index.html`) serves directory paths, and misses fall through to `next()` so other routes can answer. Hidden files are refused by default — a request path with a dotfile segment (`.env`, `.git/…`, including percent-encoded forms) falls through instead of being served; opt out with `dotfiles: 'allow'`.
 

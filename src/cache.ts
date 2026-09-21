@@ -102,6 +102,13 @@ export function cache(options: CacheOptions = {}): Middleware {
     if (res.headers.get('cache-control')?.includes('no-store') === true) {
       return;
     }
+    // A response that varies by request headers (compress's
+    // Accept-Encoding, i18n Accept-Language) cannot be stored under a
+    // path-only key — a hit would hand the wrong variant to the next
+    // client. RFC 9111: skip storage, don't guess at the key.
+    if (res.headers.get('vary') !== null) {
+      return;
+    }
     const declared = res.headers.get('content-length');
     if (declared !== null && Number(declared) > sizeLimit) {
       return;

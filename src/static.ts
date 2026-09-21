@@ -34,6 +34,14 @@ export type ServeStaticOptions = {
     start: number,
     end: number
   ) => Promise<ReadableStream<Uint8Array> | null>;
+  /**
+   * Path prefix embedded into every lookup path handed to `read`/`stat`/
+   * `readRange`/`realPath` (`''` default: request paths as-is). Set it when
+   * the injected functions expect root-prefixed keys (e.g. an in-memory
+   * map); leave it unset when they are already rooted at a directory
+   * (`createFileReader('public')` + `root: 'public'` would double the
+   * prefix and never find a file).
+   */
   root?: string; // '' default; joined with the request path POSIX-style
   prefix?: string; // e.g. '/static' — stripped before lookup
   index?: string; // default 'index.html', appended to directory lookups
@@ -88,11 +96,19 @@ function resolveUnderRoot(root: string, path: string): string | undefined {
     } catch {
       return undefined; // malformed escape — no safe file name to look up
     }
-    if (part === '..') {
-      if (stack.length === 0) return undefined;
-      stack.pop();
-    } else {
-      stack.push(part);
+    // A decoded segment can still contain separators: '..%2F' packs a '/'
+    // (and '%5C' a '\') inside one segment, so the literal '..' check above
+    // cannot see it — and the reader's path.join would normalize those
+    // embedded '..'s into parent references outside the root. Re-split the
+    // decoded text and run every piece through the same stack check.
+    for (const piece of part.split(/[/\\]/)) {
+      if (piece === '' || piece === '.') continue;
+      if (piece === '..') {
+        if (stack.length === 0) return undefined;
+        stack.pop();
+      } else {
+        stack.push(piece);
+      }
     }
   }
   const base = root === '' ? [] : root.split('/').filter(Boolean);
@@ -123,7 +139,15 @@ function hasDotfileSegment(path: string): boolean {
     } catch {
       return true;
     }
-    if (decoded.startsWith('.')) return true;
+    // Same packed-separator trick as resolveUnderRoot: '.x%2F..' hides a
+    // dotfile segment ('..' or '.env') inside one URL segment — re-split
+    // after decoding so the policy sees every piece.
+    for (const piece of decoded.split(/[/\\]/)) {
+      // '.'/'..' pieces are traversal, not dotfiles — resolveUnderRoot
+      // decides them; the policy here only vetoes hidden names.
+      if (piece === '' || piece === '.' || piece === '..') continue;
+      if (piece.startsWith('.')) return true;
+    }
   }
   return false;
 }

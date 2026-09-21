@@ -167,6 +167,52 @@ describe('serveStatic traversal guard', () => {
   });
 });
 
+describe('serveStatic packed-separator guard', () => {
+  /**
+   * '..%2F' packs a slash inside one URL segment: after decoding, the
+   * segment is 'x/../../…' — not a literal '..' (so the segment check
+   * misses it) and not dot-prefixed (so the dotfile policy misses it).
+   * The guard must re-split decoded segments so these can never reach a
+   * reader whose path.join would normalize the embedded '..'s out of the
+   * root (verified end-to-end in test/static-fs.test.ts).
+   */
+
+  it('rejects packed ..%2F traversal without reading', async () => {
+    const { app, reads } = makeApp({ 'secret.txt': 'S' });
+    withSentinel(app, 'fell-through');
+    const res = await handle(app, new Request('http://localhost/x%2F..%2F..%2Fsecret.txt'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('fell-through');
+    reads.should.deep.equal([]);
+  });
+
+  it('rejects packed %5C traversal (the Windows separator form)', async () => {
+    const { app, reads } = makeApp({ 'secret.txt': 'S' });
+    withSentinel(app, 'fell-through');
+    const res = await handle(app, new Request('http://localhost/x%5C..%5C..%5Csecret.txt'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('fell-through');
+    reads.should.deep.equal([]);
+  });
+
+  it('folds packed .. that stays inside the root, like literal dot segments', async () => {
+    const { app, reads } = makeApp({ 'b.txt': 'B' });
+    const res = await handle(app, new Request('http://localhost/a%2F..%2Fb.txt'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('B');
+    reads.should.deep.equal(['b.txt']);
+  });
+
+  it('applies the dotfile policy to hidden names packed into a segment', async () => {
+    const { app, reads } = makeApp({ '.env': 'SECRET=x' });
+    withSentinel(app, 'fell-through');
+    const res = await handle(app, new Request('http://localhost/x%2F..%2F.env'));
+    res.status.should.equal(200);
+    (await res.text()).should.equal('fell-through');
+    reads.should.deep.equal([]);
+  });
+});
+
 describe('serveStatic prefix mounting', () => {
   it('strips a matching prefix and lets other paths reach routes', async () => {
     const app = createApp();

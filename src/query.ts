@@ -19,7 +19,10 @@ export type QueryRecord = Record<string, string | string[]>;
  * request — the URL was already parsed on the context, no re-parsing.
  */
 export function parseQuery(ctx: Ctx): QueryRecord {
-  const out: QueryRecord = {};
+  // Null prototype: `?__proto__=x` must land as a plain own key (assigning
+  // it on `{}` would silently touch the prototype instead), and
+  // `constructor`/`toString` keys must not shadow inherited members.
+  const out = Object.create(null) as QueryRecord;
   for (const [key, value] of ctx.query) {
     const existing = out[key];
     if (existing === undefined) {

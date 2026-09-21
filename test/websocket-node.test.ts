@@ -158,6 +158,9 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     upgradeWebSocket(app, '/close-me', (socket) => {
       socket.close(4001, 'bye');
     });
+    upgradeWebSocket(app, '/close-long-reason', (socket) => {
+      socket.close(1000, 'x'.repeat(200));
+    });
     upgradeWebSocket(app, '/drop-log', (socket) => {
       socket.onClose((code) => {
         droppedCode = code;
@@ -236,6 +239,19 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     frame.opcode.should.equal(0x8);
     frame.payload.readUInt16BE(0).should.equal(4001);
     frame.payload.subarray(2).toString().should.equal('bye');
+    socket.destroy();
+  });
+
+  it('truncates an overlong close reason to the 123-byte control-frame limit', async () => {
+    const socket = openSocket(server.port, '/close-long-reason');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1000);
+    // 2-byte code + reason must fit the 125-byte control-frame ceiling.
+    frame.payload.length.should.be.lessThanOrEqual(125);
+    frame.payload.subarray(2).length.should.equal(123);
     socket.destroy();
   });
 

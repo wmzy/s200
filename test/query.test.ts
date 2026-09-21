@@ -17,7 +17,9 @@ describe('parseQuery', () => {
     });
     get(app, '/', () => new Response('ok'));
     await handle(app, new Request('http://localhost/?page=1&tag=a&tag=b'));
-    seen!.should.deep.equal({ page: '1', tag: ['a', 'b'] });
+    // Spread into a plain object: the record is null-prototype (a
+    // prototype-less object has no .should from Object.prototype).
+    ({ ...seen }).should.deep.equal({ page: '1', tag: ['a', 'b'] });
   });
 
   it('returns an empty record for a query-less URL', async () => {
@@ -29,7 +31,27 @@ describe('parseQuery', () => {
     });
     get(app, '/', () => new Response('ok'));
     await handle(app, new Request('http://localhost/'));
-    seen!.should.deep.equal({});
+    ({ ...seen }).should.deep.equal({});
+  });
+
+  it('keeps __proto__ and constructor as plain own keys', async () => {
+    let seen: QueryRecord | undefined;
+    const app = createApp();
+    use(app, async (ctx, next) => {
+      seen = parseQuery(ctx);
+      return next();
+    });
+    get(app, '/', () => new Response('ok'));
+    await handle(
+      app,
+      new Request('http://localhost/?__proto__=x&constructor=y'),
+    );
+    // Object spread copies own enumerable keys with CreateDataProperty, so
+    // both keys survive — on a plain object the __proto__ assignment would
+    // have been silently swallowed by the prototype setter.
+    JSON.stringify({ ...seen }).should.equal(
+      '{"__proto__":"x","constructor":"y"}',
+    );
   });
 
   it('types a query-string literal through QueryOf', () => {

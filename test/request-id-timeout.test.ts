@@ -74,4 +74,28 @@ describe('timeout', function () {
     (() => timeout(0)).should.throw(/must be positive/);
     (() => timeout(Number.NaN)).should.throw(/must be positive/);
   });
+
+  it('does not surface a losing chain rejection as unhandledRejection', async function () {
+    const app = createApp();
+    use(app, timeout(10));
+    get(app, '/', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      throw new Error('late failure');
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => {
+      unhandled.push(error);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const res = await handle(app, new Request('http://localhost/'));
+      res.status.should.equal(503);
+      // Let the losing chain actually reject and settle.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    unhandled.should.deep.equal([]);
+  });
 });

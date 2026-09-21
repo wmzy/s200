@@ -66,6 +66,32 @@ describe('cache', () => {
     runs.should.equal(2);
   });
 
+  it('never caches responses that vary by request headers', async () => {
+    let runs = 0;
+    const app = createApp();
+    use(app, cache());
+    get(app, '/page', () => {
+      runs += 1;
+      return new Response(`variant-${runs}`, {
+        headers: { vary: 'accept-language' },
+      });
+    });
+
+    // The Vary-bearing response is served but not stored: a path-only key
+    // cannot reproduce the right variant for the next client (RFC 9111).
+    const first = await handle(
+      app,
+      new Request('http://localhost/page', { headers: { 'accept-language': 'de' } }),
+    );
+    (await first.text()).should.equal('variant-1');
+    const second = await handle(
+      app,
+      new Request('http://localhost/page', { headers: { 'accept-language': 'en' } }),
+    );
+    (await second.text()).should.equal('variant-2');
+    runs.should.equal(2);
+  });
+
   it('skips the store for authorized requests and no-cache requests', async () => {
     let runs = 0;
     const app = createApp();

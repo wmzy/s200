@@ -164,6 +164,17 @@ function frameHeader(opcode: number, length: number): Buffer {
   return header;
 }
 
+/** Close-frame reason payload: control frames carry at most 125 bytes,
+ * and the first two are the code — so a reason is capped at 123 bytes,
+ * cut at a UTF-8 code-point boundary (never mid-sequence). */
+function encodeCloseReason(reason: string): Uint8Array {
+  const bytes = TEXT_ENCODER.encode(reason);
+  if (bytes.byteLength <= 123) return bytes;
+  let end = 123;
+  while (end > 0 && (bytes[end] ?? 0) >>> 6 === 0b10) end -= 1;
+  return bytes.subarray(0, end);
+}
+
 function runConnection(
   socket: Duplex,
   head: Buffer,
@@ -194,7 +205,7 @@ function runConnection(
     closeSent = true;
     closeCode = code;
     closeReason = reason;
-    const reasonBytes = TEXT_ENCODER.encode(reason);
+    const reasonBytes = encodeCloseReason(reason);
     const payload = Buffer.alloc(2 + reasonBytes.byteLength);
     payload.writeUInt16BE(code, 0);
     payload.set(reasonBytes, 2);

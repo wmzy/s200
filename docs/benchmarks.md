@@ -52,18 +52,24 @@ Readings:
 ## Router dispatch
 
 ```
-routes=200 iterations=100000
-first hit        0.89 µs/req   x1.0
-last hit         0.95 µs/req   x1.1
-miss             0.39 µs/req   x0.4
-param-first      0.97 µs/req   x1.1
+routes=200 iterations=100000 (min of 3 rounds)
+first hit        0.44 µs/req   x1.0
+last hit         0.49 µs/req   x1.1
+miss             0.19 µs/req   x0.4
+param-first      0.45 µs/req   x1.0
 
-routes=2000 iterations=20000
-first hit        2.22 µs/req   x1.0
-last hit         0.88 µs/req   x0.4
-miss             0.98 µs/req   x0.4
-param-first      2.41 µs/req   x1.1
+routes=2000 iterations=100000 (min of 3 rounds)
+first hit        0.46 µs/req   x1.0
+last hit         0.48 µs/req   x1.0
+miss             0.19 µs/req   x0.4
+param-first      0.46 µs/req   x1.0
 ```
+
+Dispatch cost is flat from 200 to 2000 routes: the walk visits only the
+trie nodes the request's own segments spell out, so table size never
+enters the hot path. (Earlier snapshots showed 2.2 µs at 2000 routes —
+an artifact of 20k-iteration GC noise; the runs above use 100k
+iterations and are stable across rounds.)
 
 `param-first` is the shape other trie routers degrade on
 (`/:tenant/resourceN` style); s200's index keys on every static segment, so
