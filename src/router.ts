@@ -42,19 +42,37 @@ type SegmentNames<P extends string> =
     : SegmentName<P>;
 
 type SegmentName<S extends string> =
-  S extends `:${infer Name}`
+  S extends `:${infer Name}?`
     ? Name
-    : S extends `*${infer Name}`
+    : S extends `:${infer Name}`
       ? Name
-      : never;
+      : S extends `*${infer Name}`
+        ? Name
+        : never;
+
+/** Names captured by `:name?` segments — keys the handler may not receive. */
+type OptionalSegmentNames<P extends string> =
+  P extends `${infer Head}/${infer Tail}`
+    ? OptionalName<Head> | OptionalSegmentNames<Tail>
+    : OptionalName<P>;
+
+type OptionalName<S extends string> = S extends `:${infer Name}?` ? Name : never;
 
 /**
  * Compile-time params of a pattern: `ParamsOf<'/users/:id'>` is
- * `{ id: string }`, `ParamsOf<'/files/*path'>` is `{ path: string }`, plain
- * patterns give `{}`. Mapped over a name union (not an intersection) so the
- * result stays assignable to `Params` for any `P extends string`.
+ * `{ id: string }`, `ParamsOf<'/users/:id?'>` is `{ id?: string }`,
+ * `ParamsOf<'/files/*path'>` is `{ path: string }`, plain patterns give
+ * `{}`. Mapped over a name union (not an intersection) so the result stays
+ * assignable to `Params` for any `P extends string`. Patterns without
+ * optional segments keep the single-mapped-type shape (type-identical to a
+ * hand-written object literal); optional segments widen it to an
+ * intersection with the optional keys.
  */
-export type ParamsOf<P extends string> = Record<SegmentNames<P>, string>;
+export type ParamsOf<P extends string> =
+  [OptionalSegmentNames<P>] extends [never]
+    ? Record<SegmentNames<P>, string>
+    : Record<Exclude<SegmentNames<P>, OptionalSegmentNames<P>>, string> &
+        Partial<Record<OptionalSegmentNames<P>, string>>;
 
 /**
  * Parses a pattern into segments. `'/'` is the root (`[]`). Throws a plain
@@ -86,14 +104,16 @@ export function createSegments(pattern: string): Segment[] {
       );
     }
     if (part.startsWith(':')) {
-      const name = part.slice(1);
-      if (!NAME_RE.test(name)) {
+      // ':name?' is an optional param — it may be absent from the pathname.
+      const optional = part.endsWith('?');
+      const name = optional ? part.slice(1, -1) : part.slice(1);
+      if (name === '' || !NAME_RE.test(name)) {
         throw new Error(
-          `Invalid route pattern '${pattern}': param '${part}' must be a whole ':name' segment with name matching [A-Za-z0-9_]+`
+          `Invalid route pattern '${pattern}': param '${part}' must be a ':name' or ':name?' segment with name matching [A-Za-z0-9_]+`
         );
       }
       assertUniqueName(names, name, pattern);
-      segments.push({ _tag: 'param', name });
+      segments.push({ _tag: 'param', name, optional });
       return;
     }
     if (part.startsWith('*')) {
@@ -204,6 +224,17 @@ function decodePart(value: string): string {
   }
 }
 
+/** True when any segment is an optional param — routes without one keep
+ * the allocation-free single-pass match below. */
+function hasOptional(segments: readonly Segment[]): boolean {
+  for (const segment of segments) {
+    if (segment._tag === 'param' && segment.optional) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Matches a parsed pattern against pathname parts. Strict: trailing slashes
  * are significant (`'/a/'` never matches `/a` — only a wildcard can produce
@@ -219,6 +250,9 @@ function matchParts(
   parts: readonly string[],
   from = 0
 ): Params | undefined {
+  if (hasOptional(segments)) {
+    return matchPartsOptional(segments, parts, from, from, undefined);
+  }
   let params: Params | undefined;
   for (let i = from; i < segments.length; i++) {
     const segment = segments[i];
@@ -256,6 +290,74 @@ function matchParts(
     return undefined;
   }
   return params ?? {};
+}
+
+/**
+ * Backtracking matcher for patterns containing `:name?` segments. Each
+ * optional param is tried consuming first (greedy, like path-to-regexp),
+ * then skipped; on a failed consume the key written at this level is
+ * deleted again before the skip attempt. Deeper keys need no cleanup: the
+ * skip attempt re-runs every deeper segment from the earlier position, so
+ * their keys are overwritten or their own backtrack deletes them. `i`/`j`
+ * are segment/path positions; `i` starts at `from` (trie-proved prefix).
+ */
+function matchPartsOptional(
+  segments: readonly Segment[],
+  parts: readonly string[],
+  i: number,
+  j: number,
+  params: Params | undefined
+): Params | undefined {
+  for (;;) {
+    const segment = segments[i];
+    if (segment === undefined) {
+      if (j !== parts.length) {
+        return undefined;
+      }
+      return params ?? {};
+    }
+    if (segment._tag === 'wildcard') {
+      if (params === undefined) {
+        params = {};
+      }
+      params[segment.name] = decodePart(parts.slice(j).join('/'));
+      return params;
+    }
+    if (segment._tag === 'param' && segment.optional) {
+      const part = parts[j];
+      if (part !== undefined && part !== '') {
+        const p = params ?? (params = {});
+        p[segment.name] = decodePart(part);
+        const consumed = matchPartsOptional(segments, parts, i + 1, j + 1, params);
+        if (consumed !== undefined) {
+          return consumed;
+        }
+        // The key was set at this level a moment ago and capture names are
+        // unique per pattern (createSegments enforces it), so removing it
+        // exactly undoes the failed consume — nothing else can own it.
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- see above: the deleted key is always the one this branch just wrote
+        delete p[segment.name];
+      }
+      // Consume failed (or there was nothing to consume): skip the param.
+      return matchPartsOptional(segments, parts, i + 1, j, params);
+    }
+    const part = parts[j];
+    if (part === undefined || part === '') {
+      return undefined;
+    }
+    if (segment._tag === 'static') {
+      if (part !== segment.value) {
+        return undefined;
+      }
+    } else {
+      if (params === undefined) {
+        params = {};
+      }
+      params[segment.name] = decodePart(part);
+    }
+    i += 1;
+    j += 1;
+  }
 }
 
 /**
@@ -355,10 +457,19 @@ function buildRouteIndex(routes: readonly Route[]): RouteIndex {
       depth += 1;
     }
     // File under every static segment beyond the leading prefix; only a
-    // route with none such goes to the plain scan list.
+    // route with none such goes to the plain scan list. Routes containing
+    // an optional segment are the exception: a shorter path can skip that
+    // segment, so later static positions never line up for it — those
+    // routes file on the plain list, where the backtracking matcher sees
+    // every candidate.
     let indexed = false;
+    let optional = false;
     for (let i = depth; i < route.segments.length; i += 1) {
       const segment = route.segments[i];
+      if (segment?._tag === 'param' && segment.optional) {
+        optional = true;
+        continue;
+      }
       if (segment?._tag !== 'static') {
         continue;
       }
@@ -378,7 +489,7 @@ function buildRouteIndex(routes: readonly Route[]): RouteIndex {
       routesForValue.push(route);
       indexed = true;
     }
-    if (!indexed) {
+    if (!indexed || optional) {
       node.plain.push(route);
     }
   });

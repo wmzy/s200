@@ -1,8 +1,11 @@
 import type { NodeServer } from '../src/node';
 
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { connect } from 'node:http2';
+import https from 'node:https';
+import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
 
@@ -10,6 +13,9 @@ import { createApp, get, post, use } from '../src/app';
 import { readJson } from '../src/body';
 import { createFileReader, createRealPathGuard, serve } from '../src/node';
 import { json, send } from '../src/respond';
+
+const KEY_PATH = fileURLToPath(new URL('./fixtures/key.pem', import.meta.url));
+const CERT_PATH = fileURLToPath(new URL('./fixtures/cert.pem', import.meta.url));
 
 describe('node adapter (real http)', () => {
   let nodeServer: NodeServer;
@@ -161,5 +167,85 @@ describe('node adapter (real http)', () => {
       rejected = true;
     }
     rejected.should.be.true;
+  });
+});
+
+describe('node adapter TLS', () => {
+  it('serves HTTPS through the same pipeline', async () => {
+    const app = createApp();
+    get(app, '/hello/:name', (ctx) => json(ctx, { hello: ctx.params.name }));
+    const tls = await serve(app, {
+      port: 0,
+      https: {
+        key: await readFile(KEY_PATH),
+        cert: await readFile(CERT_PATH),
+      },
+    });
+    try {
+      tls.url.startsWith('https://').should.be.true;
+      const text = await new Promise<string>((resolve, reject) => {
+        https.get(`${tls.url}/hello/tls`, { rejectUnauthorized: false }, (res) => {
+          let data = '';
+          res.on('data', (chunk: Buffer) => (data += chunk.toString()));
+          res.on('end', () => resolve(data));
+        }).on('error', reject);
+      });
+      JSON.parse(text).should.deep.equal({ hello: 'tls' });
+    } finally {
+      await tls.close();
+    }
+  });
+
+  it('serves HTTP/2 over TLS with the same pipeline', async () => {
+    const app = createApp();
+    get(app, '/hello/:name', (ctx) => json(ctx, { hello: ctx.params.name }));
+    const tls = await serve(app, {
+      port: 0,
+      https: {
+        key: await readFile(KEY_PATH),
+        cert: await readFile(CERT_PATH),
+        http2: true,
+      },
+    });
+    try {
+      const client = connect(tls.url, { rejectUnauthorized: false });
+      try {
+        const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+          const req = client.request({ ':path': '/hello/h2' });
+          let body = '';
+          req.on('response', (headers) => {
+            const status = Number(headers[':status']);
+            req.on('data', (chunk: Buffer) => (body += chunk.toString()));
+            req.on('end', () => resolve({ status, body }));
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        result.status.should.equal(200);
+        JSON.parse(result.body).should.deep.equal({ hello: 'h2' });
+      } finally {
+        client.close();
+      }
+    } finally {
+      await tls.close();
+    }
+  });
+
+  it('rejects the upgrade + https combination at serve time', async () => {
+    const app = createApp();
+    let error: unknown;
+    try {
+      await serve(app, {
+        port: 0,
+        upgrade: () => undefined,
+        https: {
+          key: await readFile(KEY_PATH),
+          cert: await readFile(CERT_PATH),
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    (error as Error | undefined)?.message.should.match(/HTTP\/1\.1-only/);
   });
 });

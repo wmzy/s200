@@ -43,11 +43,15 @@ describe('createSegments', function () {
     ]);
     createSegments('/users/:id').should.deep.equal([
       { _tag: 'static', value: 'users' },
-      { _tag: 'param', name: 'id' },
+      { _tag: 'param', name: 'id', optional: false },
     ]);
     createSegments('/files/*rest').should.deep.equal([
       { _tag: 'static', value: 'files' },
       { _tag: 'wildcard', name: 'rest' },
+    ]);
+    createSegments('/users/:id?').should.deep.equal([
+      { _tag: 'static', value: 'users' },
+      { _tag: 'param', name: 'id', optional: true },
     ]);
   });
 
@@ -378,5 +382,64 @@ describe('matchRoutes', function () {
     (matchRoutes([route], 'GET', '/a/42//', false) === undefined).should.be.true;
     // Strict stays the default when the flag is omitted.
     (matchRoutes([route], 'GET', '/a/42/') === undefined).should.be.true;
+  });
+});
+
+describe('optional params', function () {
+  it('matches with the param present and absent', function () {
+    const route = createRoute('GET', '/users/:id?', noop);
+    const withId = mustRoute(matchRoutes([route], 'GET', '/users/42'));
+    withId.params.should.deep.equal({ id: '42' });
+    const without = mustRoute(matchRoutes([route], 'GET', '/users'));
+    (without.params.id === undefined).should.be.true;
+    Object.keys(without.params).should.deep.equal([]);
+  });
+
+  it('tries consuming first, then backtracks past a static segment', function () {
+    const route = createRoute('GET', '/x/:a?/y', noop);
+    mustRoute(matchRoutes([route], 'GET', '/x/y')).params.should.deep.equal({});
+    mustRoute(matchRoutes([route], 'GET', '/x/1/y')).params.should.deep.equal({ a: '1' });
+    (matchRoutes([route], 'GET', '/x/y/z') === undefined).should.be.true;
+  });
+
+  it('resolves chained optional params greedily', function () {
+    const route = createRoute('GET', '/a/:x?/:y?', noop);
+    mustRoute(matchRoutes([route], 'GET', '/a')).params.should.deep.equal({});
+    mustRoute(matchRoutes([route], 'GET', '/a/1')).params.should.deep.equal({ x: '1' });
+    mustRoute(matchRoutes([route], 'GET', '/a/1/2')).params.should.deep.equal({ x: '1', y: '2' });
+    (matchRoutes([route], 'GET', '/a/1/2/3') === undefined).should.be.true;
+  });
+
+  it('backtracks a failed consume without leaking earlier keys', function () {
+    // Consuming b as '2' fails at the static 'c'; the retry must skip a
+    // and re-read b from position 0, not leave stale captures behind.
+    const route = createRoute('GET', '/:a?/:b/c', noop);
+    const result = mustRoute(matchRoutes([route], 'GET', '/2/c'));
+    result.params.should.deep.equal({ b: '2' });
+    (result.params.a === undefined).should.be.true;
+  });
+
+  it('decodes captured values and tolerates a trailing slash like params', function () {
+    const route = createRoute('GET', '/users/:id?', noop);
+    mustRoute(matchRoutes([route], 'GET', '/users/foo%20bar')).params.should.deep.equal({
+      id: 'foo bar',
+    });
+    // Strict: '/users/' keeps its empty trailing segment, which the
+    // optional param may skip but the matcher may not leave unconsumed.
+    (matchRoutes([route], 'GET', '/users/') === undefined).should.be.true;
+    // Non-strict trims the trailing slash and matches with id absent.
+    mustRoute(matchRoutes([route], 'GET', '/users/', false)).params.should.deep.equal({});
+  });
+
+  it('rejects malformed optional syntax at registration', function () {
+    (() => createRoute('GET', '/x/:?', noop)).should.throw(/':\?'/);
+    (() => createRoute('GET', '/x/:id??', noop)).should.throw(/':id\?\?'/);
+    (() => createRoute('GET', '/x/:a-b?', noop)).should.throw(/':a-b\?'/);
+    (() => createRoute('GET', '/x/:id?/y/:id?', noop)).should.throw(/duplicate capture name/);
+  });
+
+  it('types optional params as optional keys', function () {
+    expectTypeOf<ParamsOf<'/users/:id?'>>().branded.toEqualTypeOf<{ id?: string }>();
+    expectTypeOf<ParamsOf<'/a/:x?/b/:y'>>().branded.toEqualTypeOf<{ x?: string; y: string }>();
   });
 });

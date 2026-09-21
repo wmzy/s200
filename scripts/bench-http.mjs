@@ -24,12 +24,14 @@
  *     (TechEmpower-style contention/isolation is out of scope)
  */
 import http from 'node:http';
+import net from 'node:net';
+import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 
 const CONCURRENCY = Number(process.env.CONCURRENCY ?? 32);
 const REQUESTS = Number(process.env.REQUESTS ?? 30_000);
 
-const VARIANTS = ['s200', 'hono', 'hono-patched', 'express'];
+const VARIANTS = ['s200', 'hono', 'hono-patched', 'express', 'fastify', 'elysia'];
 
 // ── client ─────────────────────────────────────────────────────────────────
 
@@ -111,6 +113,48 @@ async function buildExpress() {
   return app.listen(0, '127.0.0.1');
 }
 
+async function buildFastify() {
+  const { fastify } = await import('fastify');
+  const app = fastify();
+  app.get('/', async () => ({ message: 'hello' }));
+  app.get('/users/:id', async (req) => ({ id: req.params.id, name: 'ada' }));
+  await app.listen({ port: 0, host: '127.0.0.1' });
+  return app.server;
+}
+
+async function buildElysia() {
+  const { Elysia } = await import('elysia');
+  const { node } = await import('@elysiajs/node');
+  // elysia is Bun-first; this runs it on node via @elysiajs/node (srvx),
+  // same process isolation as every other variant. Port 0 reports late in
+  // this adapter, so claim a free port first.
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  const app = new Elysia({ adapter: node() })
+    .get('/', () => ({ message: 'hello' }))
+    .get('/users/:id', ({ params }) => ({ id: params.id, name: 'ada' }));
+  const info = await new Promise((resolve) => {
+    node().listen(app)({ port, hostname: '127.0.0.1' }, resolve);
+  });
+  const server = info.node?.server;
+  if (server !== undefined && !server.listening) {
+    await once(server, 'listening');
+  }
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () =>
+      new Promise((resolve) => {
+        if (server !== undefined) {
+          server.close(() => resolve());
+        } else {
+          resolve();
+        }
+      }),
+  };
+}
+
 async function runServer(variant) {
   let server;
   switch (variant) {
@@ -124,6 +168,13 @@ async function runServer(variant) {
     case 'express':
       server = await buildExpress();
       break;
+    case 'fastify':
+      server = await buildFastify();
+      break;
+    case 'elysia':
+      // buildElysia already returns the { url, close } wrapper (it owns
+      // its port discovery); skip the generic listen branch below.
+      return await buildElysia();
     default:
       throw new Error(`Unknown variant ${variant}`);
   }

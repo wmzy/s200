@@ -52,7 +52,10 @@ Patterns use `:name` params and a terminal `*name` wildcard; matching is strict 
 ```ts
 get(app, '/users/:id', (ctx) => text(ctx, ctx.params.id));   // ctx.params.id: string — inferred
 get(app, '/files/*path', (ctx) => text(ctx, ctx.params.path)); // captures the rest incl. '/'
+get(app, '/users/:id?', (ctx) => json(ctx, { id: ctx.params.id ?? null })); // id is optional
 ```
+
+`/:id?` is an optional param — the segment may be absent, and `ParamsOf<'/users/:id?'>` types it as `{ id?: string }` (absent keys are omitted at runtime). Matching is greedy with backtracking, so `/x/:a?/y` matches both `/x/y` and `/x/1/y`, and chained optionals resolve left-to-right. Strict trailing slashes still hold: `/users/` keeps its empty segment and does not match `/users/:id?` (set `strict: false` to trim it).
 
 Trailing-slash strictness is configurable per app (`strict: false` tolerates `/a/` → `/a`; the default stays strict):
 
@@ -130,6 +133,16 @@ get(app, '/admin', requireAuth, (ctx) => json(ctx, { ok: true }));
 ```
 
 Not calling `next()` skips everything below it — the handler included — so a gate that responds or throws early never reaches the handler (koa short-circuit semantics).
+
+Middlewares also scope by prefix — the group runs only for requests under it (segment-boundary-aware: `/admin` matches `/admin` and `/admin/…`, not `/administrator`), nesting in registration order like ordinary middlewares:
+
+```ts
+use(app, '/admin', requireAuth, async (ctx, next) => {
+  ctx.state.zone = 'admin';
+  await next();
+});
+use(app, '/users/:id', loadUser);   // param prefixes use the router's own matching
+```
 
 ## Responding
 
@@ -214,6 +227,11 @@ import { secureHeaders } from 's200/secure-headers';
 import { basicAuth, bearerAuth } from 's200/auth';
 import { accepts } from 's200/accepts';
 import { serialize, jsonRaw } from 's200/serialize';
+import { createClient } from 's200/client';
+import { createCsrf } from 's200/csrf';
+import { signJwt, verifyJwt, jwtAuth } from 's200/jwt';
+import { cache } from 's200/cache';
+import { trustProxy } from 's200/trust-proxy';
 ```
 
 **CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
@@ -303,6 +321,34 @@ use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))
 use(app, bearerAuth(async (token) => token === API_TOKEN));
 ```
 
+**CSRF** — session-less synchronizer tokens: HMAC-signed (`nonce` + expiry) so only your secret can mint one, delivered in a cookie and verified on unsafe requests against the header/form field **and** the request `Origin` (closing both classic double-submit holes). The token lives on `ctx.state.csrfToken`; `csrf.token(ctx)` echoes it into server-rendered forms, and unsafe misses answer `403` in place:
+
+```ts
+const csrf = createCsrf({ secret: CSRF_SECRET });   // keep the secret out of version control
+use(app, csrf.middleware);
+get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="${await csrf.token(ctx)}">`));
+```
+
+**JWT** — HS256/384/512 over WebCrypto, zero dependencies. `signJwt`/`verifyJwt` are the pure functions (verification rejects `alg:none` unconditionally, enforces `exp`/`nbf`, and checks `aud`/`iss` on request); `jwtAuth` is the gate, storing the payload on `ctx.state.jwt` and answering `401` before the chain below runs:
+
+```ts
+const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });
+use(app, jwtAuth({ secret: JWT_SECRET }));              // Authorization: Bearer …
+get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
+```
+
+**Cache** — in-memory response cache with TTL + LRU-ish eviction and a bounded body size. Safe by default: GET/200-only, `Set-Cookie` responses are never stored, `Authorization` requests never served, `Cache-Control: no-cache` forces a pass:
+
+```ts
+use(app, cache({ ttl: 60, max: 1000 }));
+```
+
+**Trust proxy** — corrects `ctx.url`'s protocol/host from `X-Forwarded-Proto`/`X-Forwarded-Host` and records the client address in `ctx.state.proxy`, with hop counting for `X-Forwarded-For`. Register it before `s200/csrf`, `s200/secure-headers`, and anything that builds absolute URLs:
+
+```ts
+use(app, trustProxy({ hops: 1 }));   // behind one trusted reverse proxy
+```
+
 **Accepts** — RFC 9110 content negotiation over `Accept` / `Accept-Encoding` / `Accept-Language`: q-values, wildcards, prefix ranges, and the specific-q=0-overrides-wildcard precedence:
 
 ```ts
@@ -359,6 +405,21 @@ use(app, requestId({ header: 'x-trace', generator: () => nanoid() }));
 use(app, timeout(30_000));
 ```
 
+**Client** — a type-safe fetch client derived from the app's own route table: paths are restricted to registered pattern literals, params are typed from them (`:id` required, `:id?` optional, `*path` kept slash-joined), and a `query` option builds the search string. `ALL` routes are offered under every method; malformed calls (unknown pattern, missing param) throw synchronously:
+
+```ts
+const app = createApp();
+const a = use(app, logger);
+const b = get(a, '/users/:id', (ctx) => json(ctx, { id: ctx.params.id }));
+const api = post(b, '/users/:id?', () => new Response('ok'));
+
+const client = createClient(api, { baseUrl: 'http://localhost:3000' });
+const res = await client.get('/users/:id', { id: '42' }, { query: { expand: 'posts' } });
+await client.post('/users/:id?', {});          // id optional — absent is allowed
+```
+
+The client talks plain `fetch` — any server speaking the same patterns answers, not just an s200 app. Typing flows from the registrars' return types, so **thread the returns** (as above) to keep the route log; `usePlugin`-registered routes and `removeRoute` erasure are the documented exceptions. Response bodies are not inferred from handler types — this is typed paths + params + query building, not full RPC inference.
+
 ## Errors
 
 Errors are tagged data, checked structurally — no `instanceof` chains across bundle boundaries:
@@ -376,7 +437,11 @@ const app = createApp({
 });
 ```
 
-Unhandled `HttpError`s render as `{ status, body: { "error": message } }`; anything else is logged via `console.error` and rendered as a generic 500 (never leaking internals). Provide `onError` to own the mapping (and the logging) instead.
+Unhandled `HttpError`s render as `{ status, body: { "error": message } }`; anything else is logged via `console.error` and rendered as a generic 500 (never leaking internals). Provide `onError` to own the mapping (and the logging) instead — or just swap the sink, keeping the default mapping:
+
+```ts
+const app = createApp({ logError: (error) => log('error', { err: error }) });
+```
 
 ## Adapters
 
@@ -391,26 +456,39 @@ const server = serve(app, { port: 3000 });
 
 Both adapters expose the identical `serve(app, options)` surface; the core's `handle(app, request)` is the entire integration contract for any runtime with a fetch-shaped handler.
 
+`s200/node` also serves TLS — HTTPS, or HTTP/2 over TLS — through the same dispatch pipeline (`upgrade` stays HTTP/1.1-only and cannot combine with `https`):
+
+```ts
+await serve(app, {
+  port: 443,
+  https: { key: await readFile('key.pem'), cert: await readFile('cert.pem') },      // node:https
+});
+await serve(app, {
+  port: 443,
+  https: { key, cert, http2: true },                                                  // node:http2
+});
+```
+
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 22 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 27 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm vitest run            # single run (313 tests)
+pnpm vitest run            # single run (360 tests)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle
 pnpm smoke                 # runs scripts/smoke.mjs under node AND bun
 pnpm bench                 # router dispatch micro-benchmark (ROUTES/ITERATIONS env)
-pnpm bench:http            # whole-request throughput vs hono/express (isolated processes)
+pnpm bench:http            # whole-request throughput vs hono/express/fastify/elysia (isolated processes)
 pnpm publish:jsr           # build + prepare declarations for JSR + npx jsr publish
 ```
 
-See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, and the [migration guides](docs/) when coming from Express, Koa, or Hono.
+See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/compare.md](docs/compare.md) for how s200 stacks up against the alternatives, and the [migration guides](docs/) when coming from Express, Koa, or Hono.
 
 ## License
 

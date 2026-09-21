@@ -25,7 +25,12 @@
     "./secure-headers": "./dist/secure-headers.mjs",
     "./auth": "./dist/auth.mjs",
     "./accepts": "./dist/accepts.mjs",
-    "./serialize": "./dist/serialize.mjs"
+    "./serialize": "./dist/serialize.mjs",
+    "./client": "./dist/client.mjs",
+    "./csrf": "./dist/csrf.mjs",
+    "./jwt": "./dist/jwt.mjs",
+    "./cache": "./dist/cache.mjs",
+    "./trust-proxy": "./dist/trust-proxy.mjs"
   },
   "publish": {
     "include": ["dist", "README.md"]

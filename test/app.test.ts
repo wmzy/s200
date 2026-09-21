@@ -26,7 +26,7 @@ import { logger } from '../src/logger';
 import { requestId } from '../src/request-id';
 import { secureHeaders } from '../src/secure-headers';
 import { html, json, redirect, send, text } from '../src/respond';
-import { httpError } from '../src/errors';
+import { httpError, toErrorResponse } from '../src/errors';
 
 describe('app dispatch', () => {
   it('dispatches a matched route and returns its response', async () => {
@@ -813,5 +813,113 @@ describe('error boundary inside the chain', () => {
     const strict = createApp();
     get(strict, '/a', () => new Response('strict'));
     (await handle(strict, new Request('http://localhost/a/'))).status.should.equal(404);
+  });
+});
+
+describe('prefix-scoped use', () => {
+  it('runs scoped middlewares only under the prefix', async () => {
+    const app = createApp();
+    const seen: string[] = [];
+    use(
+      app,
+      '/admin',
+      async (ctx, next) => {
+        seen.push('before');
+        await next();
+        seen.push('after');
+      },
+    );
+    get(app, '/admin/panel', (ctx) => json(ctx, { ok: true }));
+    get(app, '/public', () => new Response('public'));
+
+    const admin = await handle(app, new Request('http://localhost/admin/panel'));
+    admin.status.should.equal(200);
+    seen.should.deep.equal(['before', 'after']);
+
+    seen.length = 0;
+    const pub = await handle(app, new Request('http://localhost/public'));
+    pub.status.should.equal(200);
+    seen.should.deep.equal([]);
+  });
+
+  it('matches the bare prefix and keeps segment boundaries', async () => {
+    const app = createApp();
+    const seen: string[] = [];
+    use(app, '/admin', async (ctx, next) => {
+      seen.push(ctx.url.pathname);
+      return next();
+    });
+    get(app, '/admin', () => new Response('root'));
+
+    await handle(app, new Request('http://localhost/admin'));
+    await handle(app, new Request('http://localhost/admin/'));
+    await handle(app, new Request('http://localhost/administrator'));
+    seen.should.deep.equal(['/admin', '/admin/']);
+  });
+
+  it('scopes with param prefixes and nests in registration order', async () => {
+    const app = createApp();
+    const order: string[] = [];
+    use(app, '/users/:id', async (ctx, next) => {
+      order.push(`outer:${ctx.params.id}`);
+      await next();
+    });
+    use(app, '/users/7', async (ctx, next) => {
+      order.push(`inner:${ctx.params.id}`);
+      await next();
+    });
+    get(app, '/users/:id/posts', (ctx) => new Response(ctx.params.id));
+
+    await handle(app, new Request('http://localhost/users/7/posts'));
+    order.should.deep.equal(['outer:7', 'inner:7']);
+  });
+
+  it('rejects bad prefixes and empty groups at registration', () => {
+    const app = createApp();
+    (() => use(app, 'admin', async () => undefined)).should.throw(/must start with '\/'/);
+    (() => use(app, '/admin')).should.throw(/at least one middleware/);
+  });
+
+  it('treats empty and root prefixes as global scope', async () => {
+    const app = createApp();
+    const seen: string[] = [];
+    use(app, '/', async (ctx, next) => {
+      seen.push(ctx.url.pathname);
+      await next();
+    });
+    get(app, '/anything', () => new Response('ok'));
+    await handle(app, new Request('http://localhost/anything'));
+    seen.should.deep.equal(['/anything']);
+  });
+});
+
+describe('logError option', () => {
+  it('routes unexpected errors to the injected sink', async () => {
+    const errors: unknown[] = [];
+    const app = createApp({ logError: (error) => errors.push(error) });
+    get(app, '/boom', () => {
+      throw new Error('kaput');
+    });
+    const res = await handle(app, new Request('http://localhost/boom'));
+    res.status.should.equal(500);
+    errors.length.should.equal(1);
+    (errors[0] as Error).message.should.equal('kaput');
+  });
+
+  it('keeps HttpErrors out of the sink and lets onError own logging', async () => {
+    const errors: unknown[] = [];
+    const app = createApp({
+      logError: (error) => errors.push(error),
+      onError: (ctx, error) => {
+        ctx.res = toErrorResponse(error);
+      },
+    });
+    get(app, '/client', () => {
+      throw httpError(409, 'conflict');
+    });
+    const res = await handle(app, new Request('http://localhost/client'));
+    res.status.should.equal(409);
+    // onError is set: the default policy (and its sink) is bypassed.
+    errors.length.should.equal(0);
   });
 });

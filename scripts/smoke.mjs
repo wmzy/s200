@@ -229,6 +229,58 @@ try {
   } else {
     console.log('skip websocket round-trip (no WebSocket client on this runtime)');
   }
+
+  // ── new batteries + client round-trip ─────────────────────────────────────
+
+  const batteries = await import('../dist/csrf.mjs');
+  const jwtBattery = await import('../dist/jwt.mjs');
+  const { createClient } = await import('../dist/client.mjs');
+
+  const batApp = core.createApp();
+  const csrf = batteries.createCsrf({ secret: 'smoke-secret' });
+  core.use(batApp, csrf.middleware);
+  core.get(batApp, '/optional/:id?', (ctx) => core.json(ctx, { id: ctx.params.id ?? null }));
+  core.use(batApp, '/admin', async (ctx, next) => {
+    ctx.state.scoped = 'yes';
+    return next();
+  });
+  core.get(batApp, '/admin/ping', (ctx) => core.json(ctx, { scoped: ctx.state.scoped }));
+  core.get(batApp, '/form', (ctx) => core.json(ctx, { token: ctx.state.csrfToken }));
+  core.post(batApp, '/submit', (ctx) => core.text(ctx, 'saved'));
+
+  const batServer = await adapter.serve(batApp, { port: 0 });
+  try {
+    const optional = await fetch(`${batServer.url}/optional`);
+    check('optional param absent', optional.status === 200 && (await optional.json()).id === null, 'absent failed');
+    const optionalHit = await fetch(`${batServer.url}/optional/7`);
+    check('optional param present', (await optionalHit.json()).id === '7', 'present failed');
+
+    const scoped = await fetch(`${batServer.url}/admin/ping`);
+    check('prefix-scoped middleware', (await scoped.json()).scoped === 'yes', 'scoped failed');
+
+    // Client round-trip against the real server.
+    const { createApp: mk, get: g } = core;
+    const cliApp = mk();
+    g(cliApp, '/optional/:id?', (ctx) => core.json(ctx, { id: ctx.params.id ?? null }));
+    const client = createClient(cliApp, { baseUrl: batServer.url });
+    const viaClient = await client.get('/optional/:id?', { id: '42' });
+    check('typed client round-trip', (await viaClient.json()).id === '42', 'client failed');
+
+    const form = await fetch(`${batServer.url}/form`);
+    const setCookie = form.headers.getSetCookie().find((c) => c.startsWith('csrf_token='));
+    const token = decodeURIComponent(setCookie.split(';')[0].split('=')[1]);
+    const saved = await fetch(`${batServer.url}/submit`, {
+      method: 'POST',
+      headers: { 'x-csrf-token': token, cookie: `csrf_token=${encodeURIComponent(token)}` },
+    });
+    check('csrf accept valid token', saved.status === 200, `csrf ${saved.status}`);
+
+    const jwtToken = await jwtBattery.signJwt({ sub: 'smoke' }, 'smoke-secret');
+    const verified = await jwtBattery.verifyJwt(jwtToken, 'smoke-secret');
+    check('jwt sign/verify round-trip', verified.sub === 'smoke', 'jwt failed');
+  } finally {
+    await batServer.close();
+  }
 } finally {
   await server.close();
 }

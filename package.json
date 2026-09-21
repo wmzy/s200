@@ -225,6 +225,56 @@
         "types": "./dist/types/serialize.d.ts",
         "default": "./dist/serialize.cjs"
       }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/types/client.d.mts",
+        "default": "./dist/client.mjs"
+      },
+      "require": {
+        "types": "./dist/types/client.d.ts",
+        "default": "./dist/client.cjs"
+      }
+    },
+    "./csrf": {
+      "import": {
+        "types": "./dist/types/csrf.d.mts",
+        "default": "./dist/csrf.mjs"
+      },
+      "require": {
+        "types": "./dist/types/csrf.d.ts",
+        "default": "./dist/csrf.cjs"
+      }
+    },
+    "./jwt": {
+      "import": {
+        "types": "./dist/types/jwt.d.mts",
+        "default": "./dist/jwt.mjs"
+      },
+      "require": {
+        "types": "./dist/types/jwt.d.ts",
+        "default": "./dist/jwt.cjs"
+      }
+    },
+    "./cache": {
+      "import": {
+        "types": "./dist/types/cache.d.mts",
+        "default": "./dist/cache.mjs"
+      },
+      "require": {
+        "types": "./dist/types/cache.d.ts",
+        "default": "./dist/cache.cjs"
+      }
+    },
+    "./trust-proxy": {
+      "import": {
+        "types": "./dist/types/trust-proxy.d.mts",
+        "default": "./dist/trust-proxy.mjs"
+      },
+      "require": {
+        "types": "./dist/types/trust-proxy.d.ts",
+        "default": "./dist/trust-proxy.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -287,14 +337,14 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "6 KB"
+      "limit": "6.5 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
       "path": "src/index.ts",
       "import": "{ createApp, use, get, handle }",
       "gzip": true,
-      "limit": "2.5 KB"
+      "limit": "3 KB"
     },
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
@@ -303,7 +353,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "2 KB"
+      "limit": "2.5 KB"
     },
     {
       "name": "compress battery (min+gz)",
@@ -348,6 +398,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@elysiajs/node": "^1.4.5",
     "@hono/node-server": "^2.1.1",
     "@size-limit/esbuild": "^13.0.3",
     "@size-limit/file": "^13.0.3",
@@ -355,8 +406,10 @@
     "@vitest/coverage-v8": "^5.0.0",
     "commitizen": "^4.3.2",
     "cz-conventional-changelog": "^3.3.0",
+    "elysia": "^1.4.30",
     "eslint": "^10.10.0",
     "express": "^5.2.1",
+    "fastify": "^5.12.5",
     "globals": "^16.5.0",
     "hono": "^4.13.8",
     "husky": "^9.1.7",

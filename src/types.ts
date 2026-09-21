@@ -86,11 +86,54 @@ export type Ctx<P extends Params = Params, S extends State = State> = {
   res: Response | undefined;
 };
 
-/** One parsed pattern segment: literal, `:param`, or terminal `*wildcard`. */
+/** One parsed pattern segment: literal, `:param` (optionally `:param?`),
+ * or terminal `*wildcard`. */
 export type Segment =
   | { readonly _tag: 'static'; value: string }
-  | { readonly _tag: 'param'; name: string }
+  | { readonly _tag: 'param'; name: string; optional: boolean }
   | { readonly _tag: 'wildcard'; name: string };
+
+/**
+ * One registered route's compile-time signature: normalized method plus the
+ * pattern literal. Carried by {@link App}'s phantom `R` parameter so
+ * `s200/client` can type paths and params from the app itself.
+ */
+export type RouteDef = { readonly method: string; readonly pattern: string };
+
+/** `R` minus the routes registered for method `M` + pattern `P` — the
+ * compile-time twin of `removeRoute`'s runtime filter. */
+export type RouteFilter<
+  R extends readonly RouteDef[],
+  M extends string,
+  P extends string
+> =
+  R extends readonly [infer Head extends RouteDef, ...infer Tail extends RouteDef[]]
+    ? Head extends { readonly method: M; readonly pattern: P }
+      ? RouteFilter<Tail, M, P>
+      : [Head, ...RouteFilter<Tail, M, P>]
+    : [];
+
+/** A mount prefix normalized for pattern concatenation: root becomes ''. */
+export type MountBase<B extends string> =
+  B extends '' | '/' ? '' : B extends `${infer Rest}/` ? MountBase<Rest> : B;
+
+/** The route defs of a mounted sub-app, patterns prefixed under `Base`
+ * (the sub-app root `/` collapses onto the bare prefix). */
+export type MountedDefs<
+  R extends readonly RouteDef[],
+  Base extends string
+> =
+  R extends readonly [infer Head extends RouteDef, ...infer Tail extends RouteDef[]]
+    ? [
+        {
+          readonly method: Head['method'];
+          readonly pattern: Head['pattern'] extends '/'
+            ? Base
+            : `${Base}${Head['pattern']}`;
+        },
+        ...MountedDefs<Tail, Base>
+      ]
+    : [];
 
 /** An immutable registration entry produced by `createRoute`. */
 export type Route<P extends Params = Params> = {

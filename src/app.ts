@@ -4,11 +4,15 @@ import type {
   Handler,
   MatchFn,
   Middleware,
+  MountBase,
+  MountedDefs,
   Next,
   NotFoundHandler,
   Params,
   Plugin,
   Route,
+  RouteDef,
+  RouteFilter,
   State,
 } from './types';
 
@@ -16,7 +20,7 @@ import type { ParamsOf } from './router';
 
 import { isHttpError, toErrorResponse } from './errors';
 import { compose } from './compose';
-import { createMatcher, createRoute } from './router';
+import { createMatcher, createRoute, createSegments, matchSegments } from './router';
 
 /**
  * Options for {@link createApp}: the router is replaceable via `match`, and
@@ -28,6 +32,13 @@ export type AppOptions<S extends State = State> = {
   strict?: boolean;
   onError?: ErrorHandler<S>;
   onNotFound?: NotFoundHandler<S>;
+  /**
+   * Sink for unexpected (non-{@link HttpError}) errors when no custom
+   * `onError` is set — the default policy logs via `console.error` and
+   * answers an anonymous 500. Inject a structured logger here; the client
+   * still sees the anonymous 500 either way.
+   */
+  logError?: (error: unknown) => void;
 };
 
 /**
@@ -42,42 +53,121 @@ export type AppOptions<S extends State = State> = {
  * `S` is the per-app state shape — `createApp<MyState>()` types
  * `ctx.state` as `MyState` in that app's middlewares, handlers, and
  * error/404 policy (default: the global {@link State} interface).
+ *
+ * `R` is a phantom type parameter — a compile-time log of every registered
+ * route's method + pattern literal, accumulated by the registrars and
+ * consumed by `s200/client`'s {@link createClient}. It never appears in the
+ * runtime shape, so apps type the same with or without it.
  */
-export type App<S extends State = State> = {
+export type App<
+  S extends State = State,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- R is a phantom type parameter: a compile-time route log consumed by s200/client, never part of the runtime shape
+  R extends readonly RouteDef[] = readonly RouteDef[]
+> = {
   routes: readonly Route[];
   middlewares: readonly Middleware<S>[];
   match: MatchFn;
   onError: ErrorHandler<S> | undefined;
   onNotFound: NotFoundHandler<S> | undefined;
+  logError: ((error: unknown) => void) | undefined;
 };
 
-export function createApp<S extends State = State>(options: AppOptions<S> = {}): App<S> {
+export function createApp<S extends State = State>(
+  options: AppOptions<S> = {}
+): App<S, []> {
   return {
     routes: Object.freeze([]),
     middlewares: Object.freeze([]),
     match: options.match ?? createMatcher({ strict: options.strict }),
     onError: options.onError,
     onNotFound: options.onNotFound,
+    logError: options.logError,
   };
 }
 
-export function use<S extends State = State>(app: App<S>, middleware: Middleware<S>): App<S> {
-  // Replace, don't mutate: the app chain cache versions on array identity
-  // (see appChainCache). One O(n) copy per registration is startup cost.
-  app.middlewares = Object.freeze([...app.middlewares, middleware]);
+/**
+ * Prefix-scoped middlewares: the group runs only for requests whose
+ * pathname falls under `prefix` (`/admin` matches `/admin`, `/admin/…`; a
+ * prefix may contain params — `/users/:id` scopes per user). Scope checks
+ * use the router's own matching (strict trailing slashes), so behavior
+ * matches routing. Scoped groups nest in registration order like ordinary
+ * middlewares; `next()` from inside one continues into the next scope and
+ * the route chain below. A prefix with no middlewares is a programmer
+ * error — it typechecks, but `use` throws at registration.
+ */
+export function use<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
+  prefixOrMiddleware: string | Middleware<S>,
+  ...middlewares: Middleware<S>[]
+): App<S, R> {
+  if (typeof prefixOrMiddleware === 'string') {
+    const prefix = prefixOrMiddleware;
+    if (middlewares.length === 0) {
+      throw new Error(
+        `use(app, prefix, ...middlewares): at least one middleware is required for prefix '${prefix}'`
+      );
+    }
+    // '' and '/' scope everything — equivalent to the global form.
+    if (prefix === '' || prefix === '/') {
+      app.middlewares = Object.freeze([...app.middlewares, ...middlewares]);
+      return app;
+    }
+    if (!prefix.startsWith('/')) {
+      throw new Error(
+        `Invalid middleware prefix '${prefix}': must start with '/'`
+      );
+    }
+    const base = prefix.replace(/\/+$/, '');
+    // Static prefixes get a plain string check (no per-request split);
+    // param/wildcard prefixes use the router's own matcher.
+    const dynamic = base.includes(':') || base.includes('*');
+    const segments = dynamic ? createSegments(`${base}/*rest`) : undefined;
+    // Composed once: compose()'s double-next index is per invocation, so
+    // the shared group is safe to reuse across requests.
+    const group = compose(middlewares as readonly Middleware<S>[]);
+    const guard: Middleware<S> = async (ctx, next) => {
+      const pathname = ctx.url.pathname;
+      const scoped =
+        segments === undefined
+          ? pathname === base || pathname.startsWith(`${base}/`)
+          : matchSegments(segments, pathname) !== undefined;
+      if (!scoped) {
+        return next();
+      }
+      return group(ctx, next);
+    };
+    // Replace, don't mutate: the app chain cache versions on array identity
+    // (see appChainCache). One O(n) copy per registration is startup cost.
+    app.middlewares = Object.freeze([...app.middlewares, guard]);
+    return app;
+  }
+  app.middlewares = Object.freeze([
+    ...app.middlewares,
+    prefixOrMiddleware,
+    ...middlewares,
+  ]);
   return app;
 }
 
 /**
  * Removes every route registered for `method` (normalized uppercase) and
  * `pattern`. No-op when nothing matches. The route table is replaced, so
- * the matcher's cached index rebuilds on the next dispatch.
+ * the matcher's cached index rebuilds on the next dispatch. The `R` log
+ * drops the removed entries too, so `s200/client` stops offering them.
  */
-export function removeRoute<S extends State = State>(
-  app: App<S>,
-  method: string,
-  pattern: string
-): App<S> {
+export function removeRoute<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  M extends string = string,
+  P extends string = string
+>(
+  app: App<S, R>,
+  method: M,
+  pattern: P
+): App<S, RouteFilter<R, Uppercase<M>, P>> {
   const normalized = method.toUpperCase();
   const filtered = app.routes.filter(
     (route) => !(route.method === normalized && route.pattern === pattern)
@@ -85,10 +175,19 @@ export function removeRoute<S extends State = State>(
   if (filtered.length !== app.routes.length) {
     app.routes = Object.freeze(filtered);
   }
-  return app;
+  return app as App<S, RouteFilter<R, Uppercase<M>, P>>;
 }
 
-export function usePlugin<S extends State = State>(app: App<S>, plugin: Plugin<S>): App<S> {
+/**
+ * Applies a plugin (any function over the mutable `App`) and returns the
+ * app. Routes a plugin registers are not tracked in `R` — the plugin's
+ * signature cannot describe them — so `s200/client` does not type them.
+ * For client-typed routes, register through the registrars directly.
+ */
+export function usePlugin<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(app: App<S, R>, plugin: Plugin<S>): App<S, R> {
   plugin(app);
   return app;
 }
@@ -107,11 +206,16 @@ export function usePlugin<S extends State = State>(app: App<S>, plugin: Plugin<S
  * lost (no routes to carry them); gate on the prefix with a normal `use`
  * middleware instead.
  */
-export function mount<S extends State = State>(
-  app: App<S>,
-  prefix: string,
-  sub: App<S>
-): App<S> {
+export function mount<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  R2 extends readonly RouteDef[] = readonly RouteDef[],
+  Prefix extends string = string
+>(
+  app: App<S, R>,
+  prefix: Prefix,
+  sub: App<S, R2>
+): App<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>]> {
   if (prefix !== '' && !prefix.startsWith('/')) {
     throw new Error(`Invalid mount prefix '${prefix}': must be empty or start with '/'`);
   }
@@ -133,7 +237,7 @@ export function mount<S extends State = State>(
     // One replacement per mount, not one per route (snapshot semantics).
     app.routes = Object.freeze([...app.routes, ...added]);
   }
-  return app;
+  return app as App<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>]>;
 }
 
 /**
@@ -144,12 +248,15 @@ export function mount<S extends State = State>(
  * every `Ctx<P, S>`) and the dynamic-pattern `Handler`, so one
  * implementation serves both overloads of each public registrar.
  */
-function register<S extends State = State>(
-  app: App<S>,
+function register<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   method: string,
   pattern: string,
   chain: readonly [...Middleware<S>[], Handler<never, S>]
-): App<S> {
+): App<S, R> {
   const handler = chain[chain.length - 1];
   if (handler === undefined) {
     throw new Error(`Invalid route ${method} '${pattern}': a terminal handler is required`);
@@ -165,169 +272,289 @@ function register<S extends State = State>(
   return app;
 }
 
-export function addRoute<P extends string, S extends State = State>(
-  app: App<S>,
-  method: string,
+export function addRoute<
+  P extends string,
+  S extends State = State,
+  M extends string = string,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
+  method: M,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function addRoute<S extends State = State>(
-  app: App<S>,
-  method: string,
+): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: P }]>;
+export function addRoute<
+  S extends State = State,
+  M extends string = string,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
+  method: M,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function addRoute<S extends State = State>(
-  app: App<S>,
-  method: string,
+): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string }]>;
+export function addRoute<
+  S extends State = State,
+  M extends string = string,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
+  method: M,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, method, pattern, chain);
+): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string }]> {
+  return register(app, method, pattern, chain) as App<
+    S,
+    [...R, { readonly method: Uppercase<M>; readonly pattern: string }]
+  >;
 }
 
-export function get<P extends string, S extends State = State>(
-  app: App<S>,
+export function get<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function get<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'GET'; readonly pattern: P }]>;
+export function get<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function get<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'GET'; readonly pattern: string }]>;
+export function get<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'GET', pattern, chain);
+): App<S, [...R, { readonly method: 'GET'; readonly pattern: string }]> {
+  return register(app, 'GET', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'GET'; readonly pattern: string }]
+  >;
 }
 
-export function post<P extends string, S extends State = State>(
-  app: App<S>,
+export function post<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function post<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'POST'; readonly pattern: P }]>;
+export function post<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function post<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'POST'; readonly pattern: string }]>;
+export function post<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'POST', pattern, chain);
+): App<S, [...R, { readonly method: 'POST'; readonly pattern: string }]> {
+  return register(app, 'POST', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'POST'; readonly pattern: string }]
+  >;
 }
 
-export function put<P extends string, S extends State = State>(
-  app: App<S>,
+export function put<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function put<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'PUT'; readonly pattern: P }]>;
+export function put<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function put<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string }]>;
+export function put<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'PUT', pattern, chain);
+): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string }]> {
+  return register(app, 'PUT', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'PUT'; readonly pattern: string }]
+  >;
 }
 
-export function patch<P extends string, S extends State = State>(
-  app: App<S>,
+export function patch<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function patch<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: P }]>;
+export function patch<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function patch<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string }]>;
+export function patch<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'PATCH', pattern, chain);
+): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string }]> {
+  return register(app, 'PATCH', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'PATCH'; readonly pattern: string }]
+  >;
 }
 
-export function del<P extends string, S extends State = State>(
-  app: App<S>,
+export function del<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function del<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: P }]>;
+export function del<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function del<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string }]>;
+export function del<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'DELETE', pattern, chain);
+): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string }]> {
+  return register(app, 'DELETE', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'DELETE'; readonly pattern: string }]
+  >;
 }
 
-export function head<P extends string, S extends State = State>(
-  app: App<S>,
+export function head<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function head<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: P }]>;
+export function head<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function head<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string }]>;
+export function head<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'HEAD', pattern, chain);
+): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string }]> {
+  return register(app, 'HEAD', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'HEAD'; readonly pattern: string }]
+  >;
 }
 
-export function options<P extends string, S extends State = State>(
-  app: App<S>,
+export function options<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function options<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: P }]>;
+export function options<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function options<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string }]>;
+export function options<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'OPTIONS', pattern, chain);
+): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string }]> {
+  return register(app, 'OPTIONS', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'OPTIONS'; readonly pattern: string }]
+  >;
 }
 
-export function all<P extends string, S extends State = State>(
-  app: App<S>,
+export function all<
+  P extends string,
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: P,
   ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S>]
-): App<S>;
-export function all<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'ALL'; readonly pattern: P }]>;
+export function all<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<Params, S>]
-): App<S>;
-export function all<S extends State = State>(
-  app: App<S>,
+): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string }]>;
+export function all<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(
+  app: App<S, R>,
   pattern: string,
   ...chain: [...Middleware<S>[], Handler<never, S>]
-): App<S> {
-  return register(app, 'ALL', pattern, chain);
+): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string }]> {
+  return register(app, 'ALL', pattern, chain) as App<
+    S,
+    [...R, { readonly method: 'ALL'; readonly pattern: string }]
+  >;
 }
 
 // Composed-chain caches. `compose`'s double-next `index` is created per
@@ -393,9 +620,9 @@ async function mapError<S extends State = State>(
   if (app.onError === undefined) {
     // HttpErrors are intentional client errors mapped to responses; only
     // unexpected failures need surfacing — a silently swallowed 500 is
-    // undebuggable in production.
+    // undebuggable in production. The sink is injectable per app.
     if (!isHttpError(error)) {
-      console.error(error);
+      (app.logError ?? console.error)(error);
     }
     ctx.res = toErrorResponse(error);
     return;

@@ -1,4 +1,4 @@
-import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 
 import type { App } from './app';
 import type { StaticFileInfo } from './static';
@@ -7,13 +7,29 @@ import { once } from 'node:events';
 import { constants, createReadStream } from 'node:fs';
 import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import {
+  createSecureServer,
+  type Http2SecureServer,
+  type Http2ServerRequest,
+  type Http2ServerResponse,
+  type IncomingHttpHeaders,
+} from 'node:http2';
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Readable, type Duplex } from 'node:stream';
 
 import { handle } from './app';
 
 
-export type NodeServer = { server: Server; url: string; port: number; close(): Promise<void> };
+/** Any server the adapter can return: HTTP/1.1, HTTPS, or HTTP/2-over-TLS. */
+export type NodeServerKind = HttpServer | HttpsServer | Http2SecureServer;
+
+export type NodeServer = {
+  server: NodeServerKind;
+  url: string;
+  port: number;
+  close(): Promise<void>;
+};
 
 /** The http server's `'upgrade'` event callback — see `s200/websocket/node`. */
 export type NodeUpgradeHandler = (
@@ -21,6 +37,15 @@ export type NodeUpgradeHandler = (
   socket: Duplex,
   head: Buffer
 ) => void;
+
+export type NodeHttpsOptions = {
+  key: string | Buffer | (string | Buffer)[];
+  cert: string | Buffer | (string | Buffer)[];
+  ca?: string | Buffer | (string | Buffer)[];
+  /** Serve HTTP/2 over TLS instead of HTTP/1.1. Plaintext h2c is not
+   * supported — HTTP/2 requires TLS here. */
+  http2?: boolean;
+};
 
 export type NodeServeOptions = {
   port?: number;
@@ -31,6 +56,36 @@ export type NodeServeOptions = {
    * any protocol library of your choice).
    */
   upgrade?: NodeUpgradeHandler;
+  /**
+   * Serve TLS: `node:https` by default, or `node:http2`'s secure server
+   * with `http2: true` — the same dispatch pipeline either way, so
+   * handlers and middlewares see no difference. HTTP/2 has no `upgrade`
+   * event; combining `https` with `upgrade` throws at `serve` time.
+   */
+  https?: NodeHttpsOptions;
+};
+
+/** The request surface the adapter reads — `node:http` and `node:http2`
+ * compatibility APIs both satisfy it. */
+type RequestLike = {
+  readonly headers: IncomingHttpHeaders;
+  readonly rawHeaders: string[];
+  readonly method?: string;
+  readonly url?: string;
+};
+
+/** The response surface the adapter writes — both server kinds provide the
+ * HTTP/1-style compat API (`writeHead`/`write`/`end`/`drain`). */
+type ResponseLike = {
+  writeHead(
+    statusCode: number,
+    statusMessage: string | undefined,
+    headers: Record<string, string | string[]>
+  ): unknown;
+  write(chunk: Uint8Array): boolean;
+  end(): unknown;
+  on(event: 'drain', listener: () => void): unknown;
+  destroy(): unknown;
 };
 
 // "Path does not point at a readable file". Anything else (EACCES, EMFILE,
@@ -41,9 +96,20 @@ export async function serve(
   app: App,
   options: NodeServeOptions = {}
 ): Promise<NodeServer> {
-  const server = createServer((req, res) => {
+  if (options.https !== undefined && options.upgrade !== undefined) {
+    throw new Error(
+      'serve: WebSocket upgrade is HTTP/1.1-only — cannot combine https with upgrade'
+    );
+  }
+  const handler = (req: IncomingMessage | Http2ServerRequest, res: ServerResponse | Http2ServerResponse) => {
     void dispatch(app, req, res);
-  });
+  };
+  const server: NodeServerKind =
+    options.https !== undefined
+      ? options.https.http2 === true
+        ? createSecureServer(options.https, handler)
+        : createHttpsServer(options.https, handler)
+      : createServer(handler);
   if (options.upgrade !== undefined) {
     server.on('upgrade', options.upgrade);
   }
@@ -53,19 +119,21 @@ export async function serve(
   await once(server, 'listening');
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : (options?.port ?? 0);
-  return { server, url: `http://127.0.0.1:${port}`, port, close: () => closeServer(server) };
+  const scheme = options.https !== undefined ? 'https' : 'http';
+  return { server, url: `${scheme}://127.0.0.1:${port}`, port, close: () => closeServer(server) };
 }
 
-function closeServer(server: Server): Promise<void> {
+function closeServer(server: NodeServerKind): Promise<void> {
   // closeAllConnections() first: idle keep-alive sockets would otherwise hold
-  // server.close()'s callback open until their own timeout fires.
-  server.closeAllConnections?.();
+  // server.close()'s callback open until their own timeout fires. HTTP/2
+  // servers close their sessions via close() — no such method there.
+  (server as { closeAllConnections?: () => void }).closeAllConnections?.();
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
 }
 
-async function dispatch(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function dispatch(app: App, req: RequestLike, res: ResponseLike): Promise<void> {
   try {
     // handle() maps every error to a Response, so only the socket write can
     // throw here (client gone mid-response) — nothing left to answer.
@@ -76,16 +144,27 @@ async function dispatch(app: App, req: IncomingMessage, res: ServerResponse): Pr
   }
 }
 
-function toRequest(req: IncomingMessage): Request {
-  const url = `http://${req.headers.host ?? 'localhost'}${req.url ?? '/'}`;
+function toRequest(req: RequestLike): Request {
+  // http2 compat requests expose `:authority` where http1 exposes `host`.
+  const authority = (req.headers as Record<string, string | string[] | undefined>)[
+    ':authority'
+  ];
+  const host =
+    req.headers.host ?? (typeof authority === 'string' ? authority : undefined) ?? 'localhost';
+  const url = `http://${host}${req.url ?? '/'}`;
   const headerPairs: [string, string][] = [];
   // rawHeaders keeps the wire order, so duplicated headers survive as pairs
-  // instead of being pre-merged by node's parsed view.
+  // instead of being pre-merged by node's parsed view. http2 compat
+  // requests surface ':method'/':path'/... pseudo-headers here too — the
+  // Request constructor rejects them as header names, so they are dropped.
   const raw = req.rawHeaders;
   for (let i = 0; i + 1 < raw.length; i += 2) {
     const name = raw[i];
     const value = raw[i + 1];
-    if (name !== undefined && value !== undefined) headerPairs.push([name, value]);
+    if (name === undefined || value === undefined || name.startsWith(':')) {
+      continue;
+    }
+    headerPairs.push([name, value]);
   }
   const method = req.method ?? 'GET';
   const init: RequestInit & { duplex?: 'half' } = {
@@ -95,14 +174,17 @@ function toRequest(req: IncomingMessage): Request {
   };
   if (method !== 'GET' && method !== 'HEAD') {
     // A streaming body needs duplex: 'half'; GET/HEAD must stay bodyless —
-    // the platform rejects a request body there.
-    init.body = Readable.toWeb(req) as unknown as ReadableStream;
+    // the platform rejects a request body there. Both server kinds hand
+    // out node Readables for the request.
+    init.body = Readable.toWeb(
+      req as unknown as import('node:stream').Readable
+    ) as unknown as ReadableStream;
     init.duplex = 'half';
   }
   return new Request(url, init);
 }
 
-async function writeResponse(res: ServerResponse, response: Response): Promise<void> {
+async function writeResponse(res: ResponseLike, response: Response): Promise<void> {
   const headers: Record<string, string | string[]> = {};
   response.headers.forEach((value, key) => {
     headers[key] = value;
@@ -131,7 +213,7 @@ async function writeResponse(res: ServerResponse, response: Response): Promise<v
       return;
     }
     if (!res.write(value)) {
-      await once(res, 'drain');
+      await once(res as unknown as import('node:events').EventEmitter, 'drain');
     }
   }
 }
