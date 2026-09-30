@@ -385,6 +385,16 @@
         "types": "./dist/types/upload.d.ts",
         "default": "./dist/upload.cjs"
       }
+    },
+    "./dev": {
+      "import": {
+        "types": "./dist/types/dev.d.mts",
+        "default": "./dist/dev.mjs"
+      },
+      "require": {
+        "types": "./dist/types/dev.d.ts",
+        "default": "./dist/dev.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -450,14 +460,14 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "8.1 KB"
+      "limit": "8.3 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
       "path": "src/index.ts",
       "import": "{ createApp, use, get, handle }",
       "gzip": true,
-      "limit": "4.2 KB"
+      "limit": "4.4 KB"
     },
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
@@ -466,19 +476,19 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "4.1 KB"
+      "limit": "4.4 KB"
     },
     {
       "name": "compress battery (min+gz)",
       "path": "dist/compress.mjs",
       "gzip": true,
-      "limit": "2 KB"
+      "limit": "2.3 KB"
     },
     {
       "name": "streaming battery (min+gz)",
       "path": "dist/streaming.mjs",
       "gzip": true,
-      "limit": "1.8 KB"
+      "limit": "2.1 KB"
     },
     {
       "name": "request-id battery (min+gz)",
@@ -496,14 +506,23 @@
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
-      "limit": "2.3 KB"
+      "limit": "2.6 KB"
     },
     {
       "name": "openapi battery: meta + openapi (min+gz)",
       "path": "src/openapi.ts",
       "import": "{ openapiSpec, openapiJson }",
       "gzip": true,
-      "limit": "2.2 KB"
+      "limit": "2.4 KB"
+    },
+    {
+      "name": "dev battery (min+gz)",
+      "path": "dist/dev.mjs",
+      "ignore": [
+        "node:*"
+      ],
+      "gzip": true,
+      "limit": "1 KB"
     }
   ],
   "lint-staged": {

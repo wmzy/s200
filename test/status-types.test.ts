@@ -72,7 +72,12 @@ describe('status literal brands', () => {
     (await miss.json()).should.deep.equal({ code: 'no_user' });
 
     // A type query, not a call: the runtime body was consumed above.
-    expectTypeOf<typeof ok.json>().toEqualTypeOf<() => Promise<Err | User>>();
+    // One json() signature per status branch — the pairing the flat
+    // out/status channels could not carry (narrowing asserted in
+    // client-branches.test.ts).
+    expectTypeOf<typeof ok.json>().toEqualTypeOf<
+      (() => Promise<User>) | (() => Promise<Err>)
+    >();
     expectTypeOf(ok.status).branded.toEqualTypeOf<200 | 404>();
   });
 

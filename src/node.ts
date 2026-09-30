@@ -18,7 +18,7 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from 'n
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Readable, type Duplex } from 'node:stream';
 
-import { LightRequest, LightResponse, setCachedUrl } from './light';
+import { LightHeaders, LightRequest, LightResponse, setCachedUrl } from './light';
 
 import { handle } from './app';
 
@@ -207,26 +207,16 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
   const host =
     req.headers.host ?? (typeof authority === 'string' ? authority : undefined) ?? 'localhost';
   const url = `http://${host}${req.url ?? '/'}`;
-  const headerPairs: [string, string][] = [];
-  // rawHeaders keeps the wire order, so duplicated headers survive as pairs
-  // instead of being pre-merged by node's parsed view. http2 compat
-  // requests surface ':method'/':path'/... pseudo-headers here too — the
-  // Request constructor rejects them as header names, so they are dropped.
-  const raw = req.rawHeaders;
-  for (let i = 0; i + 1 < raw.length; i += 2) {
-    const name = raw[i];
-    const value = raw[i + 1];
-    if (name === undefined || value === undefined || name.startsWith(':')) {
-      continue;
-    }
-    headerPairs.push([name, value]);
-  }
   const method = req.method ?? 'GET';
   if (light) {
     const request = new LightRequest({
       method,
       url,
-      headers: headerPairs,
+      // The flat rawHeaders view is wrapped by reference: LightHeaders
+      // builds its slot/index store only on the first structural access,
+      // so the hot paths that never read request headers pay nothing for
+      // header parsing (pseudo-header dropping happens there too).
+      headers: LightHeaders.fromRaw(req.rawHeaders),
       body:
         method !== 'GET' && method !== 'HEAD'
           ? (Readable.toWeb(
@@ -237,6 +227,20 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
     });
     setCachedUrl(request as unknown as Request, new URL(url));
     return request as unknown as Request;
+  }
+  // rawHeaders keeps the wire order, so duplicated headers survive as pairs
+  // instead of being pre-merged by node's parsed view. http2 compat
+  // requests surface ':method'/':path'/... pseudo-headers here too — the
+  // Request constructor rejects them as header names, so they are dropped.
+  const headerPairs: [string, string][] = [];
+  const raw = req.rawHeaders;
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const name = raw[i];
+    const value = raw[i + 1];
+    if (name === undefined || value === undefined || name.startsWith(':')) {
+      continue;
+    }
+    headerPairs.push([name, value]);
   }
   const init: RequestInit & { duplex?: 'half' } = {
     method,
@@ -264,13 +268,22 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
 
 async function writeResponse(res: ResponseLike, response: Response): Promise<void> {
   const headers: Record<string, string | string[]> = {};
-  response.headers.forEach((value, key) => {
-    headers[key] = value;
-  });
-  // forEach would collapse repeated set-cookie into one comma-joined value,
-  // which is not a legal cookie list — keep them as an array.
-  const setCookies = response.headers.getSetCookie();
-  if (setCookies.length > 0) headers['set-cookie'] = setCookies;
+  if (
+    response instanceof LightResponse &&
+    response.headers instanceof LightHeaders
+  ) {
+    // Direct slot fill — merged values plus the set-cookie array in one
+    // loop, skipping the generator + callback machinery of forEach.
+    response.headers.fillRecord(headers);
+  } else {
+    response.headers.forEach((value, key) => {
+      headers[key] = value;
+    });
+    // forEach would collapse repeated set-cookie into one comma-joined
+    // value, which is not a legal cookie list — keep them as an array.
+    const setCookies = response.headers.getSetCookie();
+    if (setCookies.length > 0) headers['set-cookie'] = setCookies;
+  }
   if (response instanceof LightResponse) {
     // Light fast path: byte-backed bodies skip the reader loop entirely —
     // write the bytes straight to the socket.

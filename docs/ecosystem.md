@@ -71,6 +71,7 @@ release.
 | `s200/client`     | `createClient` — the typed fetch client                        |
 | `s200/test`       | `request`, `testClient`, `probeApp` — in-process app driving   |
 | `s200/otel`       | `trace` — OTel spans per request                               |
+| `s200/dev`        | `createHotApp`, `importFresh`, `watchAndReload` — hot table    |
 
 ### Runtime adapters
 

@@ -64,9 +64,11 @@ export type Middleware<S extends State = State> = (
 
 /**
  * Route terminal handler. May return a `Response` — `handle` adopts it as
- * `ctx.res` when nothing was written yet. `O` is the return type; when it
- * is a branded {@link JsonResponse}, the route's phantom log entry records
- * the body type for `s200/client` (`ResolveOut`).
+ * `ctx.res` when nothing was written yet — or return an `HttpError`, which
+ * `handle` treats as sugar for throwing it (same error boundary, same
+ * `onError`/envelope mapping). `O` is the return type; when it is a branded
+ * {@link JsonResponse}, the route's phantom log entry records the body type
+ * for `s200/client` (`ResolveOut`).
  */
 export type Handler<P extends Params = Params, S extends State = State, O = unknown> = (
   ctx: Ctx<P, S>
@@ -122,9 +124,14 @@ export type RouteDef = {
    * phantoms) — the request-side twin of `out`. */
   readonly in?: unknown;
   /** The error branches a route's `throws` gates declare (`_errors`
-   * phantoms) — the error-side twin of `in`: statuses the route may
+   * phantoms) merged with the ones its handler's returned `httpError`
+   * values infer — the error-side twin of `in`: statuses the route may
    * answer with and the body shapes those answers ship. */
   readonly errors?: unknown;
+  /** The status → body pairs a handler's return union declares
+   * ({@link BranchesOf}) — keeps the pairing that separate `out`/`status`
+   * extraction loses, so `s200/client` can discriminate on `status`. */
+  readonly branches?: unknown;
 };
 
 /**
@@ -201,6 +208,107 @@ export type ChainErrors<Ms extends readonly unknown[]> = [PhantomErrors<Ms[numbe
     : UnionToIntersection<U>
   : never;
 
+/** Unwraps the `Promise` members of a handler's return union: `A | Promise<B>`
+ * distributes into `A | B`, so sync and async branches flow alike through
+ * the phantom extractors below (a tuple-guarded unwrap would lose the
+ * mixed-union members instead of distributing them). */
+type Unpromise<O> = O extends Promise<infer P> ? Unpromise<P> : O;
+
+/** A handler return member shaped like an {@link HttpError} value. The
+ * `_tag` discriminant is the only safe key to test — a bare
+ * `{ status, body }` match would swallow ordinary objects. */
+type HttpErrorBrand = {
+  readonly _tag: 'HttpError';
+  readonly status: number;
+  readonly body?: unknown;
+};
+
+/** One returned-`HttpError` member's error-channel branch: the default
+ * `{ error: string }` envelope when it carries no body, the body itself
+ * when it does — exactly what `toErrorResponse` ships for that value. */
+type OutErrorBranch<M> = M extends { readonly body?: infer B }
+  ? [B] extends [undefined]
+    ? { error: string }
+    : Exclude<B, undefined>
+  : never;
+
+/** One return member's contribution to the errors channel: `HttpError`
+ * members contribute their status → body record, everything else nothing. */
+type MemberErrors<M> = M extends HttpErrorBrand
+  ? Readonly<Record<M['status'], OutErrorBranch<M>>>
+  : Record<never, never>;
+
+/** Flattens a union of records into one record — same-key values union. */
+type FlattenRecords<R> = {
+  readonly [K in R extends unknown ? keyof R : never]: R extends unknown
+    ? K extends keyof R
+      ? R[K]
+      : never
+    : never;
+};
+
+/**
+ * The error branches a handler's RETURNED `httpError` values declare.
+ * TypeScript cannot inspect a function body's `throw` sites, so the return
+ * type is the only inferable channel: a handler that returns (instead of
+ * throws) an `HttpError` brands its statuses and body shapes here, and
+ * `handle` treats such a return as sugar for throwing it — the declared
+ * branches describe real wire answers.
+ */
+export type OutErrors<O> = FlattenRecords<MemberErrors<Unpromise<O>>>;
+
+/** Merges two status → body records: same-key values union. */
+export type MergeRecords<A, B> = {
+  readonly [K in keyof A | keyof B]: K extends keyof A
+    ? K extends keyof B
+      ? A[K] | B[K]
+      : A[K]
+    : K extends keyof B
+      ? B[K]
+      : never;
+};
+
+/**
+ * A route's full error channel: the `throws` gates' declared branches
+ * ({@link ChainErrors}) merged with the handler's returned-`httpError`
+ * branches ({@link OutErrors}) — same-status conflicts union their body
+ * shapes. Routes whose handler returns no `HttpError` values keep
+ * {@link ChainErrors}' shape untouched: the merge only wakes when there
+ * is something to merge.
+ */
+export type RouteErrors<Ms extends readonly unknown[], O> =
+  [keyof OutErrors<O>] extends [never]
+    ? ChainErrors<Ms>
+    : MergeRecords<ChainErrors<Ms>, OutErrors<O>>;
+
+/** Normalizes an inferred status brand: an absent one reads `number`. */
+type NormStatus<S> = S extends number ? S : number;
+
+/** One handler return member's status → body pair. A responder branded
+ * with both `_out` and `_status` keeps the pair; a status-only brand
+ * (`text`/`html`/`redirect`) pairs its status with `unknown`; an unbranded
+ * return pairs `number` with `unknown`. Returned `HttpError` values
+ * contribute nothing here — they flow through the errors channel
+ * ({@link OutErrors}) instead. */
+type BranchOf<M> =
+  M extends HttpErrorBrand
+    ? never
+    : M extends { readonly _out?: infer T; readonly _status?: infer S }
+      ? { status: NormStatus<S>; out: T }
+      : M extends { readonly _status?: infer S }
+        ? { status: NormStatus<S>; out: unknown }
+        : { status: number; out: unknown };
+
+/**
+ * The status → body pairs a handler's return union declares — the client's
+ * discriminated response union. Promise-unwrapped and distributed per
+ * member (see {@link Unpromise}), so `json(ctx, x)` and
+ * `json(ctx, e, { status: 422 })` survive as separate `{status, out}`
+ * pairs instead of collapsing into the loose `out`/`status` unions the
+ * two-channel extraction produces.
+ */
+export type BranchesOf<O> = BranchOf<Unpromise<O>>;
+
 /** `R` minus the routes registered for method `M` + pattern `P` — the
  * compile-time twin of `removeRoute`'s runtime filter. */
 export type RouteFilter<
@@ -220,8 +328,9 @@ export type MountBase<B extends string> =
 
 /** The route defs of a mounted sub-app, patterns prefixed under `Base`
  * (the sub-app root `/` collapses onto the bare prefix). `out`, `status`,
- * `in`, and `errors` ride along so a mounted app's client keeps its
- * response-body, response-status, request-input, and error-branch types. */
+ * `in`, `errors`, and `branches` ride along so a mounted app's client keeps
+ * its response-body, response-status, request-input, error-branch, and
+ * status-pair types. */
 export type MountedDefs<
   R extends readonly RouteDef[],
   Base extends string
@@ -236,7 +345,8 @@ export type MountedDefs<
         } & (Head extends { readonly out: infer O } ? { readonly out: O } : unknown) &
           (Head extends { readonly status: infer St } ? { readonly status: St } : unknown) &
           (Head extends { readonly in: infer I } ? { readonly in: I } : unknown) &
-          (Head extends { readonly errors: infer E } ? { readonly errors: E } : unknown),
+          (Head extends { readonly errors: infer E } ? { readonly errors: E } : unknown) &
+          (Head extends { readonly branches: infer Br } ? { readonly branches: Br } : unknown),
         ...MountedDefs<Tail, Base>
       ]
     : [];

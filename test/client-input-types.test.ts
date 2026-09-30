@@ -152,11 +152,16 @@ describe('client input types', () => {
 
     const res = await client.get('/maybe');
     expectTypeOf(res.status).toEqualTypeOf<200 | 401 | 404>();
-    // `res.json` (the member), not `res.json()` — expectTypeOf evaluates
-    // its argument, and the stub's non-JSON body must not be parsed.
+    // One json() signature per status now (the discriminated refinement
+    // of the former flat body union) — `res.status` narrows `res.json()`.
     expectTypeOf(res.json).toEqualTypeOf<
-      () => Promise<{ ok: boolean } | { error: string }>
+      (() => Promise<{ ok: boolean }>) | (() => Promise<{ error: string }>)
     >();
+    if (res.status === 404) {
+      // `res.json` (the member), not `res.json()` — expectTypeOf evaluates
+      // its argument, and the stub's non-JSON body must not be parsed.
+      expectTypeOf(res.json).toEqualTypeOf<() => Promise<{ error: string }>>();
+    }
   });
 
   it('merges multiple throws gates on the client', async () => {
@@ -174,8 +179,13 @@ describe('client input types', () => {
     const res = await client.get('/merge');
     expectTypeOf(res.status).toEqualTypeOf<200 | 401 | 422>();
     expectTypeOf(res.json).toEqualTypeOf<
-      () => Promise<{ ok: boolean } | { error: string } | { issues: string[] }>
+      | (() => Promise<{ ok: boolean }>)
+      | (() => Promise<{ error: string }>)
+      | (() => Promise<{ issues: string[] }>)
     >();
+    if (res.status === 422) {
+      expectTypeOf(res.json).toEqualTypeOf<() => Promise<{ issues: string[] }>>();
+    }
   });
 });
 

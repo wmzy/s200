@@ -7,6 +7,7 @@
  *
  *   pnpm bench:http
  *   CONCURRENCY=64 REQUESTS=50000 pnpm bench:http
+ *   node scripts/bench-http.mjs --only mw   # measure one scenario
  *
  * Each framework runs in its OWN child process (this script re-execs
  * itself with BENCH_SERVER set): @hono/node-server's default patches the
@@ -22,6 +23,13 @@
  * Scenarios (all JSON, all keep-alive):
  *   hello        GET /            -> { "message": "hello" }
  *   param        GET /users/:id   -> { "id": "42", "name": "ada" }
+ *   mw           GET /mw          -> { "message": "hello" } through a
+ *                 5-deep middleware chain (see the mw builders below):
+ *                 each link reads the `x-test` request header and sets its
+ *                 own response header at unwind; one link also stores a
+ *                 performance.now() delta into the per-request context.
+ *                 The chain is scoped to /mw so hello/param keep measuring
+ *                 the middleware-free floor.
  *
  * Methodology caveats (read docs/benchmarks.md before citing numbers):
  *   - single process per framework, one port, warmed up first
@@ -39,6 +47,26 @@ import { join } from 'node:path';
 
 const CONCURRENCY = Number(process.env.CONCURRENCY ?? 32);
 const REQUESTS = Number(process.env.REQUESTS ?? 30_000);
+
+// One row = one scenario: a path benched against every variant's server.
+const SCENARIOS = [
+  { name: 'hello', path: '/' },
+  { name: 'param', path: '/users/42' },
+  { name: 'mw', path: '/mw' },
+];
+
+// `--only <scenario>` narrows the run to one scenario (default: all). The
+// parent re-execs children with the same flag so both modes stay in sync.
+const onlyIndex = process.argv.indexOf('--only');
+const only = onlyIndex === -1 ? undefined : process.argv[onlyIndex + 1];
+if (only !== undefined && !SCENARIOS.some((s) => s.name === only)) {
+  console.error(
+    `unknown scenario '${only}' (known: ${SCENARIOS.map((s) => s.name).join(', ')})`,
+  );
+  process.exit(1);
+}
+const scenarios =
+  only === undefined ? SCENARIOS : SCENARIOS.filter((s) => s.name === only);
 
 const VARIANTS = ['s200', 's200-light', 'hono', 'hono-patched', 'express', 'fastify', 'elysia'];
 // s200-deno is probed at scenario definition and only in parent mode (the
@@ -102,11 +130,39 @@ function bench(url, path) {
 // ── servers ────────────────────────────────────────────────────────────────
 
 async function buildS200({ light }) {
-  const { createApp, get, json } = await import('../dist/index.mjs');
+  const { createApp, get, json, use } = await import('../dist/index.mjs');
   const { serve } = await import('../dist/node.mjs');
   const app = createApp();
   get(app, '/', (ctx) => json(ctx, { message: 'hello' }));
   get(app, '/users/:id', (ctx) => json(ctx, { id: ctx.params.id, name: 'ada' }));
+  // mw scenario: five middlewares, each reading `x-test` on the way in and
+  // setting its own response header after next() resolves (true unwind —
+  // ctx.res exists per the chain contract). The third also stores a
+  // performance.now() delta into ctx.state, the per-request state bag.
+  // Prefix-scoped so / and /users/:id keep the middleware-free floor.
+  const mwLink = (i) => (ctx, next) => {
+    ctx.req.headers.get('x-test');
+    return next().then(() => {
+      ctx.res.headers.set(`x-mw-${i}`, String(i));
+    });
+  };
+  use(
+    app,
+    '/mw',
+    mwLink(1),
+    mwLink(2),
+    (ctx, next) => {
+      ctx.req.headers.get('x-test');
+      const t0 = performance.now();
+      return next().then(() => {
+        ctx.state.elapsed = performance.now() - t0;
+        ctx.res.headers.set('x-mw-3', '3');
+      });
+    },
+    mwLink(4),
+    mwLink(5)
+  );
+  get(app, '/mw', (ctx) => json(ctx, { message: 'hello' }));
   return serve(app, { port: 0, host: '127.0.0.1', ...(light ? { light: true } : {}) });
 }
 
@@ -116,6 +172,28 @@ async function buildHono({ patched }) {
   const app = new Hono();
   app.get('/', (c) => c.json({ message: 'hello' }));
   app.get('/users/:id', (c) => c.json({ id: c.req.param('id'), name: 'ada' }));
+  // mw scenario: app.use chains, path-scoped to /mw so the other routes keep
+  // the middleware-free floor. Each link reads `x-test`, awaits next(), then
+  // writes its response header (true unwind); the third also stores a
+  // performance.now() delta via c.set (hono's per-request context store).
+  const mwLink = (i) =>
+    app.use('/mw/*', async (c, next) => {
+      c.req.header('x-test');
+      await next();
+      c.header(`x-mw-${i}`, String(i));
+    });
+  mwLink(1);
+  mwLink(2);
+  app.use('/mw/*', async (c, next) => {
+    c.req.header('x-test');
+    const t0 = performance.now();
+    await next();
+    c.header('x-mw-3', '3');
+    c.set('elapsed', performance.now() - t0);
+  });
+  mwLink(4);
+  mwLink(5);
+  app.get('/mw', (c) => c.json({ message: 'hello' }));
   return serve({
     fetch: app.fetch,
     port: 0,
@@ -130,6 +208,28 @@ async function buildExpress() {
   const app = express();
   app.get('/', (_req, res) => res.json({ message: 'hello' }));
   app.get('/users/:id', (req, res) => res.json({ id: req.params.id, name: 'ada' }));
+  // mw scenario: app.use chains mounted at /mw (path-scoped, so / and
+  // /users/:id keep the middleware-free floor). Each link reads `x-test` and
+  // sets its response header — express defers header serialization to unwind,
+  // so setHeader here rides the same flush the handler's res.json triggers.
+  // The third stores the performance.now() delta after next() returns
+  // (express descends the rest of the chain synchronously, so that is the
+  // unwind side of the handler).
+  const mwLink = (i) => (req, res, next) => {
+    req.headers['x-test'];
+    res.setHeader(`x-mw-${i}`, String(i));
+    next();
+  };
+  app.use('/mw', mwLink(1), mwLink(2));
+  app.use('/mw', (req, res, next) => {
+    req.headers['x-test'];
+    const t0 = performance.now();
+    res.setHeader('x-mw-3', '3');
+    next();
+    req.elapsed = performance.now() - t0;
+  });
+  app.use('/mw', mwLink(4), mwLink(5));
+  app.get('/mw', (_req, res) => res.json({ message: 'hello' }));
   return app.listen(0, '127.0.0.1');
 }
 
@@ -138,6 +238,30 @@ async function buildFastify() {
   const app = fastify();
   app.get('/', async () => ({ message: 'hello' }));
   app.get('/users/:id', async (req) => ({ id: req.params.id, name: 'ada' }));
+  // mw scenario: fastify's middleware equivalent is lifecycle hooks. They
+  // live in an encapsulated register scope so only /mw's route pays them —
+  // fastify hooks are per-plugin, unlike app-level middleware elsewhere.
+  // Each async onRequest hook reads `x-test` and writes reply.header(...)
+  // (applied at onSend serialization = unwind-equivalent); the third stores
+  // a performance.now() delta on the request context.
+  await app.register(async (instance) => {
+    for (let i = 1; i <= 5; i++) {
+      if (i === 3) {
+        instance.addHook('onRequest', async (request, reply) => {
+          const t0 = performance.now();
+          request.headers['x-test'];
+          reply.header('x-mw-3', '3');
+          request.elapsed = performance.now() - t0;
+        });
+      } else {
+        instance.addHook('onRequest', async (request, reply) => {
+          request.headers['x-test'];
+          reply.header(`x-mw-${i}`, String(i));
+        });
+      }
+    }
+    instance.get('/mw', async () => ({ message: 'hello' }));
+  });
   await app.listen({ port: 0, host: '127.0.0.1' });
   return app.server;
 }
@@ -155,6 +279,30 @@ async function buildElysia() {
   const app = new Elysia({ adapter: node() })
     .get('/', () => ({ message: 'hello' }))
     .get('/users/:id', ({ params }) => ({ id: params.id, name: 'ada' }));
+  // mw scenario: elysia's onRequest hooks cannot be scoped — they fire for
+  // the whole instance no matter where they register (verified), which would
+  // contaminate the hello/param floor. The scoped equivalent is
+  // guard({ beforeHandle }): a five-link lifecycle chain applying only to the
+  // routes declared inside it. Each link reads `x-test` and writes
+  // set.headers[...], applied when the response is serialized
+  // (unwind-equivalent); the third stores a performance.now() delta on the
+  // request context.
+  const mwLinks = {
+    beforeHandle: [1, 2, 3, 4, 5].map((i) =>
+      i === 3
+        ? (ctx) => {
+            const t0 = performance.now();
+            ctx.request.headers.get('x-test');
+            ctx.set.headers['x-mw-3'] = '3';
+            ctx.elapsed = performance.now() - t0;
+          }
+        : (ctx) => {
+            ctx.request.headers.get('x-test');
+            ctx.set.headers[`x-mw-${i}`] = String(i);
+          }
+    ),
+  };
+  app.guard(mwLinks, (scoped) => scoped.get('/mw', () => ({ message: 'hello' })));
   const info = await new Promise((resolve) => {
     node().listen(app)({ port, hostname: '127.0.0.1' }, resolve);
   });
@@ -188,11 +336,35 @@ async function buildS200Deno() {
   writeFileSync(
     entry,
     `// Generated by scripts/bench-http.mjs (s200-deno scenario) — safe to delete.
-import { createApp, get, json, handle } from ${JSON.stringify(distUrl)};
+import { createApp, get, json, use, handle } from ${JSON.stringify(distUrl)};
 
 const app = createApp();
 get(app, '/', (ctx) => json(ctx, { message: 'hello' }));
 get(app, '/users/:id', (ctx) => json(ctx, { id: ctx.params.id, name: 'ada' }));
+// Same mw chain as the node s200 scenario (scoped to /mw).
+const mwLink = (i) => (ctx, next) => {
+  ctx.req.headers.get('x-test');
+  return next().then(() => {
+    ctx.res.headers.set('x-mw-' + i, String(i));
+  });
+};
+use(
+  app,
+  '/mw',
+  mwLink(1),
+  mwLink(2),
+  (ctx, next) => {
+    ctx.req.headers.get('x-test');
+    const t0 = performance.now();
+    return next().then(() => {
+      ctx.state.elapsed = performance.now() - t0;
+      ctx.res.headers.set('x-mw-3', '3');
+    });
+  },
+  mwLink(4),
+  mwLink(5)
+);
+get(app, '/mw', (ctx) => json(ctx, { message: 'hello' }));
 
 const server = Deno.serve(
   { port: 0, hostname: '127.0.0.1', onListen: ({ port }) => console.log(port) },
@@ -299,19 +471,20 @@ async function runServer(variant) {
 if (process.env.BENCH_SERVER !== undefined) {
   const variant = process.env.BENCH_SERVER;
   const server = await runServer(variant);
-  // Warm both routes (JIT + connection pool).
-  await bench(server.url, '/');
-  await bench(server.url, '/users/42');
-  const hello = await bench(server.url, '/');
-  const param = await bench(server.url, '/users/42');
-  console.log(
-    JSON.stringify({
-      variant,
-      hello: hello.rps,
-      param: param.rps,
-      failed: hello.failed + param.failed,
-    }),
-  );
+  // Warm every scenario's route first (JIT + connection pool), then measure
+  // them one by one so each row is a steady-state read of its own path.
+  for (const s of scenarios) {
+    await bench(server.url, s.path);
+  }
+  const row = { variant };
+  let failed = 0;
+  for (const s of scenarios) {
+    const result = await bench(server.url, s.path);
+    row[s.name] = result.rps;
+    failed += result.failed;
+  }
+  row.failed = failed;
+  console.log(JSON.stringify(row));
   await server.close();
   process.exit(0);
 }
@@ -321,7 +494,8 @@ if (process.env.BENCH_SERVER !== undefined) {
 const self = process.argv[1];
 const rows = [];
 for (const variant of VARIANTS) {
-  const out = execFileSync(process.execPath, [self], {
+  const args = only === undefined ? [] : ['--only', only];
+  const out = execFileSync(process.execPath, [self, ...args], {
     env: { ...process.env, BENCH_SERVER: variant },
     encoding: 'utf8',
   });
@@ -329,13 +503,16 @@ for (const variant of VARIANTS) {
 }
 
 console.log(
-  `node ${process.version} | concurrency=${CONCURRENCY} requests=${REQUESTS}/scenario\n`,
+  `node ${process.version} | concurrency=${CONCURRENCY} requests=${REQUESTS}/scenario${
+    only === undefined ? '' : ` | only=${only}`
+  }\n`,
 );
 const width = Math.max(...VARIANTS.map((v) => v.length));
 for (const row of rows) {
   const name = row.variant.padEnd(width);
+  const cells = scenarios
+    .map((s) => `${s.name}  ${String(row[s.name]).padStart(7)} req/s`)
+    .join('   ');
   const warn = row.failed > 0 ? `   (${row.failed} non-200!)` : '';
-  console.log(
-    `${name}  hello  ${String(row.hello).padStart(7)} req/s   param  ${String(row.param).padStart(7)} req/s${warn}`,
-  );
+  console.log(`${name}  ${cells}${warn}`);
 }

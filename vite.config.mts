@@ -54,6 +54,7 @@ export default defineConfig({
         session: resolve(dirname, 'src/session.ts'),
         swagger: resolve(dirname, 'src/swagger.ts'),
         upload: resolve(dirname, 'src/upload.ts'),
+        dev: resolve(dirname, 'src/dev.ts'),
       },
       name: 's200',
       formats: ['es', 'cjs'],

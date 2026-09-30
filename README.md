@@ -522,6 +522,21 @@ import { generateClient } from 's200/codegen';
 const source = generateClient(app, { baseUrl: 'https://api.example' });  // → .ts file content
 ```
 
+**Dev / hot reload** — `s200/dev` (node) turns the snapshot-immutable route table into zero-downtime reloads: `createHotApp(app)` wraps your app in a stable identity, `reload(nextApp)` swaps the whole table (routes, middlewares, error policy, matcher) atomically — in-flight requests finish on the old chain, new requests hit the new table, and the dispatch caches invalidate by array identity, never going stale. `importFresh(specifier)` re-imports a module bypassing the ESM cache (query-suffixed file URL), and `watchAndReload({ dirs, load, hot })` wires `fs.watch` + debounce to it; a failed `load` keeps the old table and reports through `onError`:
+
+```ts
+import { createHotApp, importFresh, watchAndReload } from 's200/dev';
+import { serve } from 's200/node';
+
+const hot = createHotApp(await buildApp());            // your (async) app builder
+await serve(hot.app, { port: 3000 });                  // holds the stable identity
+watchAndReload({
+  dirs: ['src'],
+  load: async () => (await importFresh('./src/app.ts') as { app: App }).app,
+  hot,
+});
+```
+
 **Client** — a type-safe fetch client derived from the app's own route table: paths are restricted to registered pattern literals, params are typed from them (`:id` required, `:id?` optional, `*path` kept slash-joined), and a `query` option builds the search string. `ALL` routes are offered under every method; malformed calls (unknown pattern, missing param) throw synchronously:
 
 ```ts
@@ -550,19 +565,24 @@ client.get('/list', {}, { query: { page: '2' } });              // query typed: 
 
 A plain-object `body` is JSON-stringified and stamped `content-type: application/json` (unless already set); string/stream/typed-array bodies pass through verbatim. Routes without gate brands keep the loose `ClientInit`. Schema-flavored gates carry the schema's **input** type (`types.input`), so a schema that transforms — parses a date string, defaults fields, narrows unions — types what the caller sends, not what the handler receives: input ≠ output inference works end to end.
 
-Error branches ride the same log: a `throws` gate (from `s200`) declares the statuses a route may answer with and the shapes those answers ship — it is a type-level declaration, a pure pass-through at runtime:
+Error branches flow from two channels. The primary one is inference: **return** an `httpError(...)` from the handler and its status and body shape land in the route log — no declaration needed (returning an `HttpError` is sugar for throwing it: it flows through the same in-chain error boundary, `onError` included, and middlewares see the stamped response on the unwind). The second is the `throws` gate, for branches a helper deep in the call stack may produce — a type-level declaration, a pure pass-through at runtime:
 
 ```ts
-import { throws } from 's200';
+import { httpError, throws } from 's200';
 
-get(app, '/users/:id', throws(401, 404), (ctx) => { /* … */ });
+get(app, '/users/:id', throws(401), (ctx) => {
+  const user = findUser(ctx.params.id);
+  return user ?? httpError(404, 'no such user');   // 404 branch inferred from the return
+});
 
 const res = await client.get('/users/:id', { id: '7' });
-// res.status: 200 | 401 | 404 — res.json(): Promise<User | { error: string }>
-if (res.status === 401) { /* … */ }
+// res.status: 200 | 401 | 404
+if (res.status === 404) {
+  const body = await res.json();   // { error: string } — narrowed by the status
+}
 ```
 
-`throws(401, 404)` declares the default `{ error: string }` envelope (what a body-less `httpError` ships); `throws({ 422: { issues: string[] } })` declares a structured `httpError(status, message, body)` payload. Several gates on one route merge. What is not (yet) done: `json()` is not discriminated by status — narrowing `res.status` does not narrow the body union — and the checker does not verify the handler actually throws what was declared.
+`httpError(404, 'msg')` (no body) infers the default `{ error: string }` envelope; `httpError(422, 'msg', { issues: [...] })` infers the payload shape. `throws(401, 404)` declares envelope branches; `throws({ 422: { issues: string[] } })` declares structured ones. Gates and returns merge, and two declarations of the same status union their bodies. The response is a **status-discriminated union**: narrowing `res.status` narrows `res.json()`. What is not (yet) done: `throw httpError(...)` call sites inside a handler body are invisible to the type layer (TypeScript cannot inspect function bodies) — return them, or declare with `throws`; and the checker does not verify a `throws` gate against what the handler actually produces.
 
 Responders brand the status literal they ship: `json(ctx, user)` brands `200`, `json(ctx, err, { status: 404 })` brands `404`, `redirect(ctx, '/new')` brands `302`. The client surfaces both channels — `res.status` narrows to the route's status literals and `res.json()` stays the typed body, unioned across a handler's branches; plain-`Response` handlers stay honest (`status: number`, body `unknown`), and the brands ride through `mount`:
 
@@ -575,11 +595,11 @@ get(app, '/users/:id', (ctx) => {
 });
 
 const res = await client.get('/users/:id', { id: '7' });
-// res.status: 200 | 404 — res.json(): Promise<{ code: string } | { id: number; name: string }>
-if (res.status === 404) { /* … */ }
+// res.status: 200 | 404 — res.json() discriminates: 400-branch bodies narrow with the status
+if (res.status === 404) { /* res.json() here: { code: string } */ }
 ```
 
-Thrown errors can carry a structured payload too: `throw httpError(404, 'no such user', { code: 'USER_NOT_FOUND' })` renders the body verbatim with the error's status; without a body the response keeps the `{ error: message }` envelope. To surface those branches on the client, declare them with a `throws` gate (see the Client section above) — the statuses and body shapes ride the route log into `res.status` and `res.json()`.
+Thrown or returned errors can carry a structured payload: `httpError(404, 'no such user', { code: 'USER_NOT_FOUND' })` renders the body verbatim with the error's status; without a body the response keeps the `{ error: message }` envelope. To surface thrown branches on the client, declare them with a `throws` gate (see the Client section above) — or just **return** the error value and the branch is inferred. Either way the statuses and body shapes ride the route log into `res.status` and `res.json()`.
 
 ## Stability & versioning
 
@@ -645,12 +665,12 @@ await serve(app, {
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement (`defineMiddleware`, the third-party battery authoring hook, lives there too). The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`, `s200/otel`, `s200/codegen`, `s200/test`, `s200/multipart`, `s200/session`, `s200/swagger`, `s200/upload`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement (`defineMiddleware`, the third-party battery authoring hook, lives there too). The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`, `s200/otel`, `s200/codegen`, `s200/test`, `s200/multipart`, `s200/session`, `s200/swagger`, `s200/upload`, `s200/dev`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 35 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 36 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
 pnpm vitest run            # single run (all tests; add --maxWorkers=4 to cap concurrency)
 pnpm lint / lint:ci

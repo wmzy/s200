@@ -15,7 +15,7 @@
  */
 
 import type { App } from './app';
-import type { Params, RouteDef, Segment, State } from './types';
+import type { MergeRecords, Params, RouteDef, Segment, State } from './types';
 
 import type { ParamsOf } from './router';
 
@@ -42,24 +42,19 @@ export type ClientOptions = {
 /** One route's call signature: params required exactly when the pattern
  * captures them (`:id`), optional when the pattern declares them (`:id?`),
  * absent for plain patterns (the `init` moves up one position). The
- * returned `Response` carries a typed `json()` when the handler returned a
- * branded {@link JsonResponse} — `unknown` otherwise. Input phantoms ride
- * the same signature: a `jsonBody` gate types (and demands) `init.body`,
- * a `queryParams` gate narrows `init.query`; routes with neither gate
- * keep the loose {@link ClientInit} exactly. */
+ * resolved value is the route's status-discriminated response union
+ * ({@link ClientBranches}) — one {@link BranchResponse} per status the
+ * route's branches and error declarations name, so `res.status` narrows
+ * `res.json()`. Input phantoms ride the same signature: a `jsonBody` gate
+ * types (and demands) `init.body`, a `queryParams` gate narrows
+ * `init.query`; routes with neither gate keep the loose
+ * {@link ClientInit} exactly. */
 type RouteCall<D extends RouteDef> = D extends {
   readonly pattern: infer P extends string;
 }
   ? keyof ParamsOf<P> extends never
-    ? (
-        path: P,
-        ...init: InitArg<D>
-      ) => Promise<ClientResponse<DefOut<D>, DefStatus<D>, DefErrors<D>>>
-    : (
-        path: P,
-        args: ParamsOf<P>,
-        ...init: InitArg<D>
-      ) => Promise<ClientResponse<DefOut<D>, DefStatus<D>, DefErrors<D>>>
+    ? (path: P, ...init: InitArg<D>) => Promise<ClientBranches<D>>
+    : (path: P, args: ParamsOf<P>, ...init: InitArg<D>) => Promise<ClientBranches<D>>
   : never;
 
 /** The init argument as a rest tuple: a JSON-body brand makes init
@@ -147,6 +142,11 @@ type DefQuery<D extends RouteDef> = [DefIn<D>] extends [
  * body shapes onto `O` and `status` gains the declared status literals
  * (an empty record — the default — leaves both channels untouched).
  *
+ * This is the FLAT view — `status` and `json()` stay uncorrelated. Route
+ * calls resolve to its discriminated refinement ({@link BranchResponse}
+ * unions via {@link ClientBranches}); this shape remains for consumers
+ * that want one body union regardless of status.
+ *
  * `json` is Omit-readded, not intersected: a plain `Response & { json() }`
  * keeps BOTH signatures, and calls resolve to the platform's
  * `Promise<any>` — the brand would exist only on paper. With the member
@@ -163,6 +163,64 @@ export type ClientResponse<
   json(): Promise<O | ValueOf<E>>;
   readonly status: St | (keyof E & number);
 };
+
+/**
+ * A `Response` narrowed to ONE status/out branch: `status` is the branch's
+ * literal and `json()` resolves to that branch's body type. The union of a
+ * route's branches is a discriminated union, so `if (res.status === 404)`
+ * narrows `res.json()` to the 404 body. Both members are Omit-readded for
+ * the reason {@link ClientResponse} re-adds `json`: an intersection with
+ * the platform members keeps BOTH signatures and calls resolve to the
+ * platform's `Promise<any>` — the branch would exist only on paper.
+ */
+export type BranchResponse<S extends number, T> = Omit<
+  Response,
+  'json' | 'status'
+> & {
+  readonly status: S;
+  json(): Promise<T>;
+};
+
+/** The branches channel a def carries — logs registered before the channel
+ * existed (hand-built defs) fall back to the loose out/status pair. */
+type DefBranches<D extends RouteDef> = D extends { readonly branches: infer B }
+  ? B
+  : { status: DefStatus<D>; out: DefOut<D> };
+
+/** Every status a branch union mentions. */
+type BranchStatus<B> = B extends { status: infer S extends number } ? S : never;
+
+/** Flattens a branch union into one status → body record: same-status
+ * bodies union, and a `number`-status member covers every status its union
+ * partners name (its body rides along, conservatively). */
+type BranchRecord<B> = {
+  [K in B extends unknown ? BranchStatus<B> : never]: B extends unknown
+    ? K extends BranchStatus<B>
+      ? B extends { out: infer T }
+        ? T
+        : never
+      : never
+    : never;
+};
+
+/** A status → body record as one {@link BranchResponse} per status. */
+type BranchPairs<R> = {
+  [K in keyof R & number]: BranchResponse<K, R[K]>;
+}[keyof R & number];
+
+/**
+ * The response union one route call resolves to: the def's `branches`
+ * channel (its handler's status → body pairs) merged with its `errors`
+ * channel (`throws` gates + returned `httpError` branches) — same-status
+ * bodies union — then one {@link BranchResponse} per status. Untyped
+ * routes keep today's exact surface: a single `number`-status member with
+ * an `unknown` body.
+ */
+type ClientBranches<D extends RouteDef> = [BranchPairs<
+  MergeRecords<BranchRecord<DefBranches<D>>, DefErrors<D>>
+>] extends [never]
+  ? BranchResponse<number, unknown>
+  : BranchPairs<MergeRecords<BranchRecord<DefBranches<D>>, DefErrors<D>>>;
 
 /** Union → intersection: a union of signatures is not an overload (calls
  * require an argument matching the *intersection* of the parameters); an

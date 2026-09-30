@@ -142,10 +142,22 @@ function isHeadersLike(
  * Semantics follow the fetch spec's observable contract: iteration yields
  * lowercase names, combines repeated non-cookie values with `", "`, and
  * keeps each `set-cookie` value a separate pair.
+ *
+ * Construction is lazy when it can be: a {@link LightHeaders.fromRaw} wrap
+ * only stores the flat array reference — the slot/index store is built on
+ * the first structural access (`get`/`has`/`set`/`append`/`delete`/
+ * `getSetCookie`/`fillRecord`/iteration), so a request whose headers are
+ * never read pays nothing for them. Every method funnels through the same
+ * `ensure()`, which also drains and drops http2 pseudo-headers.
  */
 export class LightHeaders {
-  private readonly slots: HeaderSlot[] = [];
-  private readonly index = new Map<string, HeaderSlot>();
+  /** Pending flat `[name, value, ...]` view (the adapter's rawHeaders) —
+   * consumed into the store on first structural access. */
+  private raw: readonly string[] | null = null;
+  /** Slots + index — null until a structural access materializes it, so
+   * headers nobody reads cost nothing to carry. */
+  private store: { slots: HeaderSlot[]; index: Map<string, HeaderSlot> } | null =
+    null;
 
   constructor(
     init?: HeadersInit | readonly [string, string][] | null
@@ -166,50 +178,105 @@ export class LightHeaders {
     }
   }
 
+  /** Wraps a flat `[name, value, name, value, ...]` array (node's
+   * rawHeaders) by reference: no pairs are copied and no index is built
+   * until the first structural access, so requests whose headers are
+   * never read pay nothing for them. http2 pseudo-headers (`:method`,
+   * ...) are dropped when the store is built. */
+  static fromRaw(raw: readonly string[]): LightHeaders {
+    const headers = new LightHeaders(null);
+    headers.raw = raw;
+    return headers;
+  }
+
+  /** The one construction funnel: builds the slot/index store exactly
+   * once, draining the pending raw view (if any) into it first. */
+  private ensure(): { slots: HeaderSlot[]; index: Map<string, HeaderSlot> } {
+    const existing = this.store;
+    if (existing !== null) return existing;
+    const store = { slots: [] as HeaderSlot[], index: new Map<string, HeaderSlot>() };
+    this.store = store;
+    const raw = this.raw;
+    this.raw = null;
+    if (raw !== null) {
+      for (let i = 0; i + 1 < raw.length; i += 2) {
+        const name = raw[i];
+        const value = raw[i + 1];
+        if (name === undefined || value === undefined || name.startsWith(':')) {
+          continue;
+        }
+        const key = name.toLowerCase();
+        const slot = store.index.get(key);
+        if (slot !== undefined) {
+          slot.values.push(value);
+        } else {
+          const created: HeaderSlot = { name: key, values: [value] };
+          store.slots.push(created);
+          store.index.set(key, created);
+        }
+      }
+    }
+    return store;
+  }
+
   get(name: string): string | null {
-    const slot = this.index.get(name.toLowerCase());
+    const slot = this.ensure().index.get(name.toLowerCase());
     return slot === undefined ? null : slot.values.join(', ');
   }
 
   has(name: string): boolean {
-    return this.index.has(name.toLowerCase());
+    return this.ensure().index.has(name.toLowerCase());
   }
 
   set(name: string, value: string): void {
+    const { slots, index } = this.ensure();
     const key = name.toLowerCase();
-    const slot = this.index.get(key);
+    const slot = index.get(key);
     if (slot !== undefined) {
       slot.values = [value];
       return;
     }
     const created: HeaderSlot = { name: key, values: [value] };
-    this.slots.push(created);
-    this.index.set(key, created);
+    slots.push(created);
+    index.set(key, created);
   }
 
   append(name: string, value: string): void {
+    const { slots, index } = this.ensure();
     const key = name.toLowerCase();
-    const slot = this.index.get(key);
+    const slot = index.get(key);
     if (slot !== undefined) {
       slot.values.push(value);
       return;
     }
     const created: HeaderSlot = { name: key, values: [value] };
-    this.slots.push(created);
-    this.index.set(key, created);
+    slots.push(created);
+    index.set(key, created);
   }
 
   delete(name: string): void {
+    const { slots, index } = this.ensure();
     const key = name.toLowerCase();
-    const slot = this.index.get(key);
+    const slot = index.get(key);
     if (slot === undefined) return;
-    this.index.delete(key);
-    this.slots.splice(this.slots.indexOf(slot), 1);
+    index.delete(key);
+    slots.splice(slots.indexOf(slot), 1);
   }
 
   getSetCookie(): string[] {
-    const slot = this.index.get('set-cookie');
+    const slot = this.ensure().index.get('set-cookie');
     return slot === undefined ? [] : slot.values.slice();
+  }
+
+  /** Writes every header into `record` in one direct slot loop — merged
+   * values per name (same as iteration), with `set-cookie` kept as the
+   * values array (same as {@link getSetCookie}) — skipping the generator
+   * and callback machinery of `forEach`. The node adapter's write path. */
+  fillRecord(record: Record<string, string | string[]>): void {
+    for (const slot of this.ensure().slots) {
+      record[slot.name] =
+        slot.name === 'set-cookie' ? slot.values.slice() : slot.values.join(', ');
+    }
   }
 
   forEach(
@@ -226,7 +293,8 @@ export class LightHeaders {
   }
 
   *entries(): IterableIterator<[string, string]> {
-    for (const slot of this.slots) {
+    const slots = this.ensure().slots;
+    for (const slot of slots) {
       if (slot.name === 'set-cookie') {
         for (const value of slot.values) {
           yield [slot.name, value];
@@ -281,7 +349,7 @@ export class LightRequest {
   constructor(input: {
     readonly method: string;
     readonly url: string;
-    readonly headers: Headers | readonly [string, string][];
+    readonly headers: Headers | LightHeaders | readonly [string, string][];
     readonly body?: ReadableStream<Uint8Array> | null;
     readonly signal?: AbortSignal | null;
   }) {
@@ -291,7 +359,9 @@ export class LightRequest {
     this.headers =
       input.headers instanceof Headers
         ? input.headers
-        : asPlatformHeaders(new LightHeaders(input.headers));
+        : input.headers instanceof LightHeaders
+          ? asPlatformHeaders(input.headers)
+          : asPlatformHeaders(new LightHeaders(input.headers));
     this.body = input.body ?? null;
     this.signal = input.signal ?? null;
   }

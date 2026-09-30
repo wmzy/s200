@@ -80,7 +80,10 @@ type Ctx = { req, url, params, query, state, signal, res };
 written `Response`. The surrounding contracts:
 
 - Handlers may simply **return** a `Response` — it is written when nothing
-  has been written yet.
+  has been written yet. They may also **return an `HttpError`** — sugar for
+  throwing it: the value flows through the same in-chain error boundary
+  (`onError` mapping included), and the return type carries the status and
+  body shape into `s200/client`'s `res.status` / `res.json()` unions.
 - A matched chain that finishes without writing answers
   `500 {"error":"No response written"}`; an unmatched, unwritten request
   goes to `onNotFound`.
@@ -105,10 +108,13 @@ throws({ 422: { issues: string[] } });       // with structured body shapes
 Errors are tagged data checked structurally, so they survive bundle
 boundaries. `httpError(status, message, body?)` carries an optional payload
 rendered verbatim; without one the response keeps the `{ error: message }`
-envelope. The `throws` gate is the type-level declaration channel: it merges
-the statuses (and body shapes) a route may answer with into
-`s200/client`'s `res.status` / `res.json()` unions — a pure pass-through at
-runtime.
+envelope. Handlers may throw or **return** them — a returned `HttpError`
+takes the exact error-boundary path a thrown one does, and its type infers
+the client's error branch (no declaration needed). The `throws` gate is the
+declaration channel for branches the type layer cannot see (thrown from
+helpers): it merges the statuses (and body shapes) a route may answer with
+into `s200/client`'s status-discriminated `res.status` / `res.json()` —
+a pure pass-through at runtime.
 
 ### Routing semantics
 
@@ -139,7 +145,7 @@ s200/query  s200/websocket  s200/websocket/node  s200/websocket/bun
 s200/etag  s200/secure-headers  s200/auth  s200/accepts  s200/serialize
 s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta  s200/openapi
 s200/trust-proxy  s200/otel  s200/codegen  s200/test  s200/multipart
-s200/session  s200/swagger  s200/upload
+s200/session  s200/swagger  s200/upload  s200/dev
 ```
 
 ## Semver policy

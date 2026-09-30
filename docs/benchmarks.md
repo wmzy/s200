@@ -109,8 +109,10 @@ a table with no static segments at all (`/:a/:b/:c`).
   guarantees — re-run on your hardware.
 - All servers run in separate child processes so no framework's global
   patching contaminates another's measurement.
-- These are two-route apps with zero middlewares: they measure dispatch +
-  adapter floor, not middleware-heavy workloads. Add your own routes to
+- The `hello`/`param` rows are two-route apps with zero middlewares: they
+  measure dispatch + adapter floor, not middleware-heavy workloads. The
+  later `mw` scenario (see the last section) covers the middleware side;
+  those rows leave `hello`/`param` middleware-free. Add your own routes to
   the scripts to model your traffic.
 - Not a TechEmpower-style harness (no multi-core contention modeling, no
   kernel tuning). Use it for relative comparison, not capacity planning.
@@ -156,3 +158,112 @@ bug surfaced by the coverage work and fixed: a HEAD request against a
 streamed static file advertised `content-length: 0` (both modes) —
 `serveStream` now lets the stat-derived size survive (`handle`'s HEAD
 rewrite strips the body afterward).
+
+## 2026-09-30 update (lazy request headers on the light path)
+
+The light path stopped paying for headers nobody reads: `LightHeaders` now
+builds its index **lazily** — the node adapter hands it `req.rawHeaders`
+by reference (the intermediate pairs array is gone), and the slot/index
+machinery materializes on the first structural access (`get`/`set`/
+iteration/…). A request whose handler never touches `req.headers` — the
+`hello`/`param` shape — builds nothing at all. The response side gained
+`fillRecord`, a direct slots→record fill for `writeHead` (replacing the
+`forEach` closure over the same data); http2 pseudo-header filtering and
+every wire-visible semantic (case-insensitivity, insertion order,
+`", "` merging, unmerged `set-cookie`) are pinned by
+`test/light-batteries.test.ts`.
+
+Honest measurement, because the wall clock could not see it: the official
+benchmark client saturates around ~14.5k req/s on this machine (an
+independent keep-alive client drives the same `s200-light` server to
+25–26k), so `hello`/`param` walls are **client-bound** and stay flat.
+The server-side signal is CPU per request, measured with interleaved
+same-condition A/B runs (10 pairs, unchanged `s200` row as drift control):
+
+- **server CPU/request −6.3% (median)**, lazy faster in 9/10 pairs;
+- **`mw` wall +3–4%** (`fillRecord` scales with response-header count,
+  and the chain reads a request header — the lazy build pays for itself
+  there too);
+- light-vs-normal ratio holds at **~1.43×** on both `hello` and `mw`.
+
+## Middleware-heavy scenario (2026-09-30)
+
+`scripts/bench-http.mjs` grew a third scenario, `mw` (`--only mw` runs it
+alone): the same `{"message":"hello"}` JSON route as `hello`, but reached
+through a five-link middleware chain where every link
+
+- reads the `x-test` request header,
+- sets its own response header at unwind,
+- and — in the third link — stores a `performance.now()` delta into the
+  per-request context.
+
+The chain is scoped to `/mw` in every framework, so the `hello`/`param`
+rows keep measuring the middleware-free floor and the `mw` row's delta
+against `hello` isolates the chain itself.
+
+Same machine as the reference table (AMD Ryzen 7 8745HS, Fedora 42), now
+on **Node v26.10.0** — absolute numbers are not comparable to the Node 22
+reference above. This table is the canonical run against the **final
+2026-09-30 dist** (lazy light headers included; an earlier pre-lazy run
+agreed on ordering, with `mw` cells within ~±4% and `s200-light mw` ~4%
+lower):
+
+| framework     | hello (same run) | mw      | mw vs hello |
+| ------------- | ---------------- | ------- | ----------- |
+| s200          | 10308 req/s      | 9590    | −7%         |
+| s200-light    | 14760 req/s      | 13718   | −7%         |
+| hono          | 12278 req/s      | 10250   | −17%        |
+| hono-patched  | 17904 req/s      | 9313    | −48%        |
+| express       | 11840 req/s      | 10841   | −8%         |
+| fastify       | 17590 req/s      | 16681   | −5%         |
+| elysia        | 16846 req/s      | 15428   | −8%         |
+
+`s200-deno` auto-skipped (no `deno` binary on this machine, same as the
+reference run). Individual `hello` cells wobble up to ~±10% run to run, so
+read single-cell deltas as approximate and the ordering as the signal.
+
+### What it measures — and what it does not
+
+This scenario measures the **per-request cost of unwinding a five-link
+chain**: chain dispatch, one request-header read and one response-header
+write per link, one timing store. It does not re-measure the adapter
+floor — `hello` already does that — which is why the fast-class
+frameworks (`fastify`, `elysia`, `hono-patched`) stay at the top on
+absolute numbers even as their middleware costs differ wildly.
+
+The per-framework shapes are each framework's idiomatic middleware, kept
+work-equivalent (same reads, writes, and timing store) but not
+mechanically identical, and that honesty matters when reading the table:
+
+- **express** (`app.use('/mw', …)`) and **fastify** (async `onRequest`
+  hooks in an encapsulated `register` scope) write headers into a store
+  applied when the response is serialized. **elysia** writes
+  `set.headers` the same way, but inside `guard({ beforeHandle })` — its
+  `onRequest` hooks cannot be scoped (they fire for the whole instance,
+  verified), so the post-routing hook is the scoped equivalent.
+- **hono** (`app.use('/mw/*', …)` with `await next(); c.header(…)`) and
+  **s200** (`use(app, '/mw', …)` with `ctx.res.headers.set` after
+  `next()`) do the true unwind: they mutate the already-materialized
+  response after the handler ran.
+
+That asymmetry is the story of the `mw vs hello` column. **fastify**
+loses almost nothing (~0–5% across runs): its hook chain is plain
+function calls appending to a header store. **elysia** (−8%) and
+**express** (−8%) pay a modest chain cost. **hono** drops −17–18%:
+`c.header()` after `await next()` re-materializes the response — once
+per header write — and on the patched fast path that rebuild cost
+dominates everything else: `hono-patched` collapses −46% and lands
+*below* unpatched `hono` under middleware load. **s200** (−7–9% across
+runs) also writes headers after the handler, but mutates the existing
+`Response`'s headers in place — no rebuild — landing in express's
+neighborhood despite the richer per-request context.
+
+**s200-light** keeps its own floor almost untouched (−7%, within the
+hello-cell noise) and holds the light-vs-normal ratio at **~1.43×** under
+middleware load: the light path's cheap `LightHeaders` writes make the
+chain nearly free on top of an already-cheap response.
+
+The same methodology caveats as the whole-request section apply —
+snapshots, not guarantees; one server per child process; re-run on your
+hardware (`node scripts/bench-http.mjs --only mw`).
+

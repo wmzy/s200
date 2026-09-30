@@ -46,6 +46,11 @@ export type HttpError = {
  * `body`, when given, becomes the error response's JSON payload verbatim —
  * the return type brands it (`err.body` is `B`, not `unknown`) so callers
  * can hand structured error shapes to clients without a second envelope.
+ *
+ * Returning the value from a handler is sugar for throwing it: `handle`
+ * rethrows a returned `HttpError` into the same error boundary, and the
+ * route's phantom log infers the branch from the return type (a function
+ * body's `throw` sites are invisible to the checker).
  */
 export function httpError<S extends number = number, B = undefined>(
   status: S,

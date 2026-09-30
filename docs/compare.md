@@ -20,7 +20,7 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | Router | static-prefix trie, every static segment indexed | RegExpRouter / TrieRouter | path-to-regexp | find-my-way radix | koa-router (path-to-regexp) | static map + memoirist radix, JIT-compiled handlers |
 | Optional params `:id?` | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Typed params from pattern literal | ✅ `ParamsOf` | ✅ (infer) | ❌ | ✅ (typebox schemas) | ❌ | ✅ (inferred) |
-| Typed HTTP client from the app | ✅ paths + params + query + JSON bodies + status/error branches | ✅ `hc` (full RPC) | ❌ | ❌ | ❌ | ✅ Eden treaty (full RPC) |
+| Typed HTTP client from the app | ✅ paths + params + query + JSON bodies + status/error branches, `res.json()` discriminated by `res.status` | ✅ `hc` (full RPC) | ❌ | ❌ | ❌ | ✅ Eden treaty (full RPC) |
 | Route removal | ✅ `removeRoute` | ❌ | partial | ❌ | ❌ | ❌ |
 | Route table as data | ✅ JSON-exportable + OpenAPI | ❌ | ❌ | ✅ | ❌ | ❌ |
 | HTTPS / HTTP/2 in adapter | ✅ | ✅ | ✅ | ✅ | 3rd-party | via runtime (Bun.serve) |
@@ -30,7 +30,7 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | Core size (min+gz) | size-limit-gated: ~4 kB minimal core / ~8 kB full barrel | ~10 kB+ | — | — | tiny, no batteries | 1.1 MB unpacked; 141 kB min hello-world (v2 beta) |
 | Validation integration | generic gate over any parser | zod/valibot/typebox built-in | ecosystem | JSON Schema native | ecosystem | TypeBox built-in (`t`) + standard schema |
 | OpenAPI | ✅ native 3.1 from the route table | zod-openapi (dep) | ❌ | swagger plugin | ❌ | ✅ plugin (Scalar/Swagger UI) |
-| JSX / SSG / dev server | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ (html plugin) |
+| JSX / SSG / dev server | ❌ (route-table hot reload via `s200/dev`) | ✅ | ❌ | ❌ | ❌ | ❌ (html plugin) |
 | Ecosystem size | young | large | huge | large | large | fast-growing (9th most used, SoJS 2025) |
 
 ### Elysia in one paragraph
@@ -75,6 +75,11 @@ betting on runtime-agnostic data + functions instead.
   the `SerializeSchema` DSL that already compiles serializers and infers types.
 - **Replaceable everything**: custom matcher, custom error/404 policy,
   injected I/O for static files — the batteries prove the pattern.
+- **Hot route reload from the same data model** — `s200/dev`'s
+  `createHotApp`/`reload` swaps the table atomically on one stable app
+  identity (in-flight requests finish on the old chain); the snapshot
+  semantics that make it safe are the same ones that power
+  `removeRoute`.
 
 ## Where s200 trades away (honest gaps)
 
@@ -83,19 +88,23 @@ betting on runtime-agnostic data + functions instead.
 - **No full RPC inference** — `s200/client` types paths, params, query-
   building, JSON response bodies, and status literals — a handler's
   `json(ctx, err, { status: 404 })` branch shows up as
-  `res.status: 200 | 404` with the unioned body. Gate inputs flow from any
+  `res.status: 200 | 404` with the unioned body. Error branches flow from
+  two channels: a **returned** `httpError(status, message, body?)` is
+  inferred end to end (returning one is sugar for throwing it — same
+  in-chain error boundary, `onError` included), and a `throws(401, 404)`
+  (or `throws({ 422: shape })`) gate declares branches a helper deep in
+  the call stack may produce. The client response is a
+  **status-discriminated union**: narrowing `res.status` narrows
+  `res.json()`. Gate inputs flow from any
   [Standard Schema](https://standardschema.dev) value (zod / valibot /
   typebox) or a `jsonBody`/`queryParams` parse function, with the schema's
   **input** type on the caller's side (`init.body`/`init.query`) and the
   parsed output on the handler's — input ≠ output transforms infer
-  end to end. Error branches are declarable: a `throws(401, 404)` (or
-  `throws({ 422: shape })`) gate merges the statuses and body shapes into
-  `res.status` and `res.json()` — a pass-through declaration the checker
-  does not verify. What is still missing vs Hono `hc`/Elysia Eden: error
-  types are not inferred from the handler's thrown `httpError` calls
-  (they must be declared with `throws`), and `json()` is not
-  status-discriminated — narrowing `res.status` does not narrow the body
-  union.
+  end to end. What is still missing vs Hono `hc`/Elysia Eden: `throw
+  httpError(...)` call sites inside a handler body are invisible to the
+  type layer (TypeScript cannot inspect function bodies — return the
+  error or declare it), and `throws` is a pass-through declaration the
+  checker does not verify.
 - **Throughput behind the patched class** — s200 always uses the
   platform's real `Request`/`Response`; fastify/elysia/hono-patched avoid
   undici's constructor cost with lighter objects. The gap is per-request
