@@ -1,5 +1,6 @@
 packages:
   - '.'
+  - 'examples/*'
 allowBuilds:
   esbuild: true
   unrs-resolver: true

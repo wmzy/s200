@@ -34,6 +34,7 @@ const PLATFORM_CTORS = new Set([
   'RangeError',
   'SyntaxError',
   'EvalError',
+  'DOMException',
   'Promise',
   'Map',
   'Set',
@@ -66,6 +67,7 @@ const PLATFORM_CTORS = new Set([
   // constructors would be — the opt-in fast path, not an OOP pattern.
   'LightRequest',
   'LightResponse',
+  'LightHeaders',
 ]);
 
 const RULES = [

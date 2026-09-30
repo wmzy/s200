@@ -1,4 +1,6 @@
 import type {
+  ChainErrors,
+  ChainIn,
   Ctx,
   ErrorHandler,
   Handler,
@@ -13,6 +15,7 @@ import type {
   Route,
   RouteDef,
   ResolveOut,
+  ResolveStatus,
   RouteFilter,
   State,
 } from './types';
@@ -21,7 +24,8 @@ import type { ParamsOf } from './router';
 
 import { isHttpError, toErrorResponse } from './errors';
 import { compose } from './compose';
-import { cachedUrl, setCachedUrl } from './light';
+import { cachedUrl, isLightRequest, isLightResponse, setCachedUrl } from './light';
+import { neverSignal } from './signal';
 import { newResponse } from './respond';
 import { createMatcher, createRoute, createSegments, matchSegments } from './router';
 
@@ -253,12 +257,13 @@ export function mount<
  */
 function register<
   S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   method: string,
   pattern: string,
-  chain: readonly [...Middleware<S>[], Handler<never, S>]
+  chain: readonly [...Ms, Handler<never, S>]
 ): App<S, R> {
   const handler = chain[chain.length - 1];
   if (handler === undefined) {
@@ -281,40 +286,43 @@ export function addRoute<
   M extends string = string,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   method: M,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function addRoute<
   S extends State = State,
   M extends string = string,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   method: M,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function addRoute<
   S extends State = State,
   M extends string = string,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   method: M,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, method, pattern, chain) as App<
     S,
-    [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -323,35 +331,38 @@ export function get<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'GET'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'GET'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function get<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'GET'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'GET'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function get<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'GET'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'GET'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'GET', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'GET'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'GET'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -360,35 +371,38 @@ export function post<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'POST'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'POST'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function post<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'POST'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'POST'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function post<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'POST'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'POST'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'POST', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'POST'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'POST'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -397,35 +411,38 @@ export function put<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'PUT'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'PUT'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function put<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function put<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'PUT', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'PUT'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'PUT'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -434,35 +451,38 @@ export function patch<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function patch<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function patch<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'PATCH', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -471,35 +491,38 @@ export function del<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function del<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function del<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'DELETE', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -508,35 +531,38 @@ export function head<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function head<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function head<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'HEAD', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -545,35 +571,38 @@ export function options<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function options<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function options<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'OPTIONS', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -582,35 +611,38 @@ export function all<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: P,
-  ...chain: [...Middleware<S>[], Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'ALL'; readonly pattern: P; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+): App<S, [...R, { readonly method: 'ALL'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function all<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string; readonly out: ResolveOut<O> }]>;
+  ...chain: [...Ms, Handler<Params, S, O>]
+): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]>;
 export function all<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 ,
-  O = unknown
+  O = unknown,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
   app: App<S, R>,
   pattern: string,
-  ...chain: [...Middleware<S>[], Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string; readonly out: ResolveOut<O> }]> {
+  ...chain: [...Ms, Handler<never, S, O>]
+): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]> {
   return register(app, 'ALL', pattern, chain) as App<
     S,
-    [...R, { readonly method: 'ALL'; readonly pattern: string; readonly out: ResolveOut<O> }]
+    [...R, { readonly method: 'ALL'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: ChainErrors<Ms>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O> }]
   >;
 }
 
@@ -650,11 +682,19 @@ function getRouteChain(route: Route): ReturnType<typeof compose> {
     return cached;
   }
   // Terminator: the innermost "middleware" running the matched handler. A
-  // returned Response is adopted only when nothing else wrote one first.
+  // returned Response is adopted only when nothing else wrote one first —
+  // in light mode a returned light response is adopted too (duck-shaped:
+  // `instanceof Response` misses it; only ever constructed on that path).
   const terminator: Middleware = async (routeCtx) => {
     const returned = await route.handler(routeCtx);
-    if (returned instanceof Response && routeCtx.res === undefined) {
-      routeCtx.res = returned;
+    if (routeCtx.res === undefined) {
+      if (returned instanceof Response) {
+        routeCtx.res = returned;
+      } else if (
+        isLightRequest(routeCtx.req) && isLightResponse(returned)
+      ) {
+        routeCtx.res = returned as unknown as Response;
+      }
     }
   };
   const chain = compose([...route.middlewares, terminator]);
@@ -692,9 +732,18 @@ async function mapError<S extends State = State>(
   }
 }
 
+/**
+ * Per-request initialization for {@link handle}. `signal` seeds
+ * {@link Ctx.signal} — adapters pass the client-disconnect signal here so
+ * middlewares and handlers can race it; omitted, the shared never-aborted
+ * default applies with zero per-request allocation.
+ */
+export type HandleInit = { signal?: AbortSignal };
+
 export async function handle<S extends State = State>(
   app: App<S>,
-  request: Request
+  request: Request,
+  init?: HandleInit
 ): Promise<Response> {
   // The adapter parsed the URL when it built the request — reuse it
   // instead of re-parsing per dispatch. Falls back to a fresh parse for
@@ -719,6 +768,9 @@ export async function handle<S extends State = State>(
     query: url.searchParams,
     // Fresh empty bag per request; the app's `S` fills it via middlewares.
     state: {} as S,
+    // The shared never-aborted signal unless the adapter passed one — no
+    // per-request allocation on the default path.
+    signal: init?.signal ?? neverSignal,
     res: undefined,
   };
   // The chain terminal: when nothing wrote a response, the 405/404/500

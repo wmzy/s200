@@ -1,7 +1,8 @@
-import { describe, it } from 'vitest';
+import { describe, expectTypeOf, it } from 'vitest';
 
-import { httpError, isHttpError, toErrorResponse } from '../src/errors';
-import { escapeHtml } from '../src/respond';
+import { createApp, get, handle } from '../src/app';
+import { httpError, isHttpError, throws, toErrorResponse } from '../src/errors';
+import { escapeHtml, json } from '../src/respond';
 
 describe('httpError', function () {
   it('builds tagged data with the given status and message', function () {
@@ -37,6 +38,24 @@ describe('httpError', function () {
   it('throws on non-integer statuses', function () {
     (() => httpError(404.5)).should.throw(/status/);
     (() => httpError(Number.NaN)).should.throw(/status/);
+  });
+
+  it('brands the status literal (and the body shape) on the return', function () {
+    const e = httpError(403);
+    expectTypeOf(e.status).toEqualTypeOf<403>();
+    const withBody = httpError(502, 'upstream down', { retryAfter: 30 });
+    expectTypeOf(withBody.status).toEqualTypeOf<502>();
+    expectTypeOf(withBody.body).toEqualTypeOf<{ retryAfter: number } | undefined>();
+  });
+});
+
+describe('throws', function () {
+  it('is a pure pass-through at runtime (a type-level gate only)', async function () {
+    const app = createApp();
+    get(app, '/guarded', throws(401, 404), (ctx) => json(ctx, { ok: true }));
+    const res = await handle(app, new Request('http://localhost/guarded'));
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ ok: true });
   });
 });
 

@@ -78,6 +78,13 @@ export type Handler<P extends Params = Params, S extends State = State, O = unkn
  * `url` is the request URL parsed once — reuse it instead of re-parsing.
  * `S` is the per-app state shape (`createApp<MyState>()`); batteries that
  * stay on the default `State` are assignable to any app.
+ *
+ * `signal` carries cooperative cancellation. By default it is a shared,
+ * never-aborted signal (zero per-request cost); adapters that can detect
+ * client disconnects seed it with the request's disconnect signal, and
+ * middlewares may swap it on the way in and restore it on unwind (e.g. a
+ * timeout battery narrows it with `AbortSignal.any`). Readers race it —
+ * `await fetch(url, { signal: ctx.signal })` — instead of polling.
  */
 export type Ctx<P extends Params = Params, S extends State = State> = {
   readonly req: Request;
@@ -85,6 +92,7 @@ export type Ctx<P extends Params = Params, S extends State = State> = {
   params: P;
   query: URLSearchParams;
   state: S;
+  signal: AbortSignal;
   res: Response | undefined;
 };
 
@@ -106,6 +114,17 @@ export type RouteDef = {
   readonly method: string;
   readonly pattern: string;
   readonly out?: unknown;
+  /** The response status type carried out of a handler return type
+   * (a branded responder's `_status`, `number` when unbranded) — the
+   * status-side twin of `out`. */
+  readonly status?: unknown;
+  /** Input types collected from the route's gate middlewares (`_in`
+   * phantoms) — the request-side twin of `out`. */
+  readonly in?: unknown;
+  /** The error branches a route's `throws` gates declare (`_errors`
+   * phantoms) — the error-side twin of `in`: statuses the route may
+   * answer with and the body shapes those answers ship. */
+  readonly errors?: unknown;
 };
 
 /**
@@ -118,6 +137,69 @@ export type ResolveOut<O> = [O] extends [Promise<infer P>]
   : O extends { readonly _out?: infer T }
     ? T
     : unknown;
+
+/**
+ * The response-status type carried out of a handler return type: unwraps
+ * the Promise, extracts a status-branded responder's `_status` (a union of
+ * literals across a union of returns), and falls back to `number` for
+ * everything else (plain `Response`, unbranded builders). The twin of
+ * {@link ResolveOut} — deliberately NOT defaulted to a helper's default
+ * status: a handler returning `json(ctx, x)` brands 200 because that is
+ * what ships, one returning `json(ctx, x, { status: 404 })` brands 404.
+ */
+export type ResolveStatus<O> = [O] extends [Promise<infer P>]
+  ? ResolveStatus<P>
+  : O extends { readonly _status?: infer S }
+    ? S
+    : number;
+
+/** Union → intersection: a union of function types is not an overload set
+ * (a call would have to match every parameter list at once); the
+ * intersection is. Used to merge per-gate phantom inputs into one input
+ * shape. */
+export type UnionToIntersection<T> = (T extends unknown ? (x: T) => void : never) extends (
+  x: infer I
+) => void
+  ? I
+  : never;
+
+/** The phantom `_in` a chain member carries, `never` when it has none. */
+type PhantomIn<M> = M extends { readonly _in?: infer X } ? X : never;
+
+/**
+ * The input shape a route's gate middlewares declare: every chain member
+ * may brand itself with `readonly _in?: { … }` (see `s200/validate`'s
+ * `jsonBody` and `s200/query`'s `queryParams`), and the brands intersect —
+ * `jsonBody` + `queryParams` yields `{ json: T } & { query: Q }`. A chain
+ * with no branded members collapses to `unknown` (`never` would poison
+ * every downstream intersection), so plain routes stay untyped on the
+ * input side.
+ */
+export type ChainIn<Ms extends readonly unknown[]> = [PhantomIn<Ms[number]>] extends [infer U]
+  ? [U] extends [never]
+    ? unknown
+    : UnionToIntersection<U>
+  : never;
+
+/** The phantom `_errors` a chain member carries, `never` when it has none. */
+type PhantomErrors<M> = M extends { readonly _errors?: infer E } ? E : never;
+
+/**
+ * The error branches a route's `throws` gates declare: every chain member
+ * may brand itself with `readonly _errors?: { … }` (see `s200`'s `throws`
+ * gate), and the brands intersect — several gates merge their
+ * status → body-shape records. A chain with no branded members collapses
+ * to an empty record (`Record<never, never>`, not `unknown`:
+ * `keyof`/value lookups stay neutral downstream), so plain routes are
+ * untouched on the error side.
+ */
+export type ChainErrors<Ms extends readonly unknown[]> = [PhantomErrors<Ms[number]>] extends [
+  infer U
+]
+  ? [U] extends [never]
+    ? Record<never, never>
+    : UnionToIntersection<U>
+  : never;
 
 /** `R` minus the routes registered for method `M` + pattern `P` — the
  * compile-time twin of `removeRoute`'s runtime filter. */
@@ -137,8 +219,9 @@ export type MountBase<B extends string> =
   B extends '' | '/' ? '' : B extends `${infer Rest}/` ? MountBase<Rest> : B;
 
 /** The route defs of a mounted sub-app, patterns prefixed under `Base`
- * (the sub-app root `/` collapses onto the bare prefix). `out` rides along
- * so a mounted app's client keeps its response-body types. */
+ * (the sub-app root `/` collapses onto the bare prefix). `out`, `status`,
+ * `in`, and `errors` ride along so a mounted app's client keeps its
+ * response-body, response-status, request-input, and error-branch types. */
 export type MountedDefs<
   R extends readonly RouteDef[],
   Base extends string
@@ -150,7 +233,10 @@ export type MountedDefs<
           readonly pattern: Head['pattern'] extends '/'
             ? Base
             : `${Base}${Head['pattern']}`;
-        } & (Head extends { readonly out: infer O } ? { readonly out: O } : unknown),
+        } & (Head extends { readonly out: infer O } ? { readonly out: O } : unknown) &
+          (Head extends { readonly status: infer St } ? { readonly status: St } : unknown) &
+          (Head extends { readonly in: infer I } ? { readonly in: I } : unknown) &
+          (Head extends { readonly errors: infer E } ? { readonly errors: E } : unknown),
         ...MountedDefs<Tail, Base>
       ]
     : [];

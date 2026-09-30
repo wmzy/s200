@@ -119,7 +119,7 @@ use(app, (ctx, next) => { ctx.state.user; return next(); });
 get(app, '/me', (ctx) => json(ctx, ctx.state.user));
 ```
 
-`ctx.url` is the parsed request URL (reuse it — no re-parsing). After `await next()` settles, `ctx.res` is always materialized — the handler's response, the 404/405/500 fallback, **or the error response**: an error boundary inside the chain maps thrown errors before the unwind, so middlewares observe (and may overwrite) the real response even for 500s. This is what lets logger/CORS/request-id stamp error responses.
+`ctx.url` is the parsed request URL (reuse it — no re-parsing). `ctx.signal` is the request's cooperative-cancellation `AbortSignal`. In the node adapter it aborts when the client disconnects mid-request (Deno/Cloudflare pass the platform's disconnect signal automatically), `timeout` aborts it at the deadline, and long-running work should race it (the body readers do). Apps that want the last bit of floor throughput can pass `abortOnDisconnect: false` — a shared never-aborted signal, no per-request `AbortController`, worth roughly 8% on minimal hello-path apps. Middlewares may swap the signal on the way in (`AbortSignal.any([...])`) and should restore it on unwind. After `await next()` settles, `ctx.res` is always materialized — the handler's response, the 404/405/500 fallback, **or the error response**: an error boundary inside the chain maps thrown errors before the unwind, so middlewares observe (and may overwrite) the real response even for 500s. This is what lets logger/CORS/request-id stamp error responses.
 
 Routes also accept scoped middlewares: any number of them between the pattern and the terminal handler. They run after the app-level chain (and unwind inside it), only for their own route:
 
@@ -173,6 +173,29 @@ const form = await readForm(ctx);          // FormData (urlencoded + multipart)
 Every read accepts a byte budget: `readJson(ctx, { limit: 64 * 1024 })`. The first read counts bytes as they arrive and rejects oversize bodies with a 413 `HttpError` **before buffering them** — an oversized payload never sits in memory (a later limited read of an already-buffered body enforces the limit after the fact). Default: unlimited.
 
 Bodies are single-read by platform contract; s200 caches the parse per request context, so multiple reads (and mixed json/text reads) replay from one buffer instead of throwing.
+
+For bodies too large to buffer, `readStream` streams the raw bytes instead — a `limit` enforces the byte budget as bytes flow (over budget errors the stream with a 413 `HttpError` and cancels the upload), and an aborted `ctx.signal` errors it with an `AbortError`. It is terminal for the body (later buffered reads reject 409); a buffered read that already ran replays as a single chunk:
+
+```ts
+const bytes = readStream(ctx, { limit: 64 * 1024 });   // ReadableStream<Uint8Array>
+```
+
+`s200/multipart`'s `streamForm` parses `multipart/form-data` incrementally over that budget: parts arrive one by one as they complete (per-part buffering, never the whole body), with name/filename/content-type parsed, `415` for non-multipart content types, `413` when the limit trips mid-body, and `400` for truncated/malformed bodies:
+
+```ts
+import { streamForm } from 's200/multipart';
+await streamForm(ctx, (part) => {
+  parts.push(part);   // { name, filename?, contentType?, data: Uint8Array }
+}, { limit: 10 * 1024 * 1024 });
+```
+
+`s200/upload`'s `uploadForm(ctx, sink, options)` is the landing helper over `streamForm`: fields collect into `fields` (parseQuery semantics — single value `string`, repeats `string[]`), and file parts pass through `accept` (prefix list or callback; a miss answers `415`), `maxFiles`/`maxFileSize` (`413`, naming which constraint tripped) before reaching your injected `sink` — zero-dependency, disk is a one-line `node:fs/promises` `writeFile` away (see its JSDoc). The sink's return string becomes the file's `id` in the result; a throwing sink aborts the whole upload to the error boundary. File parts are buffered per-part — for huge files stay on `streamForm` directly:
+
+```ts
+const { files, fields } = await uploadForm(ctx,
+  async (file) => (await writeFile(join(dir, file.filename ?? file.name), file.data), file.filename),
+  { limit: 10 * 1024 * 1024, maxFileSize: 5 * 1024 * 1024, accept: ['image/'] });
+```
 
 ## Static files
 
@@ -239,6 +262,13 @@ import { cache } from 's200/cache';
 import { trustProxy } from 's200/trust-proxy';
 import { serve as serveDeno } from 's200/deno';
 import { createHandler } from 's200/cloudflare';
+import { trace } from 's200/otel';
+import { generateClient } from 's200/codegen';
+import { request, testClient, probeApp } from 's200/test';
+import { streamForm } from 's200/multipart';
+import { createSession } from 's200/session';
+import { swaggerUi } from 's200/swagger';
+import { uploadForm } from 's200/upload';
 ```
 
 **CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
@@ -273,6 +303,15 @@ describeRoute(app, 'GET', '/users/:id', {
 get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
 ```
 
+The same annotations can become runtime gates: `withRouteValidation(app)` is a pure data transform (mount's family) that rebuilds only the routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` — the read-side twin of `serialize()`, covering exactly the same DSL subset. A violation answers `422` naming the first offending path (`{"error":"body.tags.1: expected string, got number"}`); valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes, so `openapiSpec(gated)` keeps documenting them. Annotate mounted sub-apps on the parent after `mount` (the metadata registry keys by route identity).
+
+Pair the spec with a documentation UI — `swaggerUi` serves the Scalar API Reference page (assets load from a pinned CDN, so s200 stays zero-dependency):
+
+```ts
+import { swaggerUi } from 's200/swagger';
+get(app, '/docs', (ctx) => swaggerUi(ctx, { url: '/openapi.json', title: 'Users API' }));
+```
+
 **Cookies** — read, write, and sign as pure functions. Writing appends a proper `Set-Cookie` header (repeat calls stay separate headers, never comma-joined); call it once the response exists — the natural spot is the unwind, after `await next()`:
 
 ```ts
@@ -285,6 +324,18 @@ await setSignedCookie(ctx, 'sid', userId, SECRET);       // + sid.sig HMAC partn
 const sid = await getSignedCookie(ctx, 'sid', SECRET);   // undefined unless verified
 ```
 
+**Sessions** — `createSession({ secret, store? })` returns a middleware (plus `close()` for the default store's sweep timer). The client only ever holds an opaque signed id (HMAC via the cookies battery — one signing convention framework-wide); data lives server-side, in the pluggable `store` (`get`/`set`/`delete`, TTL passed to `set` — the Redis `SET … EX` shape; default is an in-process map with lazy expiry). Tampered, missing, or expired ids all look identical: a fresh empty session, never an error. Mutations (`set`/`delete`/`clear`/`touch`) persist and (re)issue the cookie on the unwind; `destroy()` deletes from the store and expires the cookie; read-only requests write nothing:
+
+```ts
+const { middleware } = createSession({ secret: SECRET, cookie: { maxAge: 3600 } });
+use(app, middleware);
+get(app, '/', (ctx) => {
+  const session = ctx.state.session as Session;
+  session.set('user', 'alice');            // persisted + cookie issued on unwind
+  return json(ctx, { visits: session.get('visits') });
+});
+```
+
 **Validate** — wraps your parse function (zod/valibot/typebox/hand-rolled — s200 stays dependency-free and just calls it) as a gate middleware; the parsed value lands on `ctx.state`:
 
 ```ts
@@ -292,6 +343,8 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
   json(ctx, { saved: ctx.state.validated });
 });
 ```
+
+Standard Schema values work without a wrapper: anything carrying a `~standard` prop (zod, valibot, typebox, arktype…) can be handed to `jsonBody`/`queryParams` directly. The gate calls `validate()` on the parsed body/record — the first reported issue becomes a `422 HttpError` carrying its message; an empty `issues` array counts as success. The schema's phantom `types` prop types both sides for free: `types.input` is what the caller sends (`jsonBody(schema)` demands and types the client's `init.body`, `queryParams(schema)` brands `init.query` the same way — the input side, so transforming schemas are honest end to end), while the parsed `types.output` product lands on `ctx.state.validated` for the handler; `standardValidate(schema, data)` exports the identical 422 semantics for your own gates.
 
 **Query** — the query-string twin of `validate`: `parseQuery(ctx)` turns the query into a plain record (repeated keys collect into arrays), `queryParams` wraps a schema around it as a gate, and `QueryOf<'page&tag'>` types a query-string literal at compile time:
 
@@ -302,7 +355,7 @@ get(app, '/list', queryParams((q) => ({
 })), (ctx) => json(ctx, ctx.state.validated));
 ```
 
-**WebSocket** — `upgradeWebSocket(app, pattern, handler)` registers a ws route (router pattern syntax, first registration wins); the handler gets a `send`/`close`/`onMessage`/`onClose`/`onError` socket plus a request-shaped `ctx` (params/query/url). Node wires a zero-dependency RFC 6455 server through the adapter's `upgrade` option; Bun plugs into `Bun.serve` through the bridge:
+**WebSocket** — `upgradeWebSocket(app, pattern, handler)` registers a ws route (router pattern syntax, first registration wins); the handler gets a `send`/`close`/`onMessage`/`onClose`/`onError` socket plus a request-shaped `ctx` (params/query/url). Node wires a zero-dependency RFC 6455 server through the adapter's `upgrade` option — plain `ws://`, or `wss://` by pairing `upgrade` with `https` (only `http2: true` excludes it); Bun plugs into `Bun.serve` through the bridge:
 
 ```ts
 import { upgradeWebSocket } from 's200/websocket';
@@ -435,10 +488,38 @@ use(app, requestId());          // x-request-id
 use(app, requestId({ header: 'x-trace', generator: () => nanoid() }));
 ```
 
-**Timeout** — races the chain against a deadline; a late handler gets `503 {"error":"Request timeout"}` (the losing work is not cancelled — cooperative cancellation needs explicit `AbortSignal` plumbing):
+**Timeout** — races the chain against a deadline; a late handler gets `503 {"error":"Request timeout"}`, and since the deadline also aborts `ctx.signal`, cooperating work (body reads, downstream fetches) stops instead of running to completion in the background:
 
 ```ts
 use(app, timeout(30_000));
+```
+
+**OTel** — `s200/otel`'s `trace()` is an OpenTelemetry-compatible span middleware over duck-typed `Tracer`/`Span` interfaces (zero deps — bridge to `@opentelemetry/api` with a lambda). The span observes the real status of every request — handler, 404/405 fallback, and mapped 500 alike — because responses materialize inside the chain; rejections are recorded as exceptions and rethrown:
+
+```ts
+import { trace } from 's200/otel';
+use(app, trace({ tracer: myOtelTracerBridge, extract: (headers) => … }));
+```
+
+`metrics()` is the metrics twin — duck-typed `Meter` (a real `@opentelemetry/api` meter bridges with one lambda), reporting `http.server.requests` (counter), `http.server.active_requests` (+1 before `next()`, −1 in a `finally` — the gauge balances even when the chain throws), and `http.server.request.duration` (histogram, milliseconds). Recordings carry `http.request.method` and `http.response.status_code` — always the materialized status, 404/405/500 included, thanks to the in-chain error boundary. Slice on `status_code >= 500` for errors; `attributes` (record or `(ctx)` callback) spreads over the defaults, and `metrics()` with no options is a bare pass-through:
+
+```ts
+use(app, metrics({ meter: myMeterBridge, attributes: (ctx) => ({ 'url.route': ctx.url.pathname }) }));
+```
+
+**Testing** — `s200/test` drives the app without a network: `request(app, '/users/1')` is `handle()` with full fallback semantics (hono's `app.request()` shape); `testClient(app)` is a `createClient` whose fetch routes in-process, keeping the typed paths/params/bodies; `probeApp(app)` dispatches every registered route with synthesized params and reports `{ method, pattern, status, ok }` — a mechanical "no route 500s" contract test:
+
+```ts
+import { request, testClient, probeApp } from 's200/test';
+const res = await request(app, '/users/1');
+const rows = await probeApp(app);        // [{ method: 'GET', pattern: '/users/:id', status: 200, ok: true }, …]
+```
+
+**Codegen** — `s200/codegen`'s `generateClient(app)` emits a standalone TypeScript client module from the runtime route table (the `data` in data + functions): one typed method per route with `ParamsOf<'…'>` args, a self-contained path-fill/query helper, methods baked in — dependency-light (only a types-only `ParamsOf` import). Response bodies stay `Response` (runtime data carries no body types — use `s200/client` when compile-time types exist); useful for handing consumers of any stack a typed caller without shipping s200:
+
+```ts
+import { generateClient } from 's200/codegen';
+const source = generateClient(app, { baseUrl: 'https://api.example' });  // → .ts file content
 ```
 
 **Client** — a type-safe fetch client derived from the app's own route table: paths are restricted to registered pattern literals, params are typed from them (`:id` required, `:id?` optional, `*path` kept slash-joined), and a `query` option builds the search string. `ALL` routes are offered under every method; malformed calls (unknown pattern, missing param) throw synchronously:
@@ -455,7 +536,56 @@ const body = await res.json();                 // typed: { id: string }
 await client.post('/users/:id?', {});          // id optional — absent is allowed
 ```
 
-The client talks plain `fetch` — any server speaking the same patterns answers, not just an s200 app. Typing flows from the registrars' return types, so **thread the returns** (as above) to keep the route log; `usePlugin`-registered routes and `removeRoute` erasure are the documented exceptions. Response bodies are typed when the handler returns `json(ctx, data)` — the branded return carries the body shape into the route log and `client.get(...).json()` resolves it (`unknown` for plain `Response` handlers). Full RPC inference (input/validation types) remains out of scope: this is typed paths + params + query + JSON bodies.
+The client talks plain `fetch` — any server speaking the same patterns answers, not just an s200 app. Typing flows from the registrars' return types, so **thread the returns** (as above) to keep the route log; `usePlugin`-registered routes and `removeRoute` erasure are the documented exceptions. Response bodies are typed when the handler returns `json(ctx, data)` — the branded return carries the body shape into the route log and `client.get(...).json()` resolves it (`unknown` for plain `Response` handlers).
+
+Input types flow from the gate middlewares: `jsonBody(parse)` brands the route with the parse function's return type, and `queryParams((q: Q) => …)` brands it with the callback's annotated parameter — the client then demands them:
+
+```ts
+post(app, '/articles', jsonBody(parseArticle), (ctx) => json(ctx, ctx.state.validated));
+get(app, '/list', queryParams((q: { page?: string }) => …), handler);
+
+await client.post('/articles', {}, { body: { title: 'hi' } });  // body typed: parseArticle's return
+client.get('/list', {}, { query: { page: '2' } });              // query typed: { page?: string }
+```
+
+A plain-object `body` is JSON-stringified and stamped `content-type: application/json` (unless already set); string/stream/typed-array bodies pass through verbatim. Routes without gate brands keep the loose `ClientInit`. Schema-flavored gates carry the schema's **input** type (`types.input`), so a schema that transforms — parses a date string, defaults fields, narrows unions — types what the caller sends, not what the handler receives: input ≠ output inference works end to end.
+
+Error branches ride the same log: a `throws` gate (from `s200`) declares the statuses a route may answer with and the shapes those answers ship — it is a type-level declaration, a pure pass-through at runtime:
+
+```ts
+import { throws } from 's200';
+
+get(app, '/users/:id', throws(401, 404), (ctx) => { /* … */ });
+
+const res = await client.get('/users/:id', { id: '7' });
+// res.status: 200 | 401 | 404 — res.json(): Promise<User | { error: string }>
+if (res.status === 401) { /* … */ }
+```
+
+`throws(401, 404)` declares the default `{ error: string }` envelope (what a body-less `httpError` ships); `throws({ 422: { issues: string[] } })` declares a structured `httpError(status, message, body)` payload. Several gates on one route merge. What is not (yet) done: `json()` is not discriminated by status — narrowing `res.status` does not narrow the body union — and the checker does not verify the handler actually throws what was declared.
+
+Responders brand the status literal they ship: `json(ctx, user)` brands `200`, `json(ctx, err, { status: 404 })` brands `404`, `redirect(ctx, '/new')` brands `302`. The client surfaces both channels — `res.status` narrows to the route's status literals and `res.json()` stays the typed body, unioned across a handler's branches; plain-`Response` handlers stay honest (`status: number`, body `unknown`), and the brands ride through `mount`:
+
+```ts
+get(app, '/users/:id', (ctx) => {
+  const id = Number(ctx.params.id);
+  return Number.isNaN(id)
+    ? json(ctx, { code: 'no_user' }, { status: 404 })
+    : json(ctx, { id, name: 'ada' });
+});
+
+const res = await client.get('/users/:id', { id: '7' });
+// res.status: 200 | 404 — res.json(): Promise<{ code: string } | { id: number; name: string }>
+if (res.status === 404) { /* … */ }
+```
+
+Thrown errors can carry a structured payload too: `throw httpError(404, 'no such user', { code: 'USER_NOT_FOUND' })` renders the body verbatim with the error's status; without a body the response keeps the `{ error: message }` envelope. To surface those branches on the client, declare them with a `throws` gate (see the Client section above) — the statuses and body shapes ride the route log into `res.status` and `res.json()`.
+
+## Stability & versioning
+
+s200 is heading to 1.0 with an explicit contract: the surface real apps touch — `createApp` options, the registrars, the `Ctx` guarantees (pre-decoded params, cached `url`, disconnect-aware `signal`, per-request `state`, always-materialized `res`), the respond helpers and their `content-length` contract, the error model (`httpError`/`isHttpError`/`toErrorResponse` + the `throws` gate), routing semantics (first registration wins, `HEAD`→`GET`, `405`+`Allow`, strict trailing slashes), and the battery entry map — freezes at 1.0 and changes only in majors after that. Releases are automated by semantic-release over conventional commits; before 1.0 the 0.x allowance applies (any minor may break, with migration notes), after 1.0 deprecations run the mark → migration guide → two minors rhythm. What is honestly **not** frozen yet: light-mode details, the JSR publishing flow, and the codegen output format.
+
+The full frozen-surface list and policy: [docs/stability.md](docs/stability.md). Migration guides: [from Express](docs/migration-from-express.md), [from Koa](docs/migration-from-koa.md), [from Hono](docs/migration-from-hono.md).
 
 ## Errors
 
@@ -493,9 +623,9 @@ const server = serve(app, { port: 3000 });
 
 Both adapters expose the identical `serve(app, options)` surface; the core's `handle(app, request)` is the entire integration contract for any runtime with a fetch-shaped handler — `s200/deno` (`serve(app)` over `Deno.serve`) and `s200/cloudflare` (`createHandler(app)` as the module worker's default export) are the one-line adapters for those runtimes.
 
-`s200/node` has an opt-in **light mode** — `serve(app, { light: true })` swaps the platform's per-request `Request`/`Response` constructors for light-weight duck-typed ones (nothing global is patched, the Web Standard contract stays the default). See `docs/benchmarks.md`: it buys ~28% whole-request throughput and lands between the real-Web-Standard class and the patched one.
+`s200/node` has an opt-in **light mode** — `serve(app, { light: true })` swaps the platform's per-request `Request`/`Response` constructors for light-weight duck-typed ones (nothing global is patched, the Web Standard contract stays the default). On the light path `ctx.req.headers`/`ctx.res.headers` are `LightHeaders` — a duck `Headers` with the full structural API (`get`/`set`/`has`/`append`/`delete`/`getSetCookie`/iteration), case-insensitive, insertion-ordered, and a legal `HeadersInit` everywhere (platform constructors fill from its pair iterator); `instanceof Headers` is simply false there. See `docs/benchmarks.md`: light mode buys ~28–35% whole-request throughput (machine-dependent) and lands between the real-Web-Standard class and the patched one. The batteries ride the light path too — `compress`/`etag` work off the light response's synchronous bytes (streamed bodies pipe through `CompressionStream` unchanged), `stream`/`streamSSE` ride the light response's stream body, `serveStatic` serves byte bodies, streamed files, and byte ranges, and the request body readers (`readJson`/`readText`/`readForm`/`readStream`) read the light request's stream — client disconnects abort `ctx.signal` here exactly like on the default path.
 
-`s200/node` also serves TLS — HTTPS, or HTTP/2 over TLS — through the same dispatch pipeline (`upgrade` stays HTTP/1.1-only and cannot combine with `https`):
+`s200/node` also serves TLS — HTTPS, or HTTP/2 over TLS — through the same dispatch pipeline. HTTPS combines with `upgrade` for WSS (the WebSocket handler runs on the decrypted connection); only `http2: true` forbids `upgrade`, since HTTP/2 has no upgrade event:
 
 ```ts
 await serve(app, {
@@ -506,28 +636,37 @@ await serve(app, {
   port: 443,
   https: { key, cert, http2: true },                                                  // node:http2
 });
+await serve(app, {
+  port: 443,
+  https: { key, cert },                                                               // WSS
+  upgrade: createUpgradeHandler(app),
+});
 ```
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement. The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement (`defineMiddleware`, the third-party battery authoring hook, lives there too). The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`, `s200/otel`, `s200/codegen`, `s200/test`, `s200/multipart`, `s200/session`, `s200/swagger`, `s200/upload`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 27 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 35 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
-pnpm vitest run            # single run (360 tests)
+pnpm vitest run            # single run (all tests; add --maxWorkers=4 to cap concurrency)
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle
 pnpm smoke                 # runs scripts/smoke.mjs under node AND bun
+node scripts/smoke-deno.mjs # serves dist through Deno.serve and checks the core (auto-skips without deno)
 pnpm bench                 # router dispatch micro-benchmark (ROUTES/ITERATIONS env)
-pnpm bench:http            # whole-request throughput vs hono/express/fastify/elysia (isolated processes)
+pnpm bench:http            # whole-request throughput vs hono/express/fastify/elysia (isolated processes; + deno when installed)
+pnpm docs:dev / docs:build # vitepress documentation site (docs-site/)
 pnpm publish:jsr           # build + prepare declarations for JSR + npx jsr publish
 ```
 
-See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/compare.md](docs/compare.md) for how s200 stacks up against the alternatives, and the [migration guides](docs/) when coming from Express, Koa, or Hono.
+Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
+
+See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/compare.md](docs/compare.md) for how s200 stacks up against the alternatives (Hono, Express, Fastify, Koa, Elysia), and the [migration guides](docs/) when coming from Express, Koa, or Hono.
 
 ## License
 

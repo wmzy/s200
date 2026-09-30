@@ -3,6 +3,7 @@ export * from './errors';
 export * from './router';
 export * from './compose';
 export * from './app';
+export * from './middleware';
 export * from './respond';
 export * from './body';
 export * from './static';

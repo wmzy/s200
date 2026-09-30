@@ -10,6 +10,7 @@ import {
   setSignedCookie,
   verifyCookieSignature,
 } from '../src/cookies';
+import { neverSignal } from '../src/signal';
 
 function requestWith(cookie: string, path = '/'): Request {
   return new Request(`http://localhost${path}`, { headers: { cookie } });
@@ -98,6 +99,7 @@ describe('setCookie', function () {
       params: {},
       query: new URLSearchParams(),
       state: {},
+      signal: neverSignal,
       res: new Response('ok'),
     } satisfies Ctx;
     (() => setCookie(ctx, 'bad name', 'v')).should.throw(/not an RFC 6265 token/);

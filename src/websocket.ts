@@ -19,6 +19,7 @@ import type { App } from './app';
 import type { Ctx, Params, Segment } from './types';
 
 import { createSegments, matchSegments } from './router';
+import { neverSignal, requestSignal } from './signal';
 
 /** Data a message handler receives / a socket sends: text or raw bytes. */
 export type WsData = string | ArrayBuffer | Uint8Array;
@@ -151,5 +152,16 @@ export function matchWebSocket(
  * response (`res` stays `undefined` — a socket answers, not a Response).
  */
 export function createWsCtx(req: Request, url: URL, params: Params): Ctx {
-  return { req, url, params, query: url.searchParams, state: {}, res: undefined };
+  return {
+    req,
+    url,
+    params,
+    query: url.searchParams,
+    state: {},
+    // The upgrade request's signal when the runtime provides one — on a
+    // live socket that is the disconnect signal; otherwise the shared
+    // never-aborted default.
+    signal: requestSignal(req) ?? neverSignal,
+    res: undefined,
+  };
 }

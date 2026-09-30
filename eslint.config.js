@@ -30,7 +30,7 @@ export default [
     // Node-side scripts and config files: tools-config only applies
     // browser/serviceworker globals (to jsx/tsx), so node builtins and the
     // undici fetch globals need declaring for no-undef.
-    files: ['scripts/**/*.mjs', 'eslint.config.js'],
+    files: ['scripts/**/*.mjs', 'examples/**/*.mjs', 'eslint.config.js'],
     languageOptions: {
       globals: {
         ...globals.node,

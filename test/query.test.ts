@@ -1,11 +1,14 @@
+import type { ClientInit, ClientResponse } from '../src/client';
 import type { QueryOf } from '../src/types';
 
 import { describe, expectTypeOf, it } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
+import { createClient } from '../src/client';
 import { httpError } from '../src/errors';
 import { parseQuery, queryParams, type QueryRecord } from '../src/query';
 import { json } from '../src/respond';
+import { type StandardSchemaV1 } from '../src/validate';
 
 describe('parseQuery', () => {
   it('collects single keys as strings and repeated keys as arrays', async () => {
@@ -118,5 +121,80 @@ describe('queryParams', () => {
     );
     const res = await handle(app, new Request('http://localhost/?tag=a&tag=b'));
     (await res.json()).should.deep.equal({ tag: ['a', 'b'] });
+  });
+});
+
+// ---- Standard Schema over the query record ----
+
+/** The output the fake query schema produces. */
+type ListOut = { readonly page: number; readonly tags: readonly string[] };
+
+/** The query-string read the schema accepts — the caller's side. */
+type ListIn = { readonly page?: string; readonly tag?: string | readonly string[] };
+
+const listSchema: StandardSchemaV1 & {
+  readonly types?: { readonly input: ListIn; readonly output: ListOut };
+} = {
+  '~standard': {
+    version: 1,
+    vendor: 's200-test',
+    validate: (value) => {
+      const q = value as Record<string, unknown>;
+      const tag = q.tag;
+      return {
+        value: {
+          page: Number(q.page ?? 1),
+          tags: tag === undefined ? [] : Array.isArray(tag) ? tag.map(String) : [String(tag)],
+        },
+      };
+    },
+  },
+};
+
+describe('queryParams with a Standard Schema', () => {
+  it('validates the parsed record and stores the output on state', async () => {
+    const app = createApp();
+    get(app, '/', queryParams(listSchema), (ctx) => json(ctx, ctx.state.validated));
+    const res = await handle(app, new Request('http://localhost/?page=7&tag=a&tag=b'));
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ page: 7, tags: ['a', 'b'] });
+  });
+
+  it('maps schema issues to a 422 HttpError', async () => {
+    const app = createApp();
+    get(
+      app,
+      '/',
+      queryParams({
+        '~standard': {
+          version: 1,
+          vendor: 's200-test',
+          validate: () => ({
+            issues: [{ message: 'page out of range', path: ['page'] }],
+          }),
+        },
+      }),
+      () => new Response('unreached')
+    );
+    const res = await handle(app, new Request('http://localhost/?page=999'));
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({ error: 'page out of range' });
+  });
+
+  it('brands the client query with the schema input', () => {
+    const app = createApp();
+    const full = get(app, '/list', queryParams(listSchema), () => new Response('ok'));
+    // Stubbed fetch: the compile-time assertions below must not hit the network.
+    const client = createClient(full, { fetch: async () => new Response('ok') });
+
+    expectTypeOf<typeof client.get>().toExtend<
+      (
+        path: '/list',
+        init?: ClientInit & { query: ListIn }
+      ) => Promise<ClientResponse<unknown>>
+    >();
+    void client.get('/list', { query: { page: '2', tag: ['a', 'b'] } });
+    // @ts-expect-error -- tag is a string or string array on this route, not a number
+    void client.get('/list', { query: { page: '2', tag: 7 } });
   });
 });

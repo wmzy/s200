@@ -34,7 +34,14 @@
     "./meta": "./dist/meta.mjs",
     "./openapi": "./dist/openapi.mjs",
     "./deno": "./dist/deno.mjs",
-    "./cloudflare": "./dist/cloudflare.mjs"
+    "./cloudflare": "./dist/cloudflare.mjs",
+    "./otel": "./dist/otel.mjs",
+    "./codegen": "./dist/codegen.mjs",
+    "./test": "./dist/test.mjs",
+    "./multipart": "./dist/multipart.mjs",
+    "./session": "./dist/session.mjs",
+    "./swagger": "./dist/swagger.mjs",
+    "./upload": "./dist/upload.mjs"
   },
   "publish": {
     "include": [

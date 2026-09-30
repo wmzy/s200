@@ -20,6 +20,7 @@ hono-patched  hello    14130 req/s   param    13762 req/s
 express       hello     6476 req/s   param     6355 req/s
 fastify       hello    14115 req/s   param    14064 req/s
 elysia        hello    14420 req/s   param    14135 req/s
+s200-deno  not measured on the reference machine (auto-skipped: deno not installed)
 ```
 
 Machine: AMD Ryzen 7 8745HS, Fedora 42, Node 22.23.2, 2026-09-21.
@@ -29,6 +30,22 @@ Scenarios:
 
 - `hello` — `GET /` → `{ "message": "hello" }`
 - `param` — `GET /users/:id` → `{ "id": "42", "name": "ada" }`
+
+### The `s200-deno` scenario
+
+`pnpm bench:http` also knows an eighth scenario, `s200-deno`: the **same
+built core** (`dist/index.mjs`) served through `Deno.serve`. s200's core is
+plain Web Standard code, so the identical bundle runs on Deno with no
+adapter. The script writes a small entry file to the OS temp dir (importing
+the built core by `file://` URL), spawns `deno run` on it as its own
+process, and measures it with the same node keep-alive client as every other
+row — the only structural difference is that client and server sit in two
+processes instead of one.
+
+The scenario **auto-skips** when no `deno` binary is on `PATH`: the run
+prints one skip line (the row above is that line, from the reference
+machine) and continues; it never fails the benchmark. To enable it, install
+[Deno](https://deno.com) ≥ 2.x and re-run `pnpm bench:http`.
 
 Readings:
 
@@ -93,7 +110,49 @@ a table with no static segments at all (`/:a/:b/:c`).
 - All servers run in separate child processes so no framework's global
   patching contaminates another's measurement.
 - These are two-route apps with zero middlewares: they measure dispatch +
-  adapter floor, not middleware-heavy workloads. Add your own routes to the
-  scripts to model your traffic.
+  adapter floor, not middleware-heavy workloads. Add your own routes to
+  the scripts to model your traffic.
 - Not a TechEmpower-style harness (no multi-core contention modeling, no
   kernel tuning). Use it for relative comparison, not capacity planning.
+
+## 2026-09-29 update (LightHeaders + default disconnect-abort)
+
+Two later changes moved the s200 rows on a different machine (Node 26,
+same-session before/after, so relative deltas hold even though absolute
+numbers are not comparable to the reference table above):
+
+- **`LightHeaders`** — the light path's request/response headers are now a
+  duck-typed `Headers` (case-insensitive, insertion-ordered, wire-identical
+  output), replacing two undici `Headers` constructions per request with
+  one pair-indexed build. `s200-light` gained **+5.8% (hello) / +4.0%
+  (param)**; the light-vs-normal ratio rose from ~1.23–1.26× to
+  **~1.35×**.
+- **Disconnect-abort by default** — `ctx.signal` now aborts on client
+  disconnect out of the box (`abortOnDisconnect: false` restores the old
+  shared never-aborted signal). The per-request `AbortController` + socket
+  listener costs **~7.7%** on the two-route floor; every framework row
+  pays its own disconnect policy, so treat cross-framework deltas measured
+  before this change as one policy cheaper.
+
+## 2026-09-29 addendum (light-mode coverage extension)
+
+The light path's surface coverage was extended and pinned by tests —
+plain `stream` responses, `compress` over streamed light bodies, all
+`serveStatic` shapes (byte bodies, `stream: true` files, `readRange`
+206s, HEAD/304/416/301), and the request body readers
+(`readJson`/`readText`/`readForm`/`readStream`) over light requests
+(`test/light-batteries.test.ts`). None of it touches the `hello`/`param`
+hot path (the `json()` byte fast path), so throughput is flat, as
+expected — same-session snapshot, Node v26, for the s200 rows:
+
+```
+s200          hello    10768 req/s   param    10639 req/s
+s200-light    hello    15016 req/s   param    14638 req/s
+```
+
+The light-vs-normal ratio holds at **~1.39× (hello) / ~1.38× (param)**,
+in line with the ~1.35× after `LightHeaders` (machine noise). One real
+bug surfaced by the coverage work and fixed: a HEAD request against a
+streamed static file advertised `content-length: 0` (both modes) —
+`serveStream` now lets the stat-derived size survive (`handle`'s HEAD
+rewrite strips the body afterward).

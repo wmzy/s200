@@ -6,5 +6,9 @@
       "@/*": ["./src/*"]
     }
   },
-  "exclude": ["dist", "coverage", "eslint.config.js", "scripts"]
+  // The default `**/*` walk skips dot-directories, which silently dropped
+  // docs-site/.vitepress/config.mts from the project (and from ESLint's
+  // project service). Name it explicitly.
+  "include": ["**/*", "docs-site/.vitepress/config.mts"],
+  "exclude": ["dist", "coverage", "eslint.config.js", "examples", "scripts"]
 }

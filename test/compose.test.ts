@@ -3,6 +3,7 @@ import type { Ctx } from '../src/types';
 import { describe, expect, it } from 'vitest';
 
 import { compose } from '../src/compose';
+import { neverSignal } from '../src/signal';
 
 function createTestCtx(): Ctx {
   return {
@@ -11,6 +12,7 @@ function createTestCtx(): Ctx {
     params: {},
     query: new URLSearchParams(),
     state: {},
+    signal: neverSignal,
     res: undefined,
   };
 }

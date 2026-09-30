@@ -45,7 +45,9 @@ export type NodeHttpsOptions = {
   cert: string | Buffer | (string | Buffer)[];
   ca?: string | Buffer | (string | Buffer)[];
   /** Serve HTTP/2 over TLS instead of HTTP/1.1. Plaintext h2c is not
-   * supported — HTTP/2 requires TLS here. */
+   * supported — HTTP/2 requires TLS here. HTTP/2 has no `upgrade` event,
+   * so this cannot be combined with `NodeServeOptions.upgrade` — WSS
+   * needs HTTP/1.1-over-TLS (omit `http2`). */
   http2?: boolean;
 };
 
@@ -69,10 +71,23 @@ export type NodeServeOptions = {
    */
   light?: boolean;
   /**
+   * Cooperative cancellation: abort `ctx.signal` when the client drops
+   * the connection before the response finishes. On by default — each
+   * request gets a controller whose signal is both `ctx.signal` and the
+   * undici request's `signal`; `res` 'close' with `writableEnded` false
+   * aborts it with a DOMException `AbortError`. Pass `false` to opt out:
+   * the request then rides the shared never-aborted signal and the
+   * per-request `AbortController` is skipped entirely.
+   */
+  abortOnDisconnect?: boolean;
+  /**
    * Serve TLS: `node:https` by default, or `node:http2`'s secure server
    * with `http2: true` — the same dispatch pipeline either way, so
-   * handlers and middlewares see no difference. HTTP/2 has no `upgrade`
-   * event; combining `https` with `upgrade` throws at `serve` time.
+   * handlers and middlewares see no difference. WSS works over plain
+   * HTTPS: `https` + `upgrade` is the supported WSS setup (the `upgrade`
+   * handler runs on the decrypted connection). Only `http2: true` forbids
+   * `upgrade` — HTTP/2 has no `upgrade` event, so that combination
+   * throws at `serve` time.
    */
   https?: NodeHttpsOptions;
 };
@@ -96,7 +111,11 @@ type ResponseLike = {
   ): unknown;
   write(chunk: Uint8Array): boolean;
   end(): unknown;
-  on(event: 'drain', listener: () => void): unknown;
+  /** 'close' fires on normal completion too — `writableEnded` tells the
+   * abort wiring of `abortOnDisconnect` a premature close from a finished
+   * response. */
+  on(event: 'drain' | 'close', listener: () => void): unknown;
+  readonly writableEnded: boolean;
   destroy(): unknown;
 };
 
@@ -108,13 +127,13 @@ export async function serve(
   app: App,
   options: NodeServeOptions = {}
 ): Promise<NodeServer> {
-  if (options.https !== undefined && options.upgrade !== undefined) {
+  if (options.https?.http2 === true && options.upgrade !== undefined) {
     throw new Error(
-      'serve: WebSocket upgrade is HTTP/1.1-only — cannot combine https with upgrade'
+      'serve: WebSocket upgrade is HTTP/1.1-only — cannot combine it with http2 (HTTP/2 has no upgrade event); use https without http2 for WSS'
     );
   }
   const handler = (req: IncomingMessage | Http2ServerRequest, res: ServerResponse | Http2ServerResponse) => {
-    void dispatch(app, req, res, options.light === true);
+    void dispatch(app, req, res, options.light === true, options.abortOnDisconnect !== false);
   };
   const server: NodeServerKind =
     options.https !== undefined
@@ -149,19 +168,38 @@ async function dispatch(
   app: App,
   req: RequestLike,
   res: ResponseLike,
-  light: boolean
+  light: boolean,
+  abortOnDisconnect: boolean
 ): Promise<void> {
   try {
     // handle() maps every error to a Response, so only the socket write can
     // throw here (client gone mid-response) — nothing left to answer.
-    const response = await handle(app, toRequest(req, light));
+    let signal: AbortSignal | undefined;
+    if (abortOnDisconnect) {
+      const controller = new AbortController();
+      signal = controller.signal;
+      // 'close' also fires after a normally finished response (keep-alive
+      // socket teardown included) — only a premature close aborts.
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          controller.abort(
+            new DOMException('client disconnected', 'AbortError')
+          );
+        }
+      });
+    }
+    const response = await handle(
+      app,
+      toRequest(req, light, signal),
+      signal === undefined ? undefined : { signal }
+    );
     await writeResponse(res, response);
   } catch {
     res.destroy();
   }
 }
 
-function toRequest(req: RequestLike, light: boolean): Request {
+function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Request {
   // http2 compat requests expose `:authority` where http1 exposes `host`.
   const authority = (req.headers as Record<string, string | string[] | undefined>)[
     ':authority'
@@ -195,6 +233,7 @@ function toRequest(req: RequestLike, light: boolean): Request {
               req as unknown as import('node:stream').Readable
             ) as unknown as ReadableStream<Uint8Array>)
           : null,
+      signal,
     });
     setCachedUrl(request as unknown as Request, new URL(url));
     return request as unknown as Request;
@@ -204,6 +243,11 @@ function toRequest(req: RequestLike, light: boolean): Request {
     headers: headerPairs,
     redirect: 'manual',
   };
+  if (signal !== undefined) {
+    // Mirrors the disconnect signal onto request.signal, exactly like a
+    // fetch caller's init.signal — undici keeps the very object.
+    init.signal = signal;
+  }
   if (method !== 'GET' && method !== 'HEAD') {
     // A streaming body needs duplex: 'half'; GET/HEAD must stay bodyless —
     // the platform rejects a request body there. Both server kinds hand

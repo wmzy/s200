@@ -11,7 +11,8 @@
  * surface s200 reads: `method`/`url`/`headers`/`body` on the request,
  * `status`/`statusText`/`headers`/`body`/`arrayBuffer`/`clone` on the
  * response — plus `text`/`json`/`formData` so handler code that reads its
- * own request keeps working.
+ * own request keeps working. Headers ride {@link LightHeaders}, a duck
+ * `Headers` covering the same structural API.
  *
  * The Web Standard contract stays the default: `handle(app, request)` and
  * every adapter not named `light` deal in real platform objects.
@@ -29,6 +30,17 @@ export const kLight: symbol = Symbol.for('s200.light');
 /** True when the request came from the adapter's light path. */
 export function isLightRequest(req: Request): boolean {
   return (req as unknown as Record<symbol, unknown>)[kLight] === true;
+}
+
+/** True when the value is a {@link LightResponse} — duck-shaped, because
+ * `instanceof Response` misses it and handlers may return one directly. */
+export function isLightResponse(value: unknown): value is LightResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { status?: unknown }).status === 'number' &&
+    typeof (value as { bytesSync?: unknown }).bytesSync === 'function'
+  );
 }
 
 // Request URL parsed once per request: the adapter already holds the URL
@@ -98,6 +110,160 @@ function normalizeBody(
     .then((buffer) => new Uint8Array(buffer));
 }
 
+/** One name's slot in {@link LightHeaders}: the lowercase name and every
+ * value appended under it, in arrival order. */
+type HeaderSlot = { readonly name: string; values: string[] };
+
+/** True when the value iterates `[name, value]` pairs — the platform
+ * `Headers` and {@link LightHeaders} both qualify, so the fill paths branch
+ * iterator-vs-record without `instanceof` chains. */
+function isHeadersLike(
+  value: unknown
+): value is Iterable<[string, string]> | Iterable<readonly [string, string]> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] ===
+      'function'
+  );
+}
+
+/**
+ * The light headers: a duck-typed `Headers` for the light path only —
+ * case-insensitive by lowercase keying, insertion-ordered, and built from
+ * plain array/`Map` primitives instead of the platform constructor's
+ * per-instance normalization machinery. Implements the whole structural
+ * surface s200 and its batteries call (`get`/`set`/`has`/`append`/
+ * `delete`/`getSetCookie`/`forEach`/`entries`/`keys`/`values`/iteration),
+ * which also makes it a legal `HeadersInit` everywhere: platform
+ * constructors fill from anything with a pair iterator, and batteries that
+ * copy (`new Headers(res.headers)` in compress/etag) consume it unchanged.
+ *
+ * Semantics follow the fetch spec's observable contract: iteration yields
+ * lowercase names, combines repeated non-cookie values with `", "`, and
+ * keeps each `set-cookie` value a separate pair.
+ */
+export class LightHeaders {
+  private readonly slots: HeaderSlot[] = [];
+  private readonly index = new Map<string, HeaderSlot>();
+
+  constructor(
+    init?: HeadersInit | readonly [string, string][] | null
+  ) {
+    if (init === null || init === undefined) return;
+    if (isHeadersLike(init)) {
+      for (const [name, value] of init) {
+        if (name !== undefined && value !== undefined) {
+          this.append(name, value);
+        }
+      }
+      return;
+    }
+    const record = init as Record<string, string>;
+    for (const name of Object.keys(record)) {
+      const value = record[name];
+      if (value !== undefined) this.set(name, value);
+    }
+  }
+
+  get(name: string): string | null {
+    const slot = this.index.get(name.toLowerCase());
+    return slot === undefined ? null : slot.values.join(', ');
+  }
+
+  has(name: string): boolean {
+    return this.index.has(name.toLowerCase());
+  }
+
+  set(name: string, value: string): void {
+    const key = name.toLowerCase();
+    const slot = this.index.get(key);
+    if (slot !== undefined) {
+      slot.values = [value];
+      return;
+    }
+    const created: HeaderSlot = { name: key, values: [value] };
+    this.slots.push(created);
+    this.index.set(key, created);
+  }
+
+  append(name: string, value: string): void {
+    const key = name.toLowerCase();
+    const slot = this.index.get(key);
+    if (slot !== undefined) {
+      slot.values.push(value);
+      return;
+    }
+    const created: HeaderSlot = { name: key, values: [value] };
+    this.slots.push(created);
+    this.index.set(key, created);
+  }
+
+  delete(name: string): void {
+    const key = name.toLowerCase();
+    const slot = this.index.get(key);
+    if (slot === undefined) return;
+    this.index.delete(key);
+    this.slots.splice(this.slots.indexOf(slot), 1);
+  }
+
+  getSetCookie(): string[] {
+    const slot = this.index.get('set-cookie');
+    return slot === undefined ? [] : slot.values.slice();
+  }
+
+  forEach(
+    callback: (value: string, key: string, parent: LightHeaders) => void,
+    thisArg?: unknown
+  ): void {
+    for (const [key, value] of this) {
+      if (thisArg === undefined) {
+        callback(value, key, this);
+      } else {
+        callback.call(thisArg, value, key, this);
+      }
+    }
+  }
+
+  *entries(): IterableIterator<[string, string]> {
+    for (const slot of this.slots) {
+      if (slot.name === 'set-cookie') {
+        for (const value of slot.values) {
+          yield [slot.name, value];
+        }
+      } else {
+        yield [slot.name, slot.values.join(', ')];
+      }
+    }
+  }
+
+  *keys(): IterableIterator<string> {
+    for (const [key] of this) {
+      yield key;
+    }
+  }
+
+  *values(): IterableIterator<string> {
+    for (const [, value] of this) {
+      yield value;
+    }
+  }
+
+  *[Symbol.iterator](): IterableIterator<[string, string]> {
+    yield* this.entries();
+  }
+}
+
+/**
+ * Types the duck headers as the platform interface it replaces. The only
+ * structural gap is undici's `HeadersIterator.[Symbol.dispose]` (Node's
+ * iterator-disposal typing) — nothing in s200 or its batteries reads it,
+ * and the runtime surface is identical everywhere it is consumed.
+ */
+function asPlatformHeaders(headers: LightHeaders): Headers {
+  return headers as unknown as Headers;
+}
+
 /** The light request: exactly the surface s200 reads, plus the read
  * conveniences handler code uses (`text`/`json`/`formData`). */
 export class LightRequest {
@@ -105,6 +271,10 @@ export class LightRequest {
   readonly url: string;
   readonly headers: Headers;
   readonly body: ReadableStream<Uint8Array> | null;
+  /** `Request.signal` parity: the disconnect signal the adapter passed
+   * with `abortOnDisconnect`, `null` otherwise — `ctx.signal` remains the
+   * primary read surface either way. */
+  readonly signal: AbortSignal | null;
 
   private _bytes: Uint8Array | undefined;
 
@@ -113,6 +283,7 @@ export class LightRequest {
     readonly url: string;
     readonly headers: Headers | readonly [string, string][];
     readonly body?: ReadableStream<Uint8Array> | null;
+    readonly signal?: AbortSignal | null;
   }) {
     (this as unknown as Record<symbol, unknown>)[kLight] = true;
     this.method = input.method;
@@ -120,8 +291,9 @@ export class LightRequest {
     this.headers =
       input.headers instanceof Headers
         ? input.headers
-        : new Headers(input.headers as [string, string][]);
+        : asPlatformHeaders(new LightHeaders(input.headers));
     this.body = input.body ?? null;
+    this.signal = input.signal ?? null;
   }
 
   /** Whole body as bytes (empty for bodyless); consumes and caches a
@@ -173,7 +345,25 @@ export class LightResponse {
   constructor(body: BodyInit | Uint8Array | null, init: ResponseInit = {}) {
     this.status = init.status ?? 200;
     this.statusText = init.statusText ?? '';
-    this.headers = new Headers(init.headers);
+    // A Headers-like (platform Headers from a battery's copy, or a light
+    // one from the respond helpers) is kept by reference — every internal
+    // caller builds it fresh for this response, so the copy the platform
+    // constructor would make is pure overhead. Records and pair lists wrap
+    // into a LightHeaders.
+    const provided = init.headers as
+      | Headers
+      | LightHeaders
+      | readonly [string, string][]
+      | Record<string, string>
+      | undefined;
+    this.headers =
+      provided instanceof Headers
+        ? provided
+        : asPlatformHeaders(
+            provided instanceof LightHeaders
+              ? provided
+              : new LightHeaders(provided)
+          );
     const normalized = normalizeBody(body);
     if (normalized instanceof Promise) {
       this._lazy = normalized;
@@ -258,7 +448,9 @@ export class LightResponse {
     return new LightResponse(this._source === null ? null : this._source.slice(), {
       status: this.status,
       statusText: this.statusText,
-      headers: new Headers(this.headers),
+      // Iterated copy (works for a platform Headers source and a light one
+      // alike) — the clone must not alias the original's mutable headers.
+      headers: asPlatformHeaders(new LightHeaders(this.headers)),
     }) as unknown as Response;
   }
 }

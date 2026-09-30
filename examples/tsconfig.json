@@ -1,0 +1,22 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // Examples run on node type-stripping with the ts-resolve.mjs hook,
+    // so sources import each other with explicit .ts extensions.
+    "allowImportingTsExtensions": true,
+    // Mirror the hook's PKG_MAP for lint-time type information: the
+    // public entry names point at the workspace src/ entries, not the
+    // built dist/ (examples are smoke-verified at runtime, and CI's
+    // `pnpm typecheck` still ignores this directory via the root
+    // tsconfig's exclude — this file exists so ESLint's project service
+    // has a project for example code).
+    "paths": {
+      "s200": ["../src/index.ts"],
+      "s200/*": ["../src/*.ts"]
+    }
+  },
+  "include": ["**/*.ts"],
+  // Break the inherited root exclude — "examples" there is root-relative
+  // and would filter out this project's own include set entirely.
+  "exclude": []
+}

@@ -14,17 +14,32 @@
  * `ALL` routes are skipped (no single method to document); dynamic-pattern
  * routes emit with their pattern verbatim.
  *
+ * {@link withRouteValidation} is the runtime twin: the same annotations
+ * become request gates — a 422 naming the first violation's path — while
+ * `openapiSpec` keeps describing them, one source of truth for both.
+ *
  * @module
  */
 
 import type { App } from './app';
 
-import type { Ctx, Segment } from './types';
+import type {
+  Ctx,
+  Handler,
+  Middleware,
+  Route,
+  RouteDef,
+  Segment,
+  State,
+} from './types';
 
-import type { SerializeSchema } from './serialize';
-
-import { getAppMeta, getRouteMeta, type RouteMeta } from './meta';
+import { readJson } from './body';
+import { httpError } from './errors';
+import { describeRoute, getAppMeta, getRouteMeta, type RouteMeta } from './meta';
+import { parseQuery } from './query';
 import { json } from './respond';
+import { createRoute } from './router';
+import { compileValidator, type SerializeSchema, type ValidationIssue } from './serialize';
 
 /** The emitted document — OpenAPI 3.1.0, JSON-compatible by construction. */
 export type OpenApiDocument = {
@@ -188,4 +203,116 @@ export function openapiJson(
     version: info?.version ?? appMeta?.version ?? '0.0.0',
     description: info?.description ?? appMeta?.description,
   }));
+}
+
+/** The 422 message: the scope-qualified path of the first issue plus its
+ * reason — `'body.items.2.name: expected string, got number'`. Callers
+ * arrive only with a non-empty list; the fallbacks keep the helper total
+ * under `noUncheckedIndexedAccess`. */
+function summarize(scope: string, issues: readonly ValidationIssue[]): string {
+  const first = issues[0];
+  const path = first?.path ?? '';
+  const message = first?.message ?? '';
+  return path === '' ? `${scope}: ${message}` : `${scope}.${path}: ${message}`;
+}
+
+/**
+ * The gate a validated route runs in front of its own middlewares:
+ * validators compile once at transform time, then each request is
+ * read-and-check with no state writes and no rewrites — conforming input
+ * flows on untouched, and the handler's own `readJson`/`parseQuery` hits
+ * the same caches.
+ */
+function validationGate(meta: RouteMeta): Middleware {
+  const body = meta.body !== undefined ? compileValidator(meta.body) : undefined;
+  const query = Object.entries(meta.query ?? {}).map(
+    ([key, schema]) => [key, compileValidator(schema)] as const
+  );
+  return async (ctx, next) => {
+    if (body !== undefined) {
+      const issues = body(await readJson(ctx));
+      if (issues.length > 0) {
+        throw httpError(422, summarize('body', issues));
+      }
+    }
+    if (query.length > 0) {
+      const record = parseQuery(ctx);
+      for (const [key, validate] of query) {
+        const value = record[key];
+        // Absent keys pass — query parameters are always optional (the
+        // spec emits `required: false` for every one of them).
+        if (value === undefined) continue;
+        const issues = validate(value);
+        if (issues.length > 0) {
+          throw httpError(422, summarize(`query.${key}`, issues));
+        }
+      }
+    }
+    await next();
+  };
+}
+
+/**
+ * Runtime enforcement of the documentation schemas — a pure data transform
+ * in `mount`'s family (replace the route table, never mutate an entry in
+ * place) that re-reads every {@link RouteMeta} annotation and rebuilds the
+ * routes carrying a `body` or `query` schema with a validation gate in
+ * front of the route's own middlewares. Annotations are re-attached to the
+ * rebuilt routes, so `openapiSpec` keeps describing the same schemas the
+ * gates enforce.
+ *
+ * Semantics: `body` is read once via `readJson` (cached like any other
+ * body read) and checked with `compileValidator`; each annotated `query`
+ * key present in the request is checked against its schema. Values are
+ * seen verbatim — query strings live in the string domain, so
+ * `{ type: 'integer' }` rejects `?page=2`; annotate string shapes or use
+ * `s200/query`'s `queryParams` when you want coercion. Any issue rejects
+ * the chain with a 422 `HttpError` naming the first violation
+ * (`'body.address.city: required'`). Nothing is written to `ctx.state`
+ * and nothing is coerced: this is the documented schema's runtime
+ * cash-in, not a second typed input channel — for that, use
+ * `s200/validate`'s `jsonBody` gate.
+ *
+ * Ordering contract: `describeRoute` keys metadata by the route objects
+ * alive at call time, so describe first, then transform (repeated calls
+ * stack gates — harmless, wasteful). A mounted sub-app's annotations must
+ * target the parent after `mount`, which rebuilds route objects;
+ * unannotated routes are kept by reference — zero rebuild, zero request
+ * time cost. App-level middlewares and the snapshot-freeze semantics are
+ * untouched: only the `routes` array is replaced.
+ */
+export function withRouteValidation<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(app: App<S, R>): App<S, R> {
+  const rebuilt: Route[] = [];
+  const reattach: { method: string; pattern: string; meta: RouteMeta }[] = [];
+  let changed = false;
+  for (const route of app.routes) {
+    const meta = getRouteMeta(route);
+    if (
+      meta === undefined ||
+      (meta.body === undefined && meta.query === undefined)
+    ) {
+      rebuilt.push(route);
+      continue;
+    }
+    changed = true;
+    rebuilt.push(
+      createRoute(route.method, route.pattern, route.handler as Handler, [
+        validationGate(meta),
+        ...route.middlewares,
+      ])
+    );
+    reattach.push({ method: route.method, pattern: route.pattern, meta });
+  }
+  if (changed) {
+    app.routes = Object.freeze(rebuilt);
+    for (const { method, pattern, meta } of reattach) {
+      // `describeRoute` only walks `app.routes` (method/pattern matching);
+      // the cast bridges its default-state signature to this app's `S`.
+      describeRoute(app as App, method, pattern, meta);
+    }
+  }
+  return app;
 }

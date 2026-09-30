@@ -4,6 +4,7 @@ import type { HttpError } from '../src/errors';
 import { describe, it } from 'vitest';
 
 import { readForm, readJson, readText } from '../src/body';
+import { neverSignal } from '../src/signal';
 
 // vitest's should chain has no chai-as-promised plugins (no `rejectedWith`),
 // so capture rejections manually and assert on the tagged value.
@@ -23,6 +24,7 @@ function makeCtx(body: BodyInit | null, headers?: Record<string, string>): Ctx {
     params: {},
     query: new URLSearchParams(),
     state: {},
+    signal: neverSignal,
     res: undefined,
   };
 }

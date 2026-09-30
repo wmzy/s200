@@ -314,13 +314,14 @@ function serveBytes(
 }
 
 /**
- * Sends a streamed file: bodyless for HEAD (content-length from `stat` when
- * available), full body otherwise. Streams cannot subarray, so ranges are
- * not offered here — readers that want them provide `readRange`.
+ * Sends a streamed file: the stream rides along even for HEAD — `handle`
+ * rewrites HEAD to a bodyless response afterward, and passing `null` here
+ * would make `send` advertise content-length 0, clobbering the size a GET
+ * would stream. Streams cannot subarray, so ranges are not offered here —
+ * readers that want them provide `readRange`.
  */
 function serveStream(
   ctx: Ctx,
-  method: string,
   stream: ReadableStream<Uint8Array>,
   path: string,
   info: StaticFileInfo | undefined,
@@ -338,7 +339,7 @@ function serveStream(
   if (cacheControl !== undefined) {
     headers['cache-control'] = cacheControl;
   }
-  send(ctx, method === 'HEAD' ? null : stream, { headers });
+  send(ctx, stream, { headers });
 }
 
 /**
@@ -452,7 +453,7 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
       if (result instanceof Uint8Array) {
         serveBytes(ctx, method, result, lookup, cacheControl, info ?? undefined);
       } else {
-        serveStream(ctx, method, result, lookup, info ?? undefined, cacheControl);
+        serveStream(ctx, result, lookup, info ?? undefined, cacheControl);
       }
       return;
     }
@@ -493,7 +494,7 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
           if (shellResult instanceof Uint8Array) {
             serveBytes(ctx, method, shellResult, shell, cacheControl);
           } else {
-            serveStream(ctx, method, shellResult, shell, undefined, cacheControl);
+            serveStream(ctx, shellResult, shell, undefined, cacheControl);
           }
           return;
         }

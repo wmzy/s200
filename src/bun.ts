@@ -72,6 +72,7 @@ export function serve(app: App, options: BunServeOptions = {}): BunServer {
       if (bridge !== undefined && bridge.upgrade(request, upgrader)) {
         return;
       }
+      // No disconnect wiring: Bun.serve does not reliably abort request.signal on client disconnect.
       return handle(app, request);
     },
     websocket: bridge?.websocket,

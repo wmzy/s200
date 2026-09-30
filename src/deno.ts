@@ -14,6 +14,7 @@
 import type { App } from './app';
 
 import { handle } from './app';
+import { signalInit } from './signal';
 
 // Module-scoped ambient surface of the global Deno runtime — exactly the
 // members used, so tsc needs no @types/deno dependency (the real Deno
@@ -50,7 +51,9 @@ export function serve(app: App, options: DenoServeOptions = {}): DenoServer {
   const hostname = options.hostname ?? '0.0.0.0';
   const server = Deno.serve(
     { port, hostname, onListen: options.onListen },
-    (request) => handle(app, request)
+    // Deno aborts the fetch-handler request's signal on client disconnect —
+    // feature-detect it, since older builds hand out signal-less requests.
+    (request) => handle(app, request, signalInit(request))
   );
   return {
     server,

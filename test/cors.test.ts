@@ -2,7 +2,8 @@ import { describe, it } from 'vitest';
 
 import { createApp, get, handle, post, use } from '../src/app';
 import { cors } from '../src/cors';
-import { text } from '../src/respond';
+import { serve } from '../src/node';
+import { send, text } from '../src/respond';
 
 function preflight(path: string, headers: Record<string, string>): Request {
   return new Request(`http://localhost${path}`, {
@@ -175,5 +176,54 @@ describe('cors', function () {
     (res.headers.get('access-control-allow-origin') ?? '').should.equal(
       'https://app.example'
     );
+  });
+
+  it('never advertises content-length on the 204 preflight (RFC 9110 §8.6)', async function () {
+    const app = createApp();
+    use(app, cors());
+    post(app, '/submit', () => new Response('done'));
+    const res = await handle(
+      app,
+      preflight('/submit', { 'access-control-request-method': 'POST' })
+    );
+    res.status.should.equal(204);
+    res.headers.has('content-length').should.be.false;
+  });
+
+  it('answers preflights through the node light path without content-length', async function () {
+    const app = createApp();
+    use(app, cors({ origin: 'https://app.example', credentials: true }));
+    post(app, '/submit', () => new Response('done'));
+    const server = await serve(app, { port: 0, light: true });
+    try {
+      const res = await fetch(`${server.url}/submit`, {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://app.example',
+          'access-control-request-method': 'POST',
+        },
+      });
+      res.status.should.equal(204);
+      res.headers.has('content-length').should.be.false;
+      (res.headers.get('access-control-allow-origin') ?? '').should.equal(
+        'https://app.example'
+      );
+      (res.headers.get('access-control-allow-credentials') ?? '').should.equal(
+        'true'
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('send() omits content-length on a null-body 204 but keeps it elsewhere', async function () {
+    const app = createApp();
+    get(app, '/gone', (ctx) => send(ctx, null, { status: 204 }));
+    get(app, '/data', (ctx) => send(ctx, 'x', { status: 200 }));
+    const noBody = await handle(app, new Request('http://localhost/gone'));
+    noBody.status.should.equal(204);
+    noBody.headers.has('content-length').should.be.false;
+    const withBody = await handle(app, new Request('http://localhost/data'));
+    (withBody.headers.get('content-length') ?? '').should.equal('1');
   });
 });

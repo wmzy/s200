@@ -11,6 +11,8 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
+import { newResponse } from './respond';
+
 /**
  * Options for {@link cors}. The default `'*'` origin emits the literal
  * wildcard and skips `Vary: Origin`. Browsers refuse credentialed requests
@@ -92,7 +94,10 @@ export function cors(options: CorsOptions = {}): Middleware {
       if (maxAge !== undefined) {
         corsHeaders['access-control-max-age'] = String(maxAge);
       }
-      ctx.res = new Response(null, { status: 204, headers: corsHeaders });
+      // newResponse keeps the light path light (a LightResponse instead of
+      // a platform one) and never advertises content-length on the null
+      // body — RFC 9110 §8.6 forbids it on 204.
+      ctx.res = newResponse(ctx, null, { status: 204, headers: corsHeaders });
       return;
     }
 

@@ -5,6 +5,7 @@ import { describe, it } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
 import { text } from '../src/respond';
+import { neverSignal } from '../src/signal';
 import { serveStatic } from '../src/static';
 
 /** In-memory file store; records every lookup path for exact assertions. */
@@ -110,6 +111,7 @@ describe('serveStatic traversal guard', () => {
       params: {},
       query: new URLSearchParams(),
       state: {},
+      signal: neverSignal,
       res: undefined,
     };
   }

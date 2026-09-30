@@ -43,31 +43,126 @@ export type ClientOptions = {
  * captures them (`:id`), optional when the pattern declares them (`:id?`),
  * absent for plain patterns (the `init` moves up one position). The
  * returned `Response` carries a typed `json()` when the handler returned a
- * branded {@link JsonResponse} — `unknown` otherwise. */
+ * branded {@link JsonResponse} — `unknown` otherwise. Input phantoms ride
+ * the same signature: a `jsonBody` gate types (and demands) `init.body`,
+ * a `queryParams` gate narrows `init.query`; routes with neither gate
+ * keep the loose {@link ClientInit} exactly. */
 type RouteCall<D extends RouteDef> = D extends {
   readonly pattern: infer P extends string;
 }
   ? keyof ParamsOf<P> extends never
-    ? (path: P, init?: ClientInit) => Promise<ClientResponse<DefOut<D>>>
+    ? (
+        path: P,
+        ...init: InitArg<D>
+      ) => Promise<ClientResponse<DefOut<D>, DefStatus<D>, DefErrors<D>>>
     : (
         path: P,
         args: ParamsOf<P>,
-        init?: ClientInit
-      ) => Promise<ClientResponse<DefOut<D>>>
+        ...init: InitArg<D>
+      ) => Promise<ClientResponse<DefOut<D>, DefStatus<D>, DefErrors<D>>>
   : never;
+
+/** The init argument as a rest tuple: a JSON-body brand makes init
+ * required (the route reads a body — the caller must send one); every
+ * other route keeps today's optional init. */
+type InitArg<D extends RouteDef> = [DefBody<D>] extends [undefined]
+  ? [init?: RouteInit<D>]
+  : [init: RouteInit<D>];
+
+/** The init one route accepts: unbranded routes keep {@link ClientInit}
+ * verbatim; a `jsonBody` brand retypes `body` as the gate's parse type (a
+ * JSON shape by contract — the client stringifies it at call time); a
+ * `queryParams` brand replaces the loose `query` sugar with the gate's
+ * declared read. `body`/`query` are omitted-and-readded so the branded
+ * members win instead of intersecting the platform's looser ones. */
+type RouteInit<D extends RouteDef> = [DefBody<D>] extends [undefined]
+  ? [DefQuery<D>] extends [undefined]
+    ? ClientInit
+    : ClientInit & { query: DefQuery<D> }
+  : [DefQuery<D>] extends [undefined]
+    ? Omit<ClientInit, 'body'> & { body: DefBody<D> }
+    : Omit<ClientInit, 'body' | 'query'> & {
+        body: DefBody<D>;
+        query: DefQuery<D>;
+      };
 
 /** The response-body type a route def carries, `unknown` when untyped. */
 type DefOut<D extends RouteDef> = D extends { readonly out: infer O }
   ? O
   : unknown;
 
+/** The response-status type a route def carries (its handler's status
+ * brands, unioned across a union-returning handler), `number` when the
+ * def has none — the status-side twin of {@link DefOut}. */
+type DefStatus<D extends RouteDef> = D extends { readonly status: infer St }
+  ? St
+  : number;
+
+/** The input shape a route def carries (its gates' merged `_in` brands),
+ * `unknown` when the route has no input gates — the request-side twin of
+ * {@link DefOut}. */
+type DefIn<D extends RouteDef> = D extends { readonly in: infer I }
+  ? I
+  : unknown;
+
+/** The error branches a route def carries (its `throws` gates' merged
+ * `_errors` brands), an empty record when the route declares none —
+ * neutral to {@link ClientResponse}'s unions: its value union is `never`
+ * and its keys intersected with `number` are `never`, so error-less
+ * routes keep today's exact `json()` and `status` types. */
+type DefErrors<D extends RouteDef> = D extends { readonly errors: infer E }
+  ? E
+  : Record<never, never>;
+
+/** The union of a record's value types — here: the body shapes a route's
+ * declared error statuses may ship. */
+type ValueOf<E> = E[keyof E];
+
+/** The JSON-body type a route's `jsonBody` gate declares, `undefined`
+ * when there is none. Tuple-guarded: `unknown` (the gate-less `in`) must
+ * fall through to the absent case, not distribute into the pattern. */
+type DefBody<D extends RouteDef> = [DefIn<D>] extends [
+  { readonly json: infer T }
+]
+  ? T
+  : undefined;
+
+/** The query type a route's `queryParams` gate declares, `undefined` when
+ * there is none. */
+type DefQuery<D extends RouteDef> = [DefIn<D>] extends [
+  { readonly query: infer Q }
+]
+  ? Q
+  : undefined;
+
 /**
  * A `Response` whose `json()` resolves to the route's declared body type —
  * a type-level view over the real fetch response (hono's `ClientResponse`
  * shape). Untyped routes resolve `unknown`, not `any`: the body is real,
- * its shape is unproven.
+ * its shape is unproven. `St` narrows `status` to the route's branded
+ * status literals (`number` when the handler's statuses are unbranded);
+ * across several same-method routes the intersection widens it to their
+ * union — a switch over `res.status` follows. `E` adds the route's
+ * `throws`-declared error branches: `json()` unions the declared error
+ * body shapes onto `O` and `status` gains the declared status literals
+ * (an empty record — the default — leaves both channels untouched).
+ *
+ * `json` is Omit-readded, not intersected: a plain `Response & { json() }`
+ * keeps BOTH signatures, and calls resolve to the platform's
+ * `Promise<any>` — the brand would exist only on paper. With the member
+ * replaced, `res.json()` is the branded promise at every call site.
  */
-export type ClientResponse<O> = Response & { json(): Promise<O> };
+export type ClientResponse<
+  O,
+  St extends number = number,
+  E = Record<never, never>
+> = Omit<
+  Response,
+  'json'
+> & {
+  json(): Promise<O | ValueOf<E>>;
+  readonly status: St | (keyof E & number);
+};
 
 /** Union → intersection: a union of signatures is not an overload (calls
  * require an argument matching the *intersection* of the parameters); an
@@ -117,6 +212,26 @@ const ALL_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 type PathFn = (args: Params | undefined, init: ClientInit | undefined) => Promise<Response>;
 
 /**
+ * Whether a request body is a JSON shape (a plain object or array — the
+ * typed `body` of a `jsonBody` route is a JSON shape by contract) rather
+ * than one of the Web's structured body types. Checked with `instanceof`
+ * against the web-standard classes only — strings, `null`, and streams,
+ * blobs, forms, and byte buffers all fall through untouched.
+ */
+function isJsonBody(value: unknown): value is object {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !(value instanceof ReadableStream) &&
+    !(value instanceof Blob) &&
+    !(value instanceof ArrayBuffer) &&
+    !(value instanceof URLSearchParams) &&
+    !(value instanceof FormData) &&
+    !ArrayBuffer.isView(value)
+  );
+}
+
+/**
  * Builds one path-filling call for a route: static segments verbatim,
  * `:param` values percent-encoded, `*wildcard` values kept slash-joined
  * (each piece encoded, `/` preserved). Params are checked at call time —
@@ -125,6 +240,7 @@ type PathFn = (args: Params | undefined, init: ClientInit | undefined) => Promis
 function buildPathFn(
   base: string,
   pattern: string,
+  method: string,
   segments: readonly Segment[],
   fetcher: typeof fetch
 ): PathFn {
@@ -179,7 +295,21 @@ function buildPathFn(
         path += `?${qs}`;
       }
     }
-    return fetcher(path, rest);
+    // A JSON-shape body (the typed `body` of a `jsonBody` route, or any
+    // plain object passed on a loose route) is stringified and stamped
+    // with `content-type: application/json` — a Headers copy, so an
+    // explicitly set content-type wins. Strings and structured bodies
+    // (streams, blobs, forms, buffers) pass through to fetch untouched.
+    if (isJsonBody(rest.body)) {
+      const headers = new Headers(rest.headers);
+      if (!headers.has('content-type')) {
+        headers.set('content-type', 'application/json');
+      }
+      return fetcher(path, { ...rest, headers, body: JSON.stringify(rest.body), method });
+    }
+    // The method group rides every init — a client built from the route
+    // table speaks the table's methods (a stray `method` in init loses).
+    return fetcher(path, { ...rest, method });
   };
 }
 
@@ -187,6 +317,13 @@ function buildPathFn(
  * Creates a typed HTTP client over an app's route table. Routes are
  * compiled once (no per-call route matching); each call fills its pattern
  * with the given params and issues one fetch against `baseUrl + path`.
+ *
+ * Inputs type from the same route log: the pattern fixes the path and
+ * params, and the route's gates tighten `init` — a `jsonBody` gate types
+ * and demands `init.body` (a JSON shape, stringified with a default
+ * `content-type: application/json` unless already set), a `queryParams`
+ * gate replaces the loose `init.query` sugar. Response bodies still type
+ * from the handler's `json()` branding alone.
  *
  * Dynamic-pattern routes (registered via the `pattern: string` overload)
  * type as untyped calls; `ALL` routes are offered under every method.
@@ -215,7 +352,7 @@ export function createClient<
         break;
       }
     }
-    group.set(pattern, { fn: buildPathFn(base, pattern, segments, fetcher), hasParams });
+    group.set(pattern, { fn: buildPathFn(base, pattern, method, segments, fetcher), hasParams });
   };
   for (const route of app.routes) {
     if (route.method === 'ALL') {

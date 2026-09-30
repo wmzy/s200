@@ -231,7 +231,7 @@ describe('node adapter TLS', () => {
     }
   });
 
-  it('rejects the upgrade + https combination at serve time', async () => {
+  it('rejects the upgrade + http2 combination at serve time', async () => {
     const app = createApp();
     let error: unknown;
     try {
@@ -241,6 +241,7 @@ describe('node adapter TLS', () => {
         https: {
           key: await readFile(KEY_PATH),
           cert: await readFile(CERT_PATH),
+          http2: true,
         },
       });
     } catch (caught) {

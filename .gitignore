@@ -18,3 +18,8 @@ node_modules
 # build
 /dist
 /coverage
+
+# docs site build output
+docs-site/.vitepress/dist
+docs-site/.vitepress/cache
+docs-site/.vitepress/meta.doctag*

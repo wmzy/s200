@@ -1,0 +1,13 @@
+{
+  "name": "@s200-example/sse-dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node app.ts",
+    "smoke": "node smoke.ts"
+  },
+  "dependencies": {
+    "s200": "workspace:*"
+  }
+}

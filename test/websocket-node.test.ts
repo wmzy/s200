@@ -1,6 +1,8 @@
 import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
+import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
 
@@ -10,6 +12,8 @@ import { upgradeWebSocket } from '../src/websocket';
 import { createUpgradeHandler } from '../src/websocket-node';
 
 const HOST = '127.0.0.1';
+const CERT_PATH = fileURLToPath(new URL('./fixtures/cert.pem', import.meta.url));
+const KEY_PATH = fileURLToPath(new URL('./fixtures/key.pem', import.meta.url));
 // RFC 6455 §1.3 sample key and its expected accept value.
 const KEY = 'dGhlIHNhbXBsZSBub25jZQ==';
 const ACCEPT = 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=';
@@ -501,5 +505,85 @@ describe('websocket negotiation (subprotocol, deflate, heartbeat)', () => {
     const reply = await read();
     reply.should.deep.equal({ opcode: 0x1, payload: Buffer.from('got-pong'), rsv1: false });
     socket.destroy();
+  });
+});
+
+describe('websocket over TLS (wss, node global WebSocket client)', () => {
+  let server: NodeServer;
+  const priorTlsSetting = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+
+  beforeAll(async () => {
+    // The fixture cert is self-signed and the global WebSocket client has
+    // no rejectUnauthorized knob, so trust it for this file's worker only
+    // (restored in afterAll).
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    const app = createApp();
+    upgradeWebSocket(app, '/echo', (socket) => {
+      socket.onMessage((data) => socket.send(data));
+    });
+    server = await serve(app, {
+      port: 0,
+      https: { key: await readFile(KEY_PATH), cert: await readFile(CERT_PATH) },
+      upgrade: createUpgradeHandler(app),
+    });
+  });
+
+  afterAll(async () => {
+    await server.close();
+    if (priorTlsSetting === undefined) {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    } else {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = priorTlsSetting;
+    }
+  });
+
+  it('echoes text over wss through the TLS + upgrade combination', async () => {
+    server.url.startsWith('https://').should.be.true;
+    const ws = new WebSocket(`wss://${HOST}:${server.port}/echo`);
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener('open', () => resolve(), { once: true });
+      ws.addEventListener('error', () => reject(new Error('wss connection failed')), { once: true });
+    });
+    const echoed = new Promise<string>((resolve) => {
+      ws.addEventListener('message', (event) => resolve(event.data as string), { once: true });
+    });
+    ws.send('secure-echo');
+    (await echoed).should.equal('secure-echo');
+    ws.close(1000, 'done');
+  });
+
+  it('completes a clean close handshake over wss', async () => {
+    const ws = new WebSocket(`wss://${HOST}:${server.port}/echo`);
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener('open', () => resolve(), { once: true });
+      ws.addEventListener('error', () => reject(new Error('wss connection failed')), { once: true });
+    });
+    const closed = new Promise<number>((resolve) => {
+      ws.addEventListener('close', (event) => resolve(event.code), { once: true });
+    });
+    ws.close(1000, 'bye');
+    // The server echoes the close frame, so the client sees its own code.
+    (await closed).should.equal(1000);
+  });
+});
+
+describe('websocket + http2 rejection', () => {
+  it('still rejects upgrade when https.http2 is enabled', async () => {
+    const app = createApp();
+    let error: unknown;
+    try {
+      await serve(app, {
+        port: 0,
+        upgrade: () => undefined,
+        https: {
+          key: await readFile(KEY_PATH),
+          cert: await readFile(CERT_PATH),
+          http2: true,
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    (error as Error | undefined)?.message.should.match(/HTTP\/1\.1-only/);
   });
 });

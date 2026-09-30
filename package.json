@@ -315,6 +315,76 @@
         "types": "./dist/types/trust-proxy.d.ts",
         "default": "./dist/trust-proxy.cjs"
       }
+    },
+    "./otel": {
+      "import": {
+        "types": "./dist/types/otel.d.mts",
+        "default": "./dist/otel.mjs"
+      },
+      "require": {
+        "types": "./dist/types/otel.d.ts",
+        "default": "./dist/otel.cjs"
+      }
+    },
+    "./codegen": {
+      "import": {
+        "types": "./dist/types/codegen.d.mts",
+        "default": "./dist/codegen.mjs"
+      },
+      "require": {
+        "types": "./dist/types/codegen.d.ts",
+        "default": "./dist/codegen.cjs"
+      }
+    },
+    "./test": {
+      "import": {
+        "types": "./dist/types/test.d.mts",
+        "default": "./dist/test.mjs"
+      },
+      "require": {
+        "types": "./dist/types/test.d.ts",
+        "default": "./dist/test.cjs"
+      }
+    },
+    "./multipart": {
+      "import": {
+        "types": "./dist/types/multipart.d.mts",
+        "default": "./dist/multipart.mjs"
+      },
+      "require": {
+        "types": "./dist/types/multipart.d.ts",
+        "default": "./dist/multipart.cjs"
+      }
+    },
+    "./session": {
+      "import": {
+        "types": "./dist/types/session.d.mts",
+        "default": "./dist/session.mjs"
+      },
+      "require": {
+        "types": "./dist/types/session.d.ts",
+        "default": "./dist/session.cjs"
+      }
+    },
+    "./swagger": {
+      "import": {
+        "types": "./dist/types/swagger.d.mts",
+        "default": "./dist/swagger.mjs"
+      },
+      "require": {
+        "types": "./dist/types/swagger.d.ts",
+        "default": "./dist/swagger.cjs"
+      }
+    },
+    "./upload": {
+      "import": {
+        "types": "./dist/types/upload.d.mts",
+        "default": "./dist/upload.mjs"
+      },
+      "require": {
+        "types": "./dist/types/upload.d.ts",
+        "default": "./dist/upload.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -328,6 +398,9 @@
     "build:types": "tsc -p tsconfig.build.json && node scripts/gen-dmts.mjs",
     "dev": "vite",
     "preview": "vite preview",
+    "docs:dev": "vitepress dev docs-site",
+    "docs:build": "vitepress build docs-site",
+    "docs:preview": "vitepress preview docs-site",
     "coverage": "vitest run --coverage --coverage.reporter=lcov",
     "lint": "eslint --fix src test",
     "lint:ci": "eslint src test",
@@ -377,14 +450,14 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "7.5 KB"
+      "limit": "8.1 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
       "path": "src/index.ts",
       "import": "{ createApp, use, get, handle }",
       "gzip": true,
-      "limit": "4 KB"
+      "limit": "4.2 KB"
     },
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
@@ -393,19 +466,19 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "3.5 KB"
+      "limit": "4.1 KB"
     },
     {
       "name": "compress battery (min+gz)",
       "path": "dist/compress.mjs",
       "gzip": true,
-      "limit": "1.5 KB"
+      "limit": "2 KB"
     },
     {
       "name": "streaming battery (min+gz)",
       "path": "dist/streaming.mjs",
       "gzip": true,
-      "limit": "1.4 KB"
+      "limit": "1.8 KB"
     },
     {
       "name": "request-id battery (min+gz)",
@@ -423,14 +496,14 @@
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
-      "limit": "1.6 KB"
+      "limit": "2.3 KB"
     },
     {
       "name": "openapi battery: meta + openapi (min+gz)",
       "path": "src/openapi.ts",
       "import": "{ openapiSpec, openapiJson }",
       "gzip": true,
-      "limit": "1.8 KB"
+      "limit": "2.2 KB"
     }
   ],
   "lint-staged": {
@@ -466,6 +539,7 @@
     "tools-config": "^0.5.0",
     "typescript": "~6.0.3",
     "vite": "^8.2.2",
+    "vitepress": "^1.6.4",
     "vitest": "^5.0.0"
   }
 }

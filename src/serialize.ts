@@ -207,6 +207,131 @@ function objectStmts(schema: ObjectSchema, value: string): string {
     .join(' ');
 }
 
+/** One schema violation: `path` dot-joins the schema-relative location
+ * (object keys and array indices, `'items.2.name'`; the root is `''`) and
+ * `message` names the violated expectation. */
+export type ValidationIssue = {
+  readonly path: string;
+  readonly message: string;
+};
+
+/** `join('items', '2')` → `'items.2'`; the root path stays bare. */
+function joinPath(path: string, key: string): string {
+  return path === '' ? key : `${path}.${key}`;
+}
+
+/** `typeof` with the two JSON-relevant refinements: `null` and arrays
+ * report as their JSON types, not `'object'`. */
+function typeOf(data: unknown): string {
+  if (data === null) return 'null';
+  return Array.isArray(data) ? 'array' : typeof data;
+}
+
+/** Primitive predicate — exactly the values the serializer can emit
+ * round-trip-cleanly: `integer` demands integrality and finiteness,
+ * `number` demands finiteness (the values `JSON.stringify` would map to
+ * `null`, breaking the declared shape). */
+function primitiveOk(type: PrimitiveType, data: unknown): boolean {
+  switch (type) {
+    case 'string':
+      return typeof data === 'string';
+    case 'boolean':
+      return typeof data === 'boolean';
+    case 'integer':
+      return (
+        typeof data === 'number' &&
+        Number.isInteger(data) &&
+        Number.isFinite(data)
+      );
+    case 'number':
+      return typeof data === 'number' && Number.isFinite(data);
+    case 'null':
+      return data === null;
+  }
+}
+
+/** Recursive checker behind {@link compileValidator}: reports into
+ * `issues` and returns — one issue per violated node, in schema traversal
+ * order. Never throws: it reads, it does not parse. */
+function checkValue(
+  schema: SerializeSchema,
+  data: unknown,
+  path: string,
+  issues: ValidationIssue[]
+): void {
+  switch (schema.type) {
+    case 'object': {
+      if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+        issues.push({ path, message: `expected object, got ${typeOf(data)}` });
+        return;
+      }
+      const record = data as Record<string, unknown>;
+      for (const key of schema.required ?? []) {
+        // `undefined` counts as missing — the serializer's own "absent"
+        // reading of an optional key, applied to a required one.
+        if (record[key] === undefined) {
+          issues.push({ path: joinPath(path, key), message: 'required' });
+        }
+      }
+      for (const [key, sub] of Object.entries(schema.properties)) {
+        const value = record[key];
+        // Undeclared keys are none of the validator's business — the same
+        // drop-undeclared contract `serialize` applies on output.
+        if (value === undefined) continue;
+        checkValue(sub, value, joinPath(path, key), issues);
+      }
+      return;
+    }
+    case 'array': {
+      if (!Array.isArray(data)) {
+        issues.push({ path, message: `expected array, got ${typeOf(data)}` });
+        return;
+      }
+      for (let i = 0; i < data.length; i++) {
+        checkValue(schema.items, data[i], joinPath(path, String(i)), issues);
+      }
+      return;
+    }
+    default: {
+      // Nullable first: `null` satisfies the widened primitive before any
+      // type check runs.
+      if (schema.nullable === true && data === null) return;
+      if (!primitiveOk(schema.type, data)) {
+        issues.push({
+          path,
+          message: `expected ${schema.type}, got ${typeOf(data)}`,
+        });
+      }
+    }
+  }
+}
+
+/**
+ * The read-side twin of {@link serialize}: compiles the same schema DSL
+ * into a validator instead of a serializer. Coverage mirrors the
+ * serializer's subset one-for-one — `type`, `properties`/`required`,
+ * `items`, `nullable` — with no new schema capability:
+ *
+ * - type mismatches report at the offending node;
+ * - `nullable: true` admits `null` before the type check;
+ * - a missing (or `undefined`) `required` key reports at its own path;
+ * - objects and arrays recurse; extra keys the schema does not declare
+ *   are ignored, the exact shape contract `serialize` enforces on output.
+ *
+ * The returned function collects every violation as a
+ * {@link ValidationIssue} — an empty list means conforming — and never
+ * throws or rewrites: callers decide what an issue means.
+ */
+export function compileValidator(
+  schema: SerializeSchema
+): (data: unknown) => readonly ValidationIssue[] {
+  return (data) => {
+    const issues: ValidationIssue[] = [];
+    checkValue(schema, data, '', issues);
+    return issues;
+  };
+}
+
 /**
  * Writes an already-serialized JSON string as the response body: sets
  * `content-type: application/json` (init headers win), advertises the

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>s200 SSE dashboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+    #status { padding: .5rem 1rem; border-radius: .5rem; background: #eee; }
+    #status.up { background: #d4ffd4; }
+    #events { list-style: none; padding: 0; }
+    #events li { padding: .25rem .5rem; border-bottom: 1px solid #eee; }
+  </style>
+</head>
+<body>
+  <h1>Ticker dashboard</h1>
+  <p id="status">connecting…</p>
+  <ul id="events"></ul>
+  <script>
+    const status = document.getElementById('status');
+    const list = document.getElementById('events');
+    const add = (text) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      list.appendChild(li);
+    };
+    // Plain fetch first: the dashboard shows service health.
+    fetch('/health')
+      .then((res) => res.json())
+      .then(() => { status.textContent = 'service up — streaming'; status.classList.add('up'); })
+      .catch(() => { status.textContent = 'health check failed'; });
+    // The live feed: Server-Sent Events from s200's streamSSE.
+    const source = new EventSource('/events');
+    source.addEventListener('tick', (event) => add(`tick ${JSON.parse(event.data).n}`));
+    source.addEventListener('done', () => add('done — stream closed'));
+    source.onerror = () => add('stream ended');
+  </script>
+</body>
+</html>

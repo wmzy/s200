@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>s200 ws chat</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+    #log { list-style: none; padding: 0; height: 16rem; overflow-y: auto;
+           border: 1px solid #ccc; border-radius: .5rem; }
+    #log li { padding: .25rem .5rem; }
+    #log li.system { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>Room chat</h1>
+  <p>
+    <label>room <input id="room" value="lobby" /></label>
+    <label>name <input id="name" value="ada" /></label>
+    <button id="join">join</button>
+  </p>
+  <ul id="log"></ul>
+  <form id="say"><input id="text" placeholder="message" autocomplete="off" /><button>send</button></form>
+  <script>
+    const log = document.getElementById('log');
+    let socket = null;
+    const add = (text, system) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      if (system) li.className = 'system';
+      log.appendChild(li);
+      log.scrollTop = log.scrollHeight;
+    };
+    document.getElementById('join').onclick = () => {
+      if (socket) socket.close();
+      const room = document.getElementById('room').value;
+      const name = document.getElementById('name').value;
+      socket = new WebSocket(`/chat/${encodeURIComponent(room)}?name=${encodeURIComponent(name)}`);
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        add(message.type === 'system' ? `* ${message.text} (${message.members})` : `${message.from}: ${message.text}`, message.type === 'system');
+      };
+      socket.onclose = () => add('* disconnected', true);
+    };
+    document.getElementById('say').onsubmit = (event) => {
+      event.preventDefault();
+      const input = document.getElementById('text');
+      if (socket && socket.readyState === 1 && input.value) {
+        socket.send(input.value);
+        input.value = '';
+      }
+    };
+  </script>
+</body>
+</html>

@@ -10,6 +10,7 @@
 
 import type { Ctx, Middleware } from './types';
 
+import { LightResponse } from './light';
 import { newResponse } from './respond';
 
 export type CompressOptions = {
@@ -84,6 +85,49 @@ function withVary(headers: Headers, value: string): void {
   }
 }
 
+/** Collects a stream into one buffer — a single chunk (the common small
+ * response) is returned without a copy. */
+async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.byteLength;
+  }
+  const single = chunks.length === 1 ? chunks[0] : undefined;
+  if (single !== undefined) return single;
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+/** One-shot compression of buffered bytes through the platform
+ * `CompressionStream` — the light write path wants bytes, not a stream,
+ * so the rebuilt response stays byte-backed and the node adapter can
+ * write it straight to the socket. The reader parks before the write, so
+ * there is no backpressure interplay for the single buffered chunk. */
+async function deflateBytes(
+  encoding: 'gzip' | 'deflate',
+  bytes: Uint8Array
+): Promise<Uint8Array> {
+  const through = new CompressionStream(encoding);
+  const writer = through.writable.getWriter();
+  const collected = readAll(through.readable);
+  // ArrayBuffer-backed by construction (bytesSync / arrayBuffer paths) —
+  // the bare `Uint8Array` alias carries ArrayBufferLike, which TS 6's
+  // BufferSource no longer accepts.
+  await writer.write(bytes as Uint8Array<ArrayBuffer>);
+  await writer.close();
+  return collected;
+}
+
 /**
  * Compression middleware (app-level, after the logger/cors slot in `use`
  * order — it rewrites the response on the unwind). Streams the body through
@@ -119,9 +163,21 @@ export function compress(options: CompressOptions = {}): Middleware {
     headers.set('content-encoding', encoding);
     headers.delete('content-length');
     withVary(headers, 'accept-encoding');
-    if (encoding === 'br') {
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      const compressed = await brotli!(bytes);
+    // Light fast path: a byte-backed light body compresses to bytes in one
+    // shot, so the rebuilt response stays byte-backed and the adapter
+    // writes it straight to the socket — no reader loop, no stream-wrapped
+    // source. Brotli always buffers (whole bytes); streamed light bodies
+    // and platform responses take the pipeThrough path below unchanged.
+    const fastBytes = res instanceof LightResponse ? res.bytesSync() : null;
+    const buffered =
+      encoding === 'br' || fastBytes !== null
+        ? (fastBytes ?? new Uint8Array(await res.arrayBuffer()))
+        : null;
+    if (buffered !== null) {
+      const compressed =
+        encoding === 'br'
+          ? await brotli!(buffered)
+          : await deflateBytes(encoding, buffered);
       ctx.res = newResponse(ctx, compressed, {
         status: res.status,
         statusText: res.statusText,
@@ -129,7 +185,12 @@ export function compress(options: CompressOptions = {}): Middleware {
       });
       return;
     }
-    const compressed = res.body.pipeThrough(new CompressionStream(encoding));
+    // Streamed path: `buffered === null` implies encoding is not 'br' (br
+    // requires byte-backed bodies above), but the narrowing is data-flow,
+    // not type-flow — assert the two stream formats.
+    const compressed = res.body.pipeThrough(
+      new CompressionStream(encoding as 'gzip' | 'deflate')
+    );
     ctx.res = newResponse(ctx, compressed, {
       status: res.status,
       statusText: res.statusText,
