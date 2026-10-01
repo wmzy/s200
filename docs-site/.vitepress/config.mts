@@ -28,6 +28,7 @@ export default defineConfig({
           { text: 'Batteries', link: '/guides/batteries' },
           { text: 'Battery Authoring', link: '/guides/battery-authoring' },
           { text: 'Distributed Stores', link: '/guides/distributed-stores' },
+          { text: 'Sharding & Scheduling', link: '/guides/sharding' },
         ],
       },
       {

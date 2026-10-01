@@ -455,6 +455,56 @@
         "types": "./dist/types/version.d.ts",
         "default": "./dist/version.cjs"
       }
+    },
+    "./shard": {
+      "import": {
+        "types": "./dist/types/shard.d.mts",
+        "default": "./dist/shard.mjs"
+      },
+      "require": {
+        "types": "./dist/types/shard.d.ts",
+        "default": "./dist/shard.cjs"
+      }
+    },
+    "./gateway": {
+      "import": {
+        "types": "./dist/types/gateway.d.mts",
+        "default": "./dist/gateway.mjs"
+      },
+      "require": {
+        "types": "./dist/types/gateway.d.ts",
+        "default": "./dist/gateway.cjs"
+      }
+    },
+    "./shard-dev": {
+      "import": {
+        "types": "./dist/types/shard-dev.d.mts",
+        "default": "./dist/shard-dev.mjs"
+      },
+      "require": {
+        "types": "./dist/types/shard-dev.d.ts",
+        "default": "./dist/shard-dev.cjs"
+      }
+    },
+    "./executor": {
+      "import": {
+        "types": "./dist/types/executor.d.mts",
+        "default": "./dist/executor.mjs"
+      },
+      "require": {
+        "types": "./dist/types/executor.d.ts",
+        "default": "./dist/executor.cjs"
+      }
+    },
+    "./unit-metrics": {
+      "import": {
+        "types": "./dist/types/unit-metrics.d.mts",
+        "default": "./dist/unit-metrics.mjs"
+      },
+      "require": {
+        "types": "./dist/types/unit-metrics.d.ts",
+        "default": "./dist/unit-metrics.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -623,6 +673,42 @@
       "path": "dist/version.mjs",
       "gzip": true,
       "limit": "1 KB"
+    },
+    {
+      "name": "shard battery (min+gz)",
+      "path": "dist/shard.mjs",
+      "gzip": true,
+      "limit": "1.6 KB"
+    },
+    {
+      "name": "gateway battery (min+gz)",
+      "path": "dist/gateway.mjs",
+      "gzip": true,
+      "limit": "1.6 KB"
+    },
+    {
+      "name": "shard-dev battery (min+gz)",
+      "path": "dist/shard-dev.mjs",
+      "gzip": true,
+      "limit": "2.8 KB"
+    },
+    {
+      "name": "executor battery (min+gz)",
+      "path": "dist/executor.mjs",
+      "ignore": [
+        "node:*"
+      ],
+      "gzip": true,
+      "limit": "8.2 KB"
+    },
+    {
+      "name": "unit-metrics battery (min+gz)",
+      "path": "dist/unit-metrics.mjs",
+      "ignore": [
+        "node:*"
+      ],
+      "gzip": true,
+      "limit": "2.2 KB"
     }
   ],
   "lint-staged": {

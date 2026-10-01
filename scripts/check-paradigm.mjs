@@ -62,6 +62,10 @@ const PLATFORM_CTORS = new Set([
   // Language builtin used by src/serialize.ts for startup-time codegen —
   // a schema compiled once is a platform constructor, not an OOP pattern.
   'Function',
+  // node:worker_threads builtin (src/executor.ts): the thread executor
+  // spawns isolation units with it — a platform facility, same class as
+  // Request/Response above, not an OOP pattern in our data surface.
+  'Worker',
   // Light-mode platform stand-ins (src/light.ts): class mimics of the
   // platform Request/Response, constructed exactly where the platform
   // constructors would be — the opt-in fast path, not an OOP pattern.
