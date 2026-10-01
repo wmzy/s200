@@ -699,7 +699,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "8.2 KB"
+      "limit": "8.3 KB"
     },
     {
       "name": "unit-metrics battery (min+gz)",

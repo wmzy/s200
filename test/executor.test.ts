@@ -132,14 +132,17 @@ describe('executor: thread shards', () => {
       spawnCount(marker).should.equal(0);
 
       // First request: TCP connect queues the paused socket, spawns the
-      // worker, transfers server + socket, and the response still arrives.
+      // worker, and the response still arrives — via server+socket
+      // transfer (node ≥ 26) or a byte relay to the worker's private
+      // port (older runtimes, same lazy contract).
       const first = await fetch('http://127.0.0.1:' + port + '/heavy/ping');
       first.status.should.equal(200);
       (await first.json()).should.deep.equal({ pong: true });
       spawnCount(marker).should.equal(1);
       await until(() => supervisor.units()[0]!.state === 'ready', 5000, 'unit becomes ready');
 
-      // Subsequent requests go straight to the worker's adopted listener.
+      // Subsequent requests reuse the keep-alive connection the worker
+      // now owns (transferred or relayed — never re-parsed by us).
       const echo = await fetch('http://127.0.0.1:' + port + '/heavy/echo', {
         method: 'POST',
         body: 'hello shard',
@@ -179,7 +182,7 @@ describe('executor: thread shards', () => {
       crashed.should.equal(true);
       await until(() => supervisor.units()[0]!.restarts === 1, 8000, 'restart counted');
 
-      // Backoff (100ms first) elapses, the port is re-bound, the next
+      // Backoff (100ms first) elapses, the port keeps answering, the next
       // request spawns a fresh worker and gets served.
       const recovered = await fetchOk(ping, 8000);
       (await recovered.json()).should.deep.equal({ pong: true });

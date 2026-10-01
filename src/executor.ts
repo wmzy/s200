@@ -11,8 +11,12 @@
  *   with a paused listener, spawns a worker thread only when the FIRST
  *   connection arrives, then hands the listening server (and the paused
  *   sockets) over to the worker via Node's worker-thread postMessage
- *   transfer. Idle shards cost zero threads; a shard's HTTP traffic never
- *   bounces through the supervisor thread.
+ *   transfer (node ≥ 26). On older runtimes — which cannot transfer
+ *   handles at all — the supervisor pipes accepted sockets byte-for-byte
+ *   to the worker's private port instead: same lazy spawn, same first
+ *   request served, never a refused or reset connection. Idle shards cost
+ *   zero threads in both modes; only the ≥ 26 path keeps a shard's HTTP
+ *   traffic entirely off the supervisor thread.
  * - `process` — forks this very module as a shim child; the child detects
  *   the `S200_*` sentinel env vars, imports the user entry, and serves its
  *   own port. Process isolation for shards that must not share a V8 heap.
@@ -47,7 +51,7 @@ import type { MessagePort } from 'node:worker_threads';
 
 import { fork } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
+import { createServer as createNetServer, connect as connectSocket } from 'node:net';
 import process from 'node:process';
 import { Readable } from 'node:stream';
 import { once } from 'node:events';
@@ -145,21 +149,34 @@ function nextBackoff(current: number): number {
   return current === 0 ? RESTART_BACKOFF_BASE_MS : Math.min(current * 2, RESTART_BACKOFF_MAX_MS);
 }
 
-// Messages child realms send up: readiness handshake, serving confirmation,
-// drain completion, and fatal boot errors (import failure and friends).
+// Messages child realms send up: readiness handshake (carrying the private
+// port the worker is reachable on), drain completion, and fatal boot
+// errors (import failure and friends).
 type WorkerOut =
-  | { readonly type: 'ready' }
-  | { readonly type: 'serving' }
+  | { readonly type: 'ready'; readonly port?: number }
   | { readonly type: 'stopped' }
   | { readonly type: 'error'; readonly message: string };
 
-// Messages the thread supervisor sends down. `serve` is the lazy hand-off:
-// the pre-bound listening server plus every paused socket, transferred.
+// Messages the thread supervisor sends down. `serve` is the ≥ 26 lazy
+// hand-off: the pre-bound listening server plus every paused socket,
+// transferred in one shot. Runtimes without handle transfer never see it —
+// their connections are relayed to the worker's private port instead.
 type WorkerIn =
   | { readonly type: 'serve'; readonly server: NetServer; readonly sockets: readonly Socket[] }
   | { readonly type: 'drain' };
 
-/** Worker-thread launch data: which entry, which serving mode, which port. */
+// Resolved by the first thread hand-off and memoized process-wide: worker
+// thread handle transfer (net.Server/net.Socket in postMessage's transfer
+// list) only exists from node 26 (nodejs/node#64225) — older runtimes,
+// node 20/22/24 included, throw DataCloneError and take the relay path.
+let handleTransferWorks: boolean | undefined;
+
+/**
+ * Worker-thread launch data. `lazy`: bind a private ephemeral port and
+ * report it with `ready` — the supervisor then either transfers the public
+ * listener over (`serve`) or relays connections to the private port.
+ * `eager`: serve `port` (ephemeral when omitted) directly.
+ */
 export type WorkerLaunch = {
   readonly mode?: 'lazy' | 'eager';
   readonly port?: number;
@@ -351,12 +368,12 @@ function drainServer(server: HttpServer, done: () => void): void {
 
 /**
  * Thread-shard runtime (called from the embedded bootstrap with this
- * module re-imported inside the worker). Lazy mode: announce readiness
- * WITHOUT listening, then adopt the supervisor-transferred listening
- * server — new connections arrive directly in this worker; the paused
- * sockets handed over with it are replayed into the http parser, exactly
- * how cluster hands adopted sockets to a child. Eager mode (the
- * non-transfer fallback): listen on `port` ourselves.
+ * module re-imported inside the worker). Both modes bind a port up front
+ * and report it with `ready`: lazy mode takes a PRIVATE ephemeral port so
+ * the supervisor can either hand the public listener over (`serve`, node
+ * ≥ 26: new connections then arrive directly in this worker, exactly how
+ * cluster hands adopted sockets to a child) or relay connections to the
+ * private port (older runtimes); eager mode serves `port` itself.
  */
 export async function startShardWorker(
   app: App,
@@ -383,11 +400,10 @@ export async function startShardWorker(
       setImmediate(() => process.exit(0));
     });
   };
-  if (data.mode === 'eager') {
-    httpServer.listen(data.port ?? 0, '127.0.0.1', () => post({ type: 'ready' }));
-  } else {
-    post({ type: 'ready' });
-  }
+  httpServer.listen(data.mode === 'eager' ? (data.port ?? 0) : 0, '127.0.0.1', () => {
+    const address = httpServer.address();
+    post({ type: 'ready', port: typeof address === 'object' ? address?.port : undefined });
+  });
   parentPort.on('message', (raw: unknown) => {
     const message = raw as WorkerIn;
     if (message.type === 'serve') {
@@ -398,11 +414,14 @@ export async function startShardWorker(
         httpServer.emit('connection', socket);
         socket.resume();
       });
+      // The public listener supersedes the private one — stop accepting
+      // on it; established private connections (relay mode races aside,
+      // there are none in transfer mode) keep flowing.
+      httpServer.close(() => undefined);
       for (const socket of message.sockets) {
         httpServer.emit('connection', socket);
         socket.resume();
       }
-      post({ type: 'serving' });
     } else if (message.type === 'drain') {
       drain();
     }
@@ -476,11 +495,12 @@ type Unit = {
   backoffMs: number;
   restartTimer?: ReturnType<typeof setTimeout>;
   // thread units
-  mode?: 'lazy' | 'eager';
+  mode?: 'lazy' | 'relay';
   server?: NetServer;
   pending: Socket[];
   worker?: Worker;
-  ignoreExit: boolean;
+  /** The live worker's private port (relay mode only). */
+  relayPort?: number;
   // process units
   child?: ChildProcess;
 };
@@ -526,6 +546,10 @@ const bindThreadListener = (unit: Unit): Promise<void> =>
       // Paused on arrival: bytes stay in the kernel until the worker that
       // adopts this socket resumes it — the supervisor never parses HTTP.
       socket.pause();
+      if (unit.mode === 'relay' && unit.relayPort !== undefined && unit.worker !== undefined) {
+        relayToWorker(unit, socket);
+        return;
+      }
       unit.pending.push(socket);
       ensureThreadWorker(unit);
     });
@@ -553,6 +577,12 @@ const ensureThreadWorker = (unit: Unit): void => {
 
 const spawnThreadWorker = (unit: Unit): void => {
   unit.state = 'spawning';
+  // Units spawned after the first hand-off resolved the capability probe:
+  // without handle transfer the worker serves a private port we relay to.
+  const relay = handleTransferWorks === false;
+  if (relay) {
+    unit.mode = 'relay';
+  }
   const limits = resourceLimitsOf(unit.spec.policy.memoryMb);
   const worker = new Worker(WORKER_BOOTSTRAP, {
     eval: true,
@@ -562,8 +592,8 @@ const spawnThreadWorker = (unit: Unit): void => {
     workerData: {
       self: SELF_URL,
       entry: entryOf(unit),
-      mode: unit.mode ?? 'lazy',
-      port: unit.port,
+      mode: relay ? 'eager' : 'lazy',
+      port: relay ? undefined : unit.port,
     },
   });
   unit.worker = worker;
@@ -574,6 +604,29 @@ const spawnThreadWorker = (unit: Unit): void => {
   worker.on('exit', (code: number) => onWorkerExit(unit, code));
 };
 
+/**
+ * The node < 26 delivery path: a dumb byte pipe from an accepted public
+ * socket to the worker's private port. The supervisor still never parses
+ * HTTP — it moves bytes and propagates errors, nothing else.
+ */
+function relayToWorker(unit: Unit, socket: Socket): void {
+  const port = unit.relayPort;
+  if (port === undefined) {
+    socket.destroy();
+    return;
+  }
+  socket.resume();
+  const conn = connectSocket(port, '127.0.0.1');
+  socket.pipe(conn);
+  conn.pipe(socket);
+  const kill = (): void => {
+    socket.destroy();
+    conn.destroy();
+  };
+  socket.on('error', kill);
+  conn.on('error', kill);
+}
+
 const onWorkerMessage = (unit: Unit, worker: Worker, message: WorkerOut): void => {
   if (message.type === 'error') {
     unit.lastError = message.message;
@@ -582,13 +635,15 @@ const onWorkerMessage = (unit: Unit, worker: Worker, message: WorkerOut): void =
   if (message.type === 'stopped') {
     return; // the exit event settles stop()
   }
-  if (message.type === 'serving') {
+  // 'ready': the worker is serving the port it named. Relay-mode units
+  // (and every unit once the capability probe said no) point relays at it;
+  // a first transfer-capable worker instead gets the public listener.
+  if (unit.mode === 'relay' || handleTransferWorks === false) {
+    unit.relayPort = message.port;
     markReady(unit);
-    return;
-  }
-  // 'ready': lazy units get the pre-bound listener handed over now.
-  if (unit.mode === 'eager') {
-    markReady(unit);
+    for (const socket of unit.pending.splice(0)) {
+      relayToWorker(unit, socket);
+    }
     return;
   }
   const server = unit.server;
@@ -599,40 +654,27 @@ const onWorkerMessage = (unit: Unit, worker: Worker, message: WorkerOut): void =
   try {
     worker.postMessage({ type: 'serve', server, sockets }, [server, ...sockets]);
     unit.server = undefined; // listening ownership moved into the worker
+    handleTransferWorks = true;
+    markReady(unit);
   } catch {
-    // Server/socket transfer is unavailable on this runtime (old node or
-    // platform): degrade honestly to the eager worker serving its own
-    // port. Connections parked on the pre-bound socket cannot follow —
-    // destroy them so the listener can close; their clients see
-    // ECONNRESET and retry against the eager worker (documented cost,
-    // never a supervisor proxy).
+    // Handle transfer is unavailable on this runtime (node < 26): the
+    // worker that just reported ready keeps serving its private port and
+    // every accepted socket — the parked ones included — is relayed to it.
+    // Same worker, same lazy spawn: the first request still gets served.
+    handleTransferWorks = false;
+    unit.mode = 'relay';
+    unit.relayPort = message.port;
+    markReady(unit);
     for (const socket of sockets) {
-      socket.destroy();
+      relayToWorker(unit, socket);
     }
-    void fallbackToEager(unit, worker, server);
   }
-};
-
-const fallbackToEager = async (unit: Unit, worker: Worker, server: NetServer): Promise<void> => {
-  unit.mode = 'eager';
-  unit.worker = undefined;
-  unit.ignoreExit = true; // the terminated worker's exit is expected
-  await worker.terminate();
-  await closeServer(server);
-  unit.server = undefined;
-  if (unit.stopping) {
-    return;
-  }
-  spawnThreadWorker(unit);
 };
 
 const onWorkerExit = (unit: Unit, code: number): void => {
   unit.worker = undefined;
+  unit.relayPort = undefined;
   if (unit.stopping) {
-    return;
-  }
-  if (unit.ignoreExit) {
-    unit.ignoreExit = false;
     return;
   }
   unit.restarts += 1;
@@ -641,13 +683,14 @@ const onWorkerExit = (unit: Unit, code: number): void => {
   unit.backoffMs = nextBackoff(unit.backoffMs);
   // Sockets still parked here were never adopted (the worker died before
   // or without a hand-off) — destroy them so their clients fail fast
-  // instead of hanging on a socket nobody will ever read.
+  // instead of hanging on a socket nobody will ever read. Relayed sockets
+  // die with the worker's exit on their own.
   for (const socket of unit.pending.splice(0)) {
     socket.destroy();
   }
-  if (unit.mode !== 'eager' && unit.server === undefined) {
-    // The dead worker owned the port; re-bind immediately so the port
-    // answers during the backoff window, then transfer on respawn.
+  if (unit.server === undefined) {
+    // The dead worker owned the public port (transfer mode); re-bind it
+    // immediately so the port answers during the backoff window.
     void bindThreadListener(unit);
   }
   scheduleRestart(unit);
@@ -661,10 +704,6 @@ const scheduleRestart = (unit: Unit): void => {
     }
     if (unit.executor.kind === 'process') {
       spawnProcessUnit(unit);
-      return;
-    }
-    if (unit.mode === 'eager') {
-      spawnThreadWorker(unit);
       return;
     }
     if (unit.server === undefined) {
@@ -825,7 +864,6 @@ export function runShards(plans: readonly ShardPlan[]): Supervisor {
       stopping: false,
       backoffMs: 0,
       pending: [],
-      ignoreExit: false,
     };
   });
   return {
