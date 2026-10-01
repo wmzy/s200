@@ -281,6 +281,84 @@ try {
   } finally {
     await batServer.close();
   }
+
+  // ── operations batteries (lifecycle/health/config/schedule/events/version) ──
+
+  const { health, readiness, createGate } = await import('../dist/health.mjs');
+  const { parseEnv, createConfig } = await import('../dist/config.mjs');
+  const { createBus } = await import('../dist/events.mjs');
+  const { apiVersion } = await import('../dist/version.mjs');
+  const { lifecycle } = await import('../dist/lifecycle.mjs');
+
+  const gate = createGate();
+  const opsApp = core.createApp();
+  core.get(opsApp, '/live', health());
+  core.get(opsApp, '/ready', readiness({ gate: gate.check }));
+  const live = await core.handle(opsApp, new Request('http://x/live'));
+  check('health liveness', live.status === 200 && (await live.json()).status === 'ok', 'liveness failed');
+  const readyOk = await core.handle(opsApp, new Request('http://x/ready'));
+  check('readiness ok', readyOk.status === 200, 'ready failed');
+  gate.close('draining');
+  const readyFail = await core.handle(opsApp, new Request('http://x/ready'));
+  const readyBody = await readyFail.json();
+  check('readiness gated 503', readyFail.status === 503 && readyBody.checks.gate === 'draining', 'gate failed');
+
+  const env = parseEnv('# comment\nPORT=8080\nexport NAME="smoke"\n');
+  const cfg = createConfig(
+    {
+      '~standard': {
+        version: 1,
+        validate: (v) =>
+          v.PORT === '8080' ? { value: v } : { issues: [{ path: [], message: 'PORT must be 8080' }] },
+      },
+    },
+    env
+  );
+  check('config parse+validate', env.PORT === '8080' && env.NAME === 'smoke' && cfg.valid.PORT === '8080', 'config failed');
+
+  let ticks = 0;
+  const { createScheduler } = await import('../dist/schedule.mjs');
+  const scheduler = createScheduler();
+  scheduler.interval(5, () => {
+    ticks += 1;
+  });
+  scheduler.start();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await scheduler.stop();
+  check('schedule interval fires', ticks >= 3, `ticks=${ticks}`);
+
+  const bus = createBus({ ping: [] });
+  const heard = [];
+  const busErrors = [];
+  bus.on('ping', () => heard.push('sync'));
+  bus.on('ping', async () => {
+    heard.push('async');
+    throw Error('boom');
+  });
+  bus.onError((err) => busErrors.push(err.message));
+  await bus.emitAsync('ping');
+  check('events emitAsync + onError', heard.join(',') === 'sync,async' && busErrors.join(',') === 'boom', 'events failed');
+
+  const verApp = core.createApp();
+  core.use(verApp, apiVersion({ versions: ['1', '2'], default: '1' }));
+  core.get(verApp, '/v', (ctx) => core.json(ctx, { version: ctx.state.version }));
+  const v2 = await core.handle(verApp, new Request('http://x/v', { headers: { 'x-api-version': '2' } }));
+  const v2Body = await v2.json();
+  const v9 = await core.handle(verApp, new Request('http://x/v', { headers: { 'x-api-version': '9' } }));
+  const vary = v2.headers.get('vary');
+  check('version resolve+stamp', v2.status === 200 && v2Body.version === '2', 'version stamp failed');
+  check('version unsupported 404', v9.status === 404, 'version 404 failed');
+  check('version Vary', vary === 'x-api-version', `vary=${vary}`);
+
+  let shutdown = false;
+  const lc = lifecycle(
+    { close: async () => undefined },
+    { signals: [], readiness: gate, onShutdown: async () => {
+      shutdown = true;
+    } }
+  );
+  await lc.stop();
+  check('lifecycle stop runs onShutdown', shutdown === true, 'lifecycle failed');
 } finally {
   await server.close();
 }

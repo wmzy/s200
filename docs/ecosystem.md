@@ -9,8 +9,11 @@ joins the list.
 ## Official
 
 Everything below ships in the `s200` package itself: one source file per
-entry, zero runtime dependencies, imported as `import { … } from
-'s200/<entry>'` — pulling one entry never pulls another. Sizes in the README
+entry, imported as `import { … } from
+'s200/<entry>'` — pulling one entry never pulls another. All entries are
+zero-runtime-dependency except `s200/events`, which builds on
+[`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
+(its only dependency — the core stays dependency-free). Sizes in the README
 [Batteries](https://github.com/wmzy/s200#batteries) section are tracked per
 release.
 
@@ -28,6 +31,7 @@ release.
 | `s200/cache`          | `cache` — response caching with freshness validators          |
 | `s200/rate-limit`     | `rateLimit` — sliding-window limiter with an injectable store |
 | `s200/trust-proxy`    | `trustProxy` — honest client IPs behind a proxy               |
+| `s200/version`        | `apiVersion` — header/Accept API versioning gate, `ctx.state.version` |
 
 ### Auth & sessions
 
@@ -72,6 +76,20 @@ release.
 | `s200/test`       | `request`, `testClient`, `probeApp` — in-process app driving   |
 | `s200/otel`       | `trace` — OTel spans per request                               |
 | `s200/dev`        | `createHotApp`, `importFresh`, `watchAndReload` — hot table    |
+
+### Operations
+
+The application-lifecycle layer — NestJS's `enableShutdownHooks`,
+`Terminus`, `@nestjs/config`, `@nestjs/schedule`, and `EventEmitter`
+support, in data + functions form:
+
+| Entry             | Gives you                                                        |
+| ----------------- | ---------------------------------------------------------------- |
+| `s200/lifecycle`  | `lifecycle` — signal-driven graceful shutdown: flip readiness, stop listening, drain in-flight, run cleanup |
+| `s200/health`     | `health`, `readiness`, `createGate` — liveness/readiness probes over injectable checks |
+| `s200/config`     | `parseEnv`, `createConfig` — Standard-Schema-typed, fail-fast config |
+| `s200/schedule`   | `createScheduler`, `nextRun` — cron (5-field) and interval jobs, injectable clock |
+| `s200/events`     | `createBus` — typed event bus over `@for-fun/event-emitter` (sync emit, `emitAsync`) |
 
 ### Runtime adapters
 

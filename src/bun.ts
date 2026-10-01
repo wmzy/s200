@@ -44,7 +44,23 @@ type BunWebSocketHandlers = {
   drain?(ws: unknown): void;
 };
 
-export type BunServer = { url: string; port: number; close(): Promise<void> };
+/**
+ * The subset of Bun's served-server handle s200 types: `stop(false)` waits
+ * for in-flight requests, `stop()` (or `stop(true)`) force-closes. Exposed
+ * so `s200/lifecycle`'s duck-typed graceful drain can reach the runtime
+ * path — the adapter's own `close()` is the immediate stop.
+ */
+export type BunServedServer = {
+  readonly stop: (closeActiveConnections?: boolean) => void;
+};
+
+export type BunServer = {
+  url: string;
+  port: number;
+  close(): Promise<void>;
+  /** The raw `Bun.serve` handle — the graceful-stop surface. */
+  server: BunServedServer;
+};
 
 export type BunServeOptions = {
   port?: number;
@@ -80,6 +96,7 @@ export function serve(app: App, options: BunServeOptions = {}): BunServer {
   return {
     url: `http://localhost:${server.port}`,
     port: server.port,
+    server,
     close: async (): Promise<void> => {
       // stop(true) also drops in-flight connections, so close resolves now
       // instead of after every open response finishes.

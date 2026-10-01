@@ -1,7 +1,7 @@
 {
   "name": "s200",
   "version": "0.0.0-development",
-  "description": "Data + functions server framework on the Web Standard: koa-style onion middleware, hono-style multi-runtime portability, replaceable modules, fully tree-shakable. Zero dependencies.",
+  "description": "Data + functions server framework on the Web Standard: koa-style onion middleware, hono-style multi-runtime portability, replaceable modules, fully tree-shakable. Zero dependencies at the core (s200/events adds @for-fun/event-emitter).",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "dist/types/index.d.ts",
@@ -395,6 +395,66 @@
         "types": "./dist/types/dev.d.ts",
         "default": "./dist/dev.cjs"
       }
+    },
+    "./lifecycle": {
+      "import": {
+        "types": "./dist/types/lifecycle.d.mts",
+        "default": "./dist/lifecycle.mjs"
+      },
+      "require": {
+        "types": "./dist/types/lifecycle.d.ts",
+        "default": "./dist/lifecycle.cjs"
+      }
+    },
+    "./health": {
+      "import": {
+        "types": "./dist/types/health.d.mts",
+        "default": "./dist/health.mjs"
+      },
+      "require": {
+        "types": "./dist/types/health.d.ts",
+        "default": "./dist/health.cjs"
+      }
+    },
+    "./config": {
+      "import": {
+        "types": "./dist/types/config.d.mts",
+        "default": "./dist/config.mjs"
+      },
+      "require": {
+        "types": "./dist/types/config.d.ts",
+        "default": "./dist/config.cjs"
+      }
+    },
+    "./schedule": {
+      "import": {
+        "types": "./dist/types/schedule.d.mts",
+        "default": "./dist/schedule.mjs"
+      },
+      "require": {
+        "types": "./dist/types/schedule.d.ts",
+        "default": "./dist/schedule.cjs"
+      }
+    },
+    "./events": {
+      "import": {
+        "types": "./dist/types/events.d.mts",
+        "default": "./dist/events.mjs"
+      },
+      "require": {
+        "types": "./dist/types/events.d.ts",
+        "default": "./dist/events.cjs"
+      }
+    },
+    "./version": {
+      "import": {
+        "types": "./dist/types/version.d.mts",
+        "default": "./dist/version.mjs"
+      },
+      "require": {
+        "types": "./dist/types/version.d.ts",
+        "default": "./dist/version.cjs"
+      }
     }
   },
   "sideEffects": false,
@@ -523,6 +583,45 @@
       ],
       "gzip": true,
       "limit": "1 KB"
+    },
+    {
+      "name": "lifecycle battery (min+gz)",
+      "path": "dist/lifecycle.mjs",
+      "gzip": true,
+      "limit": "1 KB"
+    },
+    {
+      "name": "health battery (min+gz)",
+      "path": "dist/health.mjs",
+      "gzip": true,
+      "limit": "2.2 KB"
+    },
+    {
+      "name": "config battery (min+gz)",
+      "path": "dist/config.mjs",
+      "gzip": true,
+      "limit": "1.5 KB"
+    },
+    {
+      "name": "schedule battery (min+gz)",
+      "path": "dist/schedule.mjs",
+      "gzip": true,
+      "limit": "2 KB"
+    },
+    {
+      "name": "events battery (min+gz)",
+      "path": "dist/events.mjs",
+      "gzip": true,
+      "ignore": [
+        "@for-fun/*"
+      ],
+      "limit": "1 KB"
+    },
+    {
+      "name": "version battery (min+gz)",
+      "path": "dist/version.mjs",
+      "gzip": true,
+      "limit": "1 KB"
     }
   ],
   "lint-staged": {
@@ -560,5 +659,8 @@
     "vite": "^8.2.2",
     "vitepress": "^1.6.4",
     "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "@for-fun/event-emitter": "^1.1.0"
   }
 }

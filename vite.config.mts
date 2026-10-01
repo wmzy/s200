@@ -55,6 +55,12 @@ export default defineConfig({
         swagger: resolve(dirname, 'src/swagger.ts'),
         upload: resolve(dirname, 'src/upload.ts'),
         dev: resolve(dirname, 'src/dev.ts'),
+        lifecycle: resolve(dirname, 'src/lifecycle.ts'),
+        health: resolve(dirname, 'src/health.ts'),
+        config: resolve(dirname, 'src/config.ts'),
+        schedule: resolve(dirname, 'src/schedule.ts'),
+        events: resolve(dirname, 'src/events.ts'),
+        version: resolve(dirname, 'src/version.ts'),
       },
       name: 's200',
       formats: ['es', 'cjs'],
@@ -65,8 +71,10 @@ export default defineConfig({
     },
     rollupOptions: {
       // node: builtins stay external in the node adapter entry; the core
-      // and bun entries import nothing runtime-specific.
-      external: [/^node:/],
+      // and bun entries import nothing runtime-specific. The events
+      // battery's @for-fun/event-emitter stays external too — a real
+      // dependency is never bundled into a library build.
+      external: [/^node:/, /^@for-fun\//],
     },
     sourcemap: true,
   },

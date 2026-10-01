@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@for-fun/event-emitter':
+        specifier: ^1.1.0
+        version: 1.1.0
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: ^0.18.5
@@ -723,6 +727,9 @@ packages:
 
   '@fastify/proxy-addr@5.1.1':
     resolution: {integrity: sha512-zv07Y9GEuDsJPegZoDFd4SDWaZOW8N2pa0GSrYmKpId/tjt1Hgo3BjZBVjdVpfVrHaA+Qv5jawtS2O50J5xM9g==}
+
+  '@for-fun/event-emitter@1.1.0':
+    resolution: {integrity: sha512-IHK1p2VxGhknvSR903EbxUGgd2UwYeTqOQrda2HNM6VmP8ilsTyIRpiiA6NSFFNLbpGHn3132TjHXQzvkeSO2w==}
 
   '@hono/node-server@2.1.1':
     resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
@@ -4216,6 +4223,8 @@ snapshots:
     dependencies:
       '@fastify/forwarded': 3.0.2
       ipaddr.js: 2.5.0
+
+  '@for-fun/event-emitter@1.1.0': {}
 
   '@hono/node-server@2.1.1(hono@4.13.8)':
     dependencies:

@@ -105,6 +105,46 @@ Full reference: [otel — Batteries in the README](https://github.com/wmzy/s200#
 
 Full reference: [timeout — Batteries in the README](https://github.com/wmzy/s200#batteries).
 
+### Versioning
+
+`s200/version` — `apiVersion` is a versioning gate (header or Accept media-type strategy; URI versioning is just `mount`). The resolved version lands on `ctx.state.version`; unsupported versions answer `404` in place, and the unwind stamps `Vary` so caches key on the version.
+
+Full reference: [versioning — Batteries in the README](https://github.com/wmzy/s200#batteries).
+
+## Operations
+
+The application-lifecycle layer — graceful shutdown, probes, config, jobs, and events, the NestJS lifecycle surface in data + functions form.
+
+### Lifecycle
+
+`s200/lifecycle` — signal-driven graceful shutdown over any adapter's `serve()` result: flip the readiness gate first (traffic stops arriving), stop listening, drain in-flight requests within a budget (hard-killing stragglers on deadline or a second signal), then run `onShutdown`. Runtime dispatch is duck-typed — node and Bun take their native graceful paths.
+
+Full reference: [lifecycle — Batteries in the README](https://github.com/wmzy/s200#batteries).
+
+### Health
+
+`s200/health` — `health()` is the liveness probe; `readiness(checks)` runs injectable checks concurrently (each with its own timeout budget and the request's `ctx.signal`) and answers `200`/`503` naming every check's outcome. `createGate()` is the composable switch that flips readiness off the moment a drain starts.
+
+Full reference: [health — Batteries in the README](https://github.com/wmzy/s200#batteries).
+
+### Config
+
+`s200/config` — `parseEnv` (pure `.env` parser) plus `createConfig`: Standard-Schema-typed, fail-fast validation that throws **one** `Error` aggregating every issue at boot. I/O stays injected — the parser takes text, you read the file.
+
+Full reference: [config — Batteries in the README](https://github.com/wmzy/s200#batteries).
+
+### Schedule
+
+`s200/schedule` — `createScheduler` runs cron (5-field) and interval jobs with absolute-time re-arming (no drift), concurrency 1 per job, injectable clock, and a `stop()` that awaits in-flight runs — wire it into `onShutdown`. `nextRun(expr, from)` is the pure matcher.
+
+Full reference: [schedule — Batteries in the README](https://github.com/wmzy/s200#batteries).
+
+### Events
+
+`s200/events` — `createBus` is a typed event bus over [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter) (the one battery with a dependency): keys, listener args, and emit arguments all narrow by the declared event map. `emit` is synchronous error-collecting (library semantics); `emitAsync` awaits promise-returning listeners and routes rejections through the same `onError` channel.
+
+Full reference: [events — Batteries in the README](https://github.com/wmzy/s200#batteries).
+
 ## Data & tooling
 
 ### Validate

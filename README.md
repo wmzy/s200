@@ -1,6 +1,6 @@
 # s200
 
-A data + functions server framework for the Web Standard. Koa-style onion middleware, hono-style multi-runtime portability, and a fully tree-shakable, replaceable module surface. Zero dependencies.
+A data + functions server framework for the Web Standard. Koa-style onion middleware, hono-style multi-runtime portability, and a fully tree-shakable, replaceable module surface. Zero dependencies at the core — every battery too, except `s200/events`, which builds on [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter).
 
 ```ts
 import { createApp, get, json, use, readJson } from 's200';
@@ -269,6 +269,12 @@ import { streamForm } from 's200/multipart';
 import { createSession } from 's200/session';
 import { swaggerUi } from 's200/swagger';
 import { uploadForm } from 's200/upload';
+import { lifecycle } from 's200/lifecycle';
+import { health, readiness, createGate } from 's200/health';
+import { parseEnv, createConfig } from 's200/config';
+import { createScheduler, nextRun } from 's200/schedule';
+import { createBus } from 's200/events';
+import { apiVersion } from 's200/version';
 ```
 
 **CORS** — app-level or per-route. Preflights are answered in place with a 204 (the handler never runs); actual responses get the allow-origin headers stamped on the unwind — fallback 404/405/500 responses included, since they are materialized inside the chain:
@@ -335,6 +341,18 @@ get(app, '/', (ctx) => {
   return json(ctx, { visits: session.get('visits') });
 });
 ```
+
+**Config** — typed, fail-fast configuration over the same Standard Schema channel `s200/validate` uses (nest's `@nestjs/config`, zero-dep): `parseEnv` is a pure `.env` parser (comments, blank lines, `export ` prefix, quoted values with escapes, duplicate keys last-wins; no multi-line values), and `createConfig` validates the merged record at construction. Validation failure throws **one** `Error` aggregating every issue, so a bad deploy dies at boot with the full list, not the first:
+
+```ts
+import { parseEnv, createConfig } from 's200/config';
+
+const schema = { /* Standard Schema: input strings, output coerced */ };
+const { valid } = createConfig(schema, { ...parseEnv(await readFile('.env', 'utf8')), ...process.env });
+// valid: schema.types.output — fully typed from here on
+```
+
+Env values arrive as strings — declare the schema's input side as strings and coerce in the output (input ≠ output inference, same as `jsonBody`). I/O stays injected: `parseEnv` takes text, you read the file (the core never touches a filesystem).
 
 **Validate** — wraps your parse function (zod/valibot/typebox/hand-rolled — s200 stays dependency-free and just calls it) as a gate middleware; the parsed value lands on `ctx.state`:
 
@@ -507,6 +525,80 @@ use(app, trace({ tracer: myOtelTracerBridge, extract: (headers) => … }));
 use(app, metrics({ meter: myMeterBridge, attributes: (ctx) => ({ 'url.route': ctx.url.pathname }) }));
 ```
 
+**Events** — a typed event bus over [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter) (the one battery with a dependency; everything else stays zero-dep). The emitter is plain data — a `Map` — and every capability is a function over it, so the bus is a thin typed facade: declare your event map once and keys, listener args, and emit arguments are all narrowed by it:
+
+```ts
+import { createBus } from 's200/events';
+
+const bus = createBus<{ userCreated: [id: string]; orderPaid: [id: string, cents: number] }>();
+
+const off = bus.on('userCreated', (id) => notify(id));   // id: string
+bus.emit('userCreated', 'u_1');                          // sync: all listeners run now
+await bus.emitAsync('orderPaid', 'o_9', 4200);           // awaits promise-returning listeners
+off();                                                   // unsubscribe
+```
+
+**Schedule** — cron and interval jobs, zero-dep (`@nestjs/schedule` equivalent): `nextRun(expr, from)` is a pure 5-field cron matcher (minute hour day month weekday — `*`, `*/n`, `a-b`, lists, `a-b/n`; no `L`/`W`/nicknames), and `createScheduler()` arms jobs with absolute-time re-arming so drift never accumulates (and delays beyond `setTimeout`'s ~24.8-day ceiling re-arm in segments):
+
+```ts
+import { createScheduler } from 's200/schedule';
+
+const scheduler = createScheduler({ onError: (err, expr) => log('error', { err, expr }) });
+scheduler.interval(30_000, heartbeat);
+scheduler.cron('*/5 * * * *', syncJobs);      // invalid expressions throw at registration
+scheduler.start();
+// stop(): cancels every timer and awaits in-flight runs — wire it into onShutdown
+```
+
+A job runs with concurrency 1 — a run still in flight at the next tick is skipped, not queued. Failing jobs go through `onError` (default `console.error`) and never break the loop. The clock is injectable (`now`), registration before `start()` arms everything at once, and a second `start()` throws. Pair with `s200/lifecycle`: `stop()` in `onShutdown`, and re-create the scheduler when `s200/dev` swaps the table (jobs are data too).
+
+**Lifecycle** — signal-driven graceful shutdown (`enableShutdownHooks` + `onApplicationShutdown`, minus the DI): `lifecycle(server, options)` turns the adapter's `serve()` result into an orchestrated drain. The order is the one rolling deploys need: flip readiness off first (the load balancer stops routing), then stop listening, then wait for in-flight requests — hard-killing whatever is left when the budget runs out — and only then run your cleanup hooks:
+
+```ts
+import { serve } from 's200/node';
+import { lifecycle } from 's200/lifecycle';
+import { createGate } from 's200/health';
+
+const gate = createGate();
+get(app, '/health/ready', readiness({ db: pingDb, gate: gate.check }));
+
+const server = await serve(app, { port: 3000 });
+const done = lifecycle(server, {
+  signals: ['SIGTERM', 'SIGINT'],   // default
+  timeout: 10_000,                  // drain budget, default 10s
+  readiness: gate,                  // closed ('draining') before anything else
+  onShutdown: async () => { await db.close(); },
+});
+await done.stopped;                 // or call done.stop() yourself — same path, idempotent
+```
+
+Runtime dispatch is duck-typed (the module stays runtime-agnostic): a raw server with `closeIdleConnections` takes the node path — `close()` to stop accepting, idle keep-alive sockets reaped continuously (a live `fetch` client holds sockets open; a one-shot reap would stall the drain until the deadline), `closeAllConnections()` only after the budget trips. Bun servers route through `stop(false)` (graceful) / `stop()` (force). A second signal during the drain hard-kills immediately. `onShutdown` failures reject `stop()` but never `stopped` — the signal path logs and resolves.
+
+**Health** — liveness/readiness probes over injectable checks (Terminus, zero-dep). A `HealthCheck` is `() => void | Promise<void>` — anything that throws or rejects is unhealthy, with the message as the reason:
+
+```ts
+import { health, readiness, createGate } from 's200/health';
+
+get(app, '/health/live', health());                        // 200 {"status":"ok"} — the process answers
+get(app, '/health/ready', readiness({
+  db: () => db.ping(),                                     // runs concurrently, each with its own budget
+  cache: () => redis.ping(),
+}));                                                       // 200 {"status":"ok","checks":{"db":"ok","cache":"ok"}}
+```
+
+Any failing check turns the response into a `503` naming every check's outcome (`{"status":"fail","checks":{"db":"connection refused"}}`) — healthy peers still report `"ok"`. Each check races a per-check budget (default 1000ms; `timeout` option) **and** the request's `ctx.signal`, so a disconnecting probe client cancels the checks. `createGate()` is the composable switch for lifecycle wiring: `gate.check` throws when closed (`gate.close('draining')` / `gate.open()`), so readiness flips false the moment a shutdown starts.
+
+**Versioning** — `apiVersion(options)` is a versioning gate (NestJS's header / media-type strategies; URI versioning is just `mount(app, '/v1', …)`). Requests resolve a version — from a header (`x-api-version` by default) or from `application/vnd.<name>+json;version=1` Accept entries — and stamp it on `ctx.state.version` before `next()`:
+
+```ts
+import { apiVersion } from 's200/version';
+
+use(app, apiVersion({ versions: ['1', '2'], default: '1' }));   // header strategy
+use(app, apiVersion({ strategy: 'mediaType', mediaType: 'vnd.api', versions: ['1', '2'] }));
+```
+
+A carried version outside the list answers `404 API version not supported: v9` in place (the handler never runs); a missing version falls back to `default`, or answers `404 API version required` when there is none. The unwind stamps `Vary` (`x-api-version`, or `Accept` for the media-type strategy) so caches key on the version.
+
 **Testing** — `s200/test` drives the app without a network: `request(app, '/users/1')` is `handle()` with full fallback semantics (hono's `app.request()` shape); `testClient(app)` is a `createClient` whose fetch routes in-process, keeping the typed paths/params/bodies; `probeApp(app)` dispatches every registered route with synthesized params and reports `{ method, pattern, status, ok }` — a mechanical "no route 500s" contract test:
 
 ```ts
@@ -665,12 +757,12 @@ await serve(app, {
 
 ## Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement (`defineMiddleware`, the third-party battery authoring hook, lives there too). The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`, `s200/otel`, `s200/codegen`, `s200/test`, `s200/multipart`, `s200/session`, `s200/swagger`, `s200/upload`, `s200/dev`) are separate entries so nothing unasked-for ever enters a bundle. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement (`defineMiddleware`, the third-party battery authoring hook, lives there too). The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`, `s200/otel`, `s200/codegen`, `s200/test`, `s200/multipart`, `s200/session`, `s200/swagger`, `s200/upload`, `s200/dev`, `s200/lifecycle`, `s200/health`, `s200/config`, `s200/schedule`, `s200/events`, `s200/version`) are separate package entries: importing one pulls exactly it. The core and every battery except `s200/events` are zero-dependency; `s200/events` adds [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter) as its single dependency. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
 
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 36 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 42 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
 pnpm vitest run            # single run (all tests; add --maxWorkers=4 to cap concurrency)
 pnpm lint / lint:ci

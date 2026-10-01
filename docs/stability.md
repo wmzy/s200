@@ -146,6 +146,8 @@ s200/etag  s200/secure-headers  s200/auth  s200/accepts  s200/serialize
 s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta  s200/openapi
 s200/trust-proxy  s200/otel  s200/codegen  s200/test  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/dev
+s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
+s200/events
 ```
 
 ## Semver policy
