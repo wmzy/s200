@@ -507,6 +507,7 @@
   ],
   "author": "wmzy",
   "license": "MIT",
+  "packageManager": "pnpm@11.28.0",
   "bugs": {
     "url": "https://github.com/wmzy/s200/issues"
   },
