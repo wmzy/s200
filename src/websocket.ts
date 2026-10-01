@@ -161,7 +161,7 @@ export function createWsCtx(req: Request, url: URL, params: Params): Ctx {
     // The upgrade request's signal when the runtime provides one — on a
     // live socket that is the disconnect signal; otherwise the shared
     // never-aborted default.
-    signal: requestSignal(req) ?? neverSignal,
+    signal: requestSignal(req) ?? neverSignal(),
     res: undefined,
   };
 }

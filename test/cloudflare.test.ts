@@ -131,6 +131,6 @@ describe('cloudflare createHandler', () => {
     const res = await createHandler(app).fetch(bare, env, workerCtx);
     res.status.should.equal(200);
     (await res.json()).should.deep.equal({ hello: 'workerd' });
-    seen!.should.equal(neverSignal);
+    seen!.should.equal(neverSignal());
   });
 });

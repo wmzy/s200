@@ -31,7 +31,7 @@ function makeCtx(body: BodyInit | null, signal?: AbortSignal): Ctx {
     params: {},
     query: new URLSearchParams(),
     state: {},
-    signal: signal ?? neverSignal,
+    signal: signal ?? neverSignal(),
     res: undefined,
   };
 }

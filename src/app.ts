@@ -777,7 +777,7 @@ export async function handle<S extends State = State>(
     state: {} as S,
     // The shared never-aborted signal unless the adapter passed one — no
     // per-request allocation on the default path.
-    signal: init?.signal ?? neverSignal,
+    signal: init?.signal ?? neverSignal(),
     res: undefined,
   };
   // The chain terminal: when nothing wrote a response, the 405/404/500

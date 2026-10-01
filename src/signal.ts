@@ -9,14 +9,25 @@
 /**
  * The shared, never-aborted signal `ctx.signal` falls back to when neither
  * the adapter nor a middleware supplied one: one allocation per process,
- * zero per request. `AbortSignal.any([])` composes an empty set — which is
- * never aborted — and node ≥ 20.3 ships it; the `AbortController` fallback
- * guards exotic runtimes that lack it.
+ * zero per request — the memoized instance is shared and identity-compared
+ * by the body-reader fast paths. It is materialized lazily because workerd
+ * forbids creating signals (`AbortController` and `AbortSignal.any` alike)
+ * during module evaluation ("global scope"); the first call always happens
+ * inside a request handler. `AbortSignal.any([])` composes an empty set —
+ * which is never aborted — and node ≥ 20.3 ships it; the `AbortController`
+ * fallback guards exotic runtimes that lack it.
  */
-export const neverSignal: AbortSignal =
-  typeof AbortSignal.any === 'function'
-    ? AbortSignal.any([])
-    : new AbortController().signal;
+let never: AbortSignal | undefined;
+
+export function neverSignal(): AbortSignal {
+  if (never === undefined) {
+    never =
+      typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([])
+        : new AbortController().signal;
+  }
+  return never;
+}
 
 /** The request's own `signal` when the runtime provides one — the fetch
  * handler's disconnect signal on Deno and Cloudflare Workers, always

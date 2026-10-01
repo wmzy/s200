@@ -11,12 +11,16 @@
  *     surface) as sibling modules, so workerd resolves plain relative
  *     specifiers;
  *   - the dist module graph is copied next to the entry, because miniflare
- *     loads exactly the modules it is given: v3 auto-located transitive
- *     deps from scriptPath, v5 (current) requires every module listed —
- *     the explicit ModuleDefinition array form works on both;
+ *     loads exactly the modules it is given: every transitive relative
+ *     import (vite's flat hash-named chunk siblings) is listed in the
+ *     explicit ModuleDefinition array;
  *   - dispatchFetch (any host — it is ignored) drives the full chain: the
  *     param route's JSON body, the in-chain 404 fallback, and a
  *     middleware stamp on the unwind.
+ *
+ * Expects miniflare's classic ModuleDefinition API (v3/v4 — CI pins the
+ * stable 4 line; the 5.x line is alpha-only and reworked the constructor
+ * around a `workers[]` array).
  *
  * Auto-skips with one printed line when miniflare isn't installed or the
  * dist isn't built (never throws) — CI installs miniflare, so the gate is
@@ -117,7 +121,11 @@ function check(name, ok, detail) {
 
 const mf = new Miniflare({
   // workerd uses the first module as the entrypoint; transitive
-  // dependencies must follow (miniflare v5 no longer auto-locates them).
+  // dependencies must follow (miniflare no longer auto-locates them).
+  // modulesRoot keeps every module name relative to the tmp dir —
+  // without it names are relative to cwd and workerd rejects the
+  // `..` path escape from the project into the OS tmp dir.
+  modulesRoot: dir,
   modules: [
     { type: 'ESModule', path: entry },
     ...copied.map((name) => ({ type: 'ESModule', path: join(dir, name) })),

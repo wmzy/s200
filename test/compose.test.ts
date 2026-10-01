@@ -12,7 +12,7 @@ function createTestCtx(): Ctx {
     params: {},
     query: new URLSearchParams(),
     state: {},
-    signal: neverSignal,
+    signal: neverSignal(),
     res: undefined,
   };
 }

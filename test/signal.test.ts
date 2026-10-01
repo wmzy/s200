@@ -30,7 +30,7 @@ describe('handle ctx.signal', () => {
     seen[0]!.aborted.should.be.false;
     // The zero-allocation contract: the shared module-level signal, not a
     // fresh one per request.
-    seen[0]!.should.equal(neverSignal);
+    seen[0]!.should.equal(neverSignal());
 
     await handle(app, new Request('http://localhost/'));
     seen[1]!.should.equal(seen[0]!);
@@ -207,7 +207,7 @@ describe('node adapter abortOnDisconnect', () => {
     }
     seen.should.have.length(1);
     // The opt-out contract: back to the zero-allocation shared signal.
-    seen[0]!.should.equal(neverSignal);
+    seen[0]!.should.equal(neverSignal());
     abortedAtUnwind.should.deep.equal([false]);
   });
 });

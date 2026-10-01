@@ -101,10 +101,11 @@ jobs:
 
       - run: pnpm build
 
-      # Bare specifier resolves via the `latest` dist-tag — semver ranges
-      # like miniflare@5 would NOT match the 5.x prereleases that tag
-      # currently points at.
-      - run: pnpm add -Dw miniflare
+      # Pin the stable 4 line: the 5.x line is alpha-only and reworked the
+      # constructor API around a `workers[]` array, which the classic
+      # ModuleDefinition smoke does not target. Exact pin keeps the gate
+      # deterministic.
+      - run: pnpm add -Dw miniflare@4.20260730.0
 
       - run: node scripts/smoke-cloudflare.mjs
 

@@ -111,7 +111,7 @@ describe('serveStatic traversal guard', () => {
       params: {},
       query: new URLSearchParams(),
       state: {},
-      signal: neverSignal,
+      signal: neverSignal(),
       res: undefined,
     };
   }

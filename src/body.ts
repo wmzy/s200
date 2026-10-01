@@ -66,14 +66,14 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
  * `req.body.cancel()` would throw on the lock — so upstream producers
  * observe the drop, and the rejection (an `AbortError`) wakes this reader
  * plus every waiter on the cached raw-bytes promise. When the signal can
- * never abort (`undefined` or the shared `neverSignal`), the read is passed
+ * never abort (`undefined` or the shared `neverSignal()`), the read is passed
  * through with zero listener wiring — the default path pays nothing.
  */
 function readChunk(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   signal: AbortSignal | undefined
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal === undefined || signal === neverSignal) {
+  if (signal === undefined || signal === neverSignal()) {
     return reader.read();
   }
   if (signal.aborted) {
@@ -158,7 +158,7 @@ function cacheFor(ctx: Ctx, limit: number | undefined): BufferedCache {
   // The shared cached promise is what makes an aborted mid-read reject for
   // every waiter: a later read of the same ctx awaits the same (rejected)
   // raw promise instead of hanging or replaying stale bytes.
-  const cooperative = ctx.signal !== undefined && ctx.signal !== neverSignal;
+  const cooperative = ctx.signal !== undefined && ctx.signal !== neverSignal();
   const raw =
     !cooperative && limit === undefined
       ? ctx.req.arrayBuffer()
@@ -276,7 +276,7 @@ function streamSource(
   signal: AbortSignal | undefined
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
-  const cooperative = signal !== undefined && signal !== neverSignal;
+  const cooperative = signal !== undefined && signal !== neverSignal();
   let size = 0;
   let settled = false;
   let onAbort: (() => void) | undefined;
@@ -378,7 +378,7 @@ export function readStream(
   const signal = ctx.signal;
   // A dead request never touches the source: the stream is born errored,
   // the platform body is cancelled and the cache is parked as streamed.
-  if (signal !== undefined && signal !== neverSignal && signal.aborted) {
+  if (signal !== undefined && signal !== neverSignal() && signal.aborted) {
     bodyCache.set(ctx, { streamed: true });
     ctx.req.body?.cancel().catch(() => undefined);
     return erroredStream(abortError());
