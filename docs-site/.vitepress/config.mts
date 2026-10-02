@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitepress';
 
 export default defineConfig({
+  // Project pages serve from /s200/ (wmzy/s200). Only applied in CI so
+  // `pnpm docs:dev` and `docs:preview` keep serving from / locally.
+  base: process.env.GITHUB_ACTIONS ? '/s200/' : '/',
   title: 's200',
   description:
     'Data + functions server framework on the Web Standard: koa-style onion middleware, hono-style multi-runtime portability, replaceable modules, fully tree-shakable. Zero dependencies.',

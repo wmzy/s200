@@ -776,6 +776,14 @@ pnpm docs:dev / docs:build # vitepress documentation site (docs-site/)
 pnpm publish:jsr           # build + prepare declarations for JSR + npx jsr publish
 ```
 
+The docs site deploys automatically to GitHub Pages (`/s200/`) by
+[.github/workflows/docs.yml](.github/workflows/docs.yml) on pushes to `main`
+that touch `docs-site/`, `docs/`, or the lockfile. The Pages base is set from
+`GITHUB_ACTIONS` in `docs-site/.vitepress/config.mts`, so local dev and
+preview stay rooted at `/`. The first deploy requires GitHub Pages enabled
+with the "GitHub Actions" source (the workflow tries to enable it itself via
+`configure-pages`).
+
 Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
 
 See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/compare.md](docs/compare.md) for how s200 stacks up against the alternatives (Hono, Express, Fastify, Koa, Elysia), and the [migration guides](docs/) when coming from Express, Koa, or Hono.
