@@ -7,6 +7,78 @@ export default defineConfig({
   title: 's200',
   description:
     'Data + functions server framework on the Web Standard: koa-style onion middleware, hono-style multi-runtime portability, replaceable modules, fully tree-shakable. Zero dependencies.',
+  locales: {
+    root: { label: 'English' },
+    zh: {
+      label: '简体中文',
+      lang: 'zh-CN',
+      link: '/zh/',
+      description:
+        '构建在 Web Standard 之上的数据 + 函数服务端框架：koa 风格洋葱中间件、hono 风格多运行时可移植、可替换模块、完全 tree-shakable。零依赖。',
+      themeConfig: {
+        // VitePress ships no built-in zh strings — translate the default
+        // theme chrome here.
+        outline: { label: '页面导航' },
+        docFooter: { prev: '上一页', next: '下一页' },
+        returnToTopLabel: '回到顶部',
+        sidebarMenuLabel: '菜单',
+        darkModeSwitchLabel: '外观',
+        lightModeSwitchTitle: '切换到浅色模式',
+        darkModeSwitchTitle: '切换到深色模式',
+        nav: [
+          { text: '首页', link: '/zh/' },
+          { text: '文档', link: '/zh/getting-started' },
+          { text: '指南', link: '/zh/guides/routing' },
+          { text: '对比', link: '/zh/comparison' },
+          { text: '基准测试', link: '/zh/benchmarks' },
+        ],
+        sidebar: [
+          {
+            text: '快速开始',
+            items: [{ text: '简介', link: '/zh/getting-started' }],
+          },
+          {
+            text: '指南',
+            items: [
+              { text: '路由', link: '/zh/guides/routing' },
+              { text: '中间件', link: '/zh/guides/middleware' },
+              { text: '响应', link: '/zh/guides/responding' },
+              { text: '请求体解析', link: '/zh/guides/body' },
+              { text: '静态文件', link: '/zh/guides/static-files' },
+              { text: '电池模块', link: '/zh/guides/batteries' },
+              { text: '编写电池模块', link: '/zh/guides/battery-authoring' },
+              { text: '分布式存储', link: '/zh/guides/distributed-stores' },
+              { text: '分片与调度', link: '/zh/guides/sharding' },
+            ],
+          },
+          {
+            text: '生态',
+            items: [{ text: '电池模块注册表', link: '/zh/ecosystem' }],
+          },
+          {
+            text: '稳定性',
+            items: [{ text: '契约与版本管理', link: '/zh/stability' }],
+          },
+          {
+            text: '对比',
+            items: [{ text: '与其他框架对比', link: '/zh/comparison' }],
+          },
+          {
+            text: '基准测试',
+            items: [{ text: '数据与方法论', link: '/zh/benchmarks' }],
+          },
+          {
+            text: '迁移',
+            items: [
+              { text: '从 Express', link: '/zh/migration-from-express' },
+              { text: '从 Koa', link: '/zh/migration-from-koa' },
+              { text: '从 Hono', link: '/zh/migration-from-hono' },
+            ],
+          },
+        ],
+      },
+    },
+  },
   themeConfig: {
     nav: [
       { text: 'Home', link: '/' },

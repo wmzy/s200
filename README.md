@@ -780,7 +780,9 @@ The docs site deploys automatically to GitHub Pages (`/s200/`) by
 [.github/workflows/docs.yml](.github/workflows/docs.yml) on pushes to `main`
 that touch `docs-site/`, `docs/`, or the lockfile. The Pages base is set from
 `GITHUB_ACTIONS` in `docs-site/.vitepress/config.mts`, so local dev and
-preview stay rooted at `/`.
+preview stay rooted at `/`. Available in English and
+[简体中文](/zh/) — `docs/` holds the English source of truth and `docs/zh/`
+the Chinese translation, included verbatim into `docs-site/`.
 
 Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
 
