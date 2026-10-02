@@ -59,23 +59,25 @@ jobs:
         id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           # npm 发布时经 OIDC 附加 provenance（npm 侧信任已配置）。
           NPM_CONFIG_PROVENANCE: true
         run: |
-          set -o pipefail
-          npx semantic-release 2>&1 | tee semantic-release.log
-          # semantic-release 对「无可发布变更」同样以 0 退出，无法凭退出码区分，
-          # 从日志提取结果：真实发布成功后固定打印
-          # "Published release <version> on <channel> channel"（semver 的 prerelease
-          # 段可含点号，捕获到下一个空格为止）。
-          version="$(sed -nE 's/.*Published release ([0-9][^ ]+) on .* channel.*/\1/p' semantic-release.log | tail -n 1)"
-          if [ -n "$version" ]; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "version=$version" >> "$GITHUB_OUTPUT"
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-          fi
+          set -euo pipefail
+          # 一次性：首发钉在 0.1.0。semantic-release 对「无历史
+          # release」的首发固定给 1.0.0（minor 也一样），而本项目
+          # 首发应为 0.1.0；误发的 1.0.0 已撤回。发布成功后本步
+          # 恢复为 `npx semantic-release`（v0.1.0 成为其基线）。
+          npm version 0.1.0 --no-git-tag-version
+          npm publish --access public
+          echo "published=true" >> "$GITHUB_OUTPUT"
+          echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+          # 持久化基线：tag 经 API 创建（checkout 关了 persist-credentials）。
+          gh api repos/wmzy/s200/git/refs \
+            -f ref=refs/tags/v0.1.0 \
+            -f "sha=$(git rev-parse HEAD)"
+          gh release create v0.1.0 -R wmzy/s200 --generate-notes --title "v0.1.0"
 
   # PR 发布预演：对 PR 的合并结果完整跑一遍 semantic-release --dry-run——
   # 校验 .releaserc 配置与 NPM_TOKEN 可用性，并预演下一版本号与变更日志；
