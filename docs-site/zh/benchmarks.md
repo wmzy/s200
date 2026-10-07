@@ -1,2 +1,2 @@
 <!-- 权威源：docs/zh/benchmarks.md —— 原样包含。在那里编辑，不要在这里改。 -->
-<!-- @include: ../docs/zh/benchmarks.md -->
+<!-- @include: ../../docs/zh/benchmarks.md -->

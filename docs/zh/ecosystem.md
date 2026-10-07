@@ -12,8 +12,8 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 `import { … } from 's200/<entry>'` 导入——拉取一个入口绝不拉取另一个。
 除 `s200/events` 外，所有入口都是零运行时依赖；`s200/events` 构建在
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
-之上（这是它唯一的依赖——核心保持零依赖）。README 的
-[Batteries](https://github.com/wmzy/s200#batteries) 一节按每个 release
+之上（这是它唯一的依赖——核心保持零依赖）。
+[Batteries](https://wmzy.github.io/s200/guides/batteries) 一节按每个 release
 追踪各入口体积。
 
 ### 中间件

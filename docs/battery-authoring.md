@@ -1,6 +1,6 @@
 # Authoring Batteries
 
-A battery is s200's unit of middleware reuse: an opt-in module behind its own package entry (`s200/cors`, `s200/validate`, …), zero runtime dependencies, built from pure functions — options in, `Middleware` out. The built-ins are the pattern book, and `defineMiddleware` in the core barrel is the labeled front door for packaging your own. This guide walks the two runtime shapes, the type brands that flow into `s200/client`, the structural conventions of the built-ins, and how to publish. For a tour of what ships today, see the [batteries overview](https://github.com/wmzy/s200#batteries).
+A battery is s200's unit of middleware reuse: an opt-in module behind its own package entry (`s200/cors`, `s200/validate`, …), zero runtime dependencies, built from pure functions — options in, `Middleware` out. The built-ins are the pattern book, and `defineMiddleware` in the core barrel is the labeled front door for packaging your own. This guide walks the two runtime shapes, the type brands that flow into `s200/client`, the structural conventions of the built-ins, and how to publish. For a tour of what ships today, see the [batteries overview](https://wmzy.github.io/s200/guides/batteries).
 
 ## What a battery is
 

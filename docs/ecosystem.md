@@ -13,8 +13,8 @@ entry, imported as `import { … } from
 's200/<entry>'` — pulling one entry never pulls another. All entries are
 zero-runtime-dependency except `s200/events`, which builds on
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
-(its only dependency — the core stays dependency-free). Sizes in the README
-[Batteries](https://github.com/wmzy/s200#batteries) section are tracked per
+(its only dependency — the core stays dependency-free). Sizes in the
+[Batteries](https://wmzy.github.io/s200/guides/batteries) section are tracked per
 release.
 
 ### Middleware

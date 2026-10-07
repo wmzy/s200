@@ -36,6 +36,8 @@ console.log(`listening on ${server.url}`);
 ## Next steps
 
 - Guides: [Routing](/guides/routing) · [Middleware](/guides/middleware) · [Responding](/guides/responding) · [Body parsing](/guides/body) · [Static files](/guides/static-files)
+- [Batteries](/guides/batteries) — cors, logger, auth, jwt, rate-limit, websocket, and friends
+- [Errors](/guides/errors) · [Adapters](/guides/adapters) · [Package surface](/guides/package-surface)
 - [Compare s200 with other frameworks](/comparison) · [Benchmarks](/benchmarks) · [Migration guides](/migration-from-express)
 
-These pages are short distillations. The canonical, complete documentation is the [full README on GitHub](https://github.com/wmzy/s200#readme).
+The full documentation also ships in the repo under [`docs/`](https://github.com/wmzy/s200/tree/main/docs) — the site includes it verbatim. 中文版: [简体中文](/zh/).
