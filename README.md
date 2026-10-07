@@ -86,7 +86,7 @@ the Chinese translation, included verbatim into `docs-site/`.
 
 Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
 
-See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/compare.md](docs/compare.md) for how s200 stacks up against the alternatives (Hono, Express, Fastify, Koa, Elysia), and the [migration guides](docs/) when coming from Express, Koa, or Hono.
+See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/comparison.md](docs/comparison.md) for how s200 stacks up against the alternatives (Hono, Express, Fastify, Koa, Elysia), and the [migration guides](docs/) when coming from Express, Koa, or Hono.
 
 ## License
 

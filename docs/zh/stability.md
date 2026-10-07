@@ -4,7 +4,7 @@ s200 正在迈向 1.0。本页面就是那份契约：1.0 时会冻结什么、�
 以及同样重要的——哪些东西**尚未**冻结（如实列出）。如果你基于 s200 构建，
 升级前先看这一页。
 
-## 冻结面（1.0 契约）
+## 冻结面（1.0 契约） {#frozen-surface-the-10-contract}
 
 以下内容自 1.0 起全部是契约性的：只会在 major 版本中变更（1.0 之前则在带
 标记的 minor 版本中变更——参见 [semver 策略](#semver-policy)）。这份清单
@@ -136,7 +136,7 @@ s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
 s200/events
 ```
 
-## semver 策略
+## semver 策略 {#semver-policy}
 
 发布是自动化的。[`.releaserc.json`](https://github.com/wmzy/s200/blob/main/.releaserc.json) 把
 [semantic-release](https://semantic-release.gitbook.io) 接在 `main` 分支的
