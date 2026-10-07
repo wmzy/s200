@@ -46,6 +46,11 @@ import { parseEnv, createConfig } from 's200/config';
 import { createScheduler, nextRun } from 's200/schedule';
 import { createBus } from 's200/events';
 import { apiVersion } from 's200/version';
+import { policy, shardSpecs, shardApp, matchShard } from 's200/shard';
+import { nginxConf, gatewayRoutes, albRules } from 's200/gateway';
+import { createDispatcher } from 's200/shard-dev';
+import { runShards } from 's200/executor';
+import { createUnitMetrics, unitMetricsEndpoint } from 's200/unit-metrics';
 ```
 
 ## CORS

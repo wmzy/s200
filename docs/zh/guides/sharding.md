@@ -88,7 +88,7 @@ await supervisor.stop();                       // 宽限期内排空，然后终
 supervisor.units();                            // 每个单元的 state/port/restarts/lastError
 ```
 
-- **`thread`** —— 每个分片一个 worker isolate，**惰性**生成：supervisor 预先绑定端口（闲置监听器零成本），把早到的连接挂起停放，首个流量到来时才生成 worker，然后把监听服务器*连同*停放的 socket 一起移交过去（Node ≥ 26.6，Unix；已验证的机制——被移交的监听器保留 `pauseOnConnect`，因此 worker 能恢复每一个 socket）。路由代码在首次请求时于线程内加载（`await import(entry)`）。在移交不可用的场合（更老的 node——worker 线程句柄移交是 Node ≥ 26 的能力），supervisor 改为把已接受的 socket 逐字节中继到 worker 的私有端口：同样的惰性生成、同样服务首次请求，supervisor 依旧从不解析 HTTP。`memoryMb` 映射为 worker 的 `resourceLimits`。
+- **`thread`** —— 每个分片一个 worker isolate，**惰性**生成：supervisor 预先绑定端口（闲置监听器零成本），把早到的连接挂起停放，首个流量到来时才生成 worker，然后把监听服务器*连同*停放的 socket 一起移交过去（Node ≥ 26.6，Unix；已验证的机制——被移交的监听器保留 `pauseOnConnect`，因此 worker 能恢复每一个 socket）。路由代码在首次请求时于线程内加载（`await import(entry)`）。在移交不可用的场合（更老的 node——worker 线程句柄移交是 Node ≥ 26.6 的能力），supervisor 改为把已接受的 socket 逐字节中继到 worker 的私有端口：同样的惰性生成、同样服务首次请求，supervisor 依旧从不解析 HTTP。`memoryMb` 映射为 worker 的 `resourceLimits`。
 - **`process`** —— fork 模块内置的 shim（哨兵环境变量 `S200_ENTRY`/`S200_PORT`，`SIGTERM` 排空）。真正的崩溃隔离，可独立施加 cgroup；也是编排器把分片调度为独立 pod 时看到的形态。
 - **`inline`** —— 没有要运行的东西；与 `createDispatcher` 搭配使用。
 - **`external`** —— 是一个地址而非生命周期：单元已经在别处（另一台机器、另一个机群）运行；`units()` 出于完整性才报告它。

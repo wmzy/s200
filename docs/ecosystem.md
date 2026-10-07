@@ -13,9 +13,10 @@ entry, imported as `import { … } from
 's200/<entry>'` — pulling one entry never pulls another. All entries are
 zero-runtime-dependency except `s200/events`, which builds on
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
-(its only dependency — the core stays dependency-free). Sizes in the
-[Batteries](/guides/batteries) section are tracked per
-release.
+(its only dependency — the core stays dependency-free). Entry sizes
+are tracked per release by the repo's
+[`size-limit`](https://github.com/wmzy/s200/blob/main/package.json)
+budgets (`pnpm size`).
 
 ### Middleware
 
@@ -90,6 +91,21 @@ support, in data + functions form:
 | `s200/config`     | `parseEnv`, `createConfig` — Standard-Schema-typed, fail-fast config |
 | `s200/schedule`   | `createScheduler`, `nextRun` — cron (5-field) and interval jobs, injectable clock |
 | `s200/events`     | `createBus` — typed event bus over `@for-fun/event-emitter` (sync emit, `emitAsync`) |
+
+### Sharding & scaling
+
+The horizontal-scaling layer — one app, partitioned across
+units, with the dispatch seam kept runtime-neutral:
+
+| Entry               | Gives you                                                        |
+| ------------------- | ---------------------------------------------------------------- |
+| `s200/shard`        | `policy`, `shardSpecs`, `shardApp`, `matchShard` — route policy annotations, the serializable shard descriptor, partition, and the dispatch seam |
+| `s200/gateway`      | `nginxConf`, `gatewayRoutes`, `albRules` — pure generators: the same specs → nginx.conf / Gateway API HTTPRoute / ALB listener rules |
+| `s200/shard-dev`    | `createDispatcher` — in-process dispatcher with the same prefix semantics — local parity without nginx |
+| `s200/executor`     | `runShards` — executors (`inline` / `thread` / `process` / `external`) + supervisor: lazy thread spawn with Node ≥26.6 listener transfer, forked process shims, restart with backoff |
+| `s200/unit-metrics` | `createUnitMetrics`, `unitMetricsEndpoint` — the scheduler's eyes: in-flight, queue depth, event-loop utilization, RSS, warm/cold — as middleware + endpoint |
+
+Full guide: [Sharding & Scheduling](/guides/sharding).
 
 ### Runtime adapters
 

@@ -13,8 +13,9 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 除 `s200/events` 外，所有入口都是零运行时依赖；`s200/events` 构建在
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
 之上（这是它唯一的依赖——核心保持零依赖）。
-[Batteries](/guides/batteries) 一节按每个 release
-追踪各入口体积。
+各入口体积由仓库的
+[`size-limit`](https://github.com/wmzy/s200/blob/main/package.json)
+预算（`pnpm size`）按 release 追踪。
 
 ### 中间件
 
@@ -89,6 +90,20 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | `s200/config`     | `parseEnv`、`createConfig` —— Standard Schema 定型、快速失败的配置 |
 | `s200/schedule`   | `createScheduler`、`nextRun` —— cron（5 字段）与间隔任务，时钟可注入 |
 | `s200/events`     | `createBus` —— 基于 `@for-fun/event-emitter` 的类型化事件总线（同步 emit、`emitAsync`） |
+
+### 分片与伸缩
+
+水平伸缩层——一个应用，按单元分区，分发接缝保持运行时中立：
+
+| 入口               | 提供什么                                                        |
+| ------------------- | ---------------------------------------------------------------- |
+| `s200/shard`        | `policy`、`shardSpecs`、`shardApp`、`matchShard` —— 路由策略注解、可序列化的分片描述符、分区与分发接缝 |
+| `s200/gateway`      | `nginxConf`、`gatewayRoutes`、`albRules` —— 纯生成器：同样的描述符 → nginx.conf / Gateway API HTTPRoute / ALB 监听规则 |
+| `s200/shard-dev`    | `createDispatcher` —— 相同前缀语义的进程内分发器 —— 无需 nginx 的本地对等 |
+| `s200/executor`     | `runShards` —— 执行器（`inline` / `thread` / `process` / `external`）+ supervisor：Node ≥26.6 监听器传递的惰性线程生成、fork 进程 shim、带退避的重启 |
+| `s200/unit-metrics` | `createUnitMetrics`、`unitMetricsEndpoint` —— 调度器的眼睛：在途数、队列深度、事件循环利用率、RSS、冷热 —— 作为中间件 + 端点 |
+
+完整指南：[分片与调度](/zh/guides/sharding)。
 
 ### 运行时适配器
 
