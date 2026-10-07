@@ -35,6 +35,15 @@ export default defineConfig({
         darkModeSwitchLabel: '外观',
         lightModeSwitchTitle: '切换到浅色模式',
         darkModeSwitchTitle: '切换到深色模式',
+        langMenuLabel: '切换语言',
+        skipToContentLabel: '跳至主要内容',
+        notFound: {
+          title: '页面未找到',
+          quote:
+            '但如果你不改变方向，继续寻找下去，也许最终会抵达你正前往的地方。',
+          linkText: '回到首页',
+          linkLabel: '回到首页',
+        },
         lastUpdatedText: '上次更新',
         editLink: {
           pattern: 'https://github.com/wmzy/s200/edit/main/docs/:path',
@@ -103,12 +112,31 @@ export default defineConfig({
   },
   themeConfig: {
     // Local search builds a per-locale index at build time; the zh
-    // button text comes from options.locales.
+    // strings come from options.locales.
     search: {
       provider: 'local',
       options: {
         locales: {
-          zh: { translations: { button: { buttonText: '搜索' } } },
+          zh: {
+            translations: {
+              button: { buttonText: '搜索', buttonAriaLabel: '搜索' },
+              modal: {
+                displayDetails: '显示详细列表',
+                resetButtonTitle: '重置搜索',
+                backButtonTitle: '关闭搜索',
+                noResultsText: '没有找到与',
+                footer: {
+                  selectText: '选择',
+                  selectKeyAriaLabel: '回车',
+                  navigateText: '切换',
+                  navigateUpKeyAriaLabel: '上箭头',
+                  navigateDownKeyAriaLabel: '下箭头',
+                  closeText: '关闭',
+                  closeKeyAriaLabel: '退出',
+                },
+              },
+            },
+          },
         },
       },
     },
