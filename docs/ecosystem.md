@@ -14,7 +14,7 @@ entry, imported as `import { … } from
 zero-runtime-dependency except `s200/events`, which builds on
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
 (its only dependency — the core stays dependency-free). Sizes in the
-[Batteries](https://wmzy.github.io/s200/guides/batteries) section are tracked per
+[Batteries](/guides/batteries) section are tracked per
 release.
 
 ### Middleware
@@ -109,7 +109,7 @@ the file, bring your own client, inject:
 
 | Recipe                   | For                                                             |
 | ------------------------ | --------------------------------------------------------------- |
-| [`recipes/redis-stores.ts`](../recipes/redis-stores.ts) | shared `rateLimit`/`createSession` stores over Redis — full guide: [Distributed Stores](./guides/distributed-stores.md) |
+| [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | shared `rateLimit`/`createSession` stores over Redis — full guide: [Distributed Stores](./guides/distributed-stores.md) |
 
 ## Submit your battery
 

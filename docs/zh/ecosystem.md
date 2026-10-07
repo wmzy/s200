@@ -13,7 +13,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 除 `s200/events` 外，所有入口都是零运行时依赖；`s200/events` 构建在
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
 之上（这是它唯一的依赖——核心保持零依赖）。
-[Batteries](https://wmzy.github.io/s200/guides/batteries) 一节按每个 release
+[Batteries](/guides/batteries) 一节按每个 release
 追踪各入口体积。
 
 ### 中间件
@@ -108,7 +108,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 
 | 配方                   | 用途                                                             |
 | ---------------------- | ---------------------------------------------------------------- |
-| [`recipes/redis-stores.ts`](../recipes/redis-stores.ts) | 经 Redis 共享的 `rateLimit`/`createSession` 存储——完整指南：[分布式存储](./guides/distributed-stores.md) |
+| [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | 经 Redis 共享的 `rateLimit`/`createSession` 存储——完整指南：[分布式存储](./guides/distributed-stores.md) |
 
 ## 提交你的 battery
 

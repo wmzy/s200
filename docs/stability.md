@@ -152,7 +152,7 @@ s200/events
 
 ## Semver policy
 
-Releases are automated. [`.releaserc.json`](../.releaserc.json) wires
+Releases are automated. [`.releaserc.json`](https://github.com/wmzy/s200/blob/main/.releaserc.json) wires
 [semantic-release](https://semantic-release.gitbook.io) over conventional
 commits on `main`: `fix:` → patch, `feat:` → minor, `BREAKING CHANGE` (footer
 or `!`) → major, release notes and the npm/GitHub publishes included. The

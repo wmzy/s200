@@ -138,7 +138,7 @@ s200/events
 
 ## semver 策略
 
-发布是自动化的。[`.releaserc.json`](../.releaserc.json) 把
+发布是自动化的。[`.releaserc.json`](https://github.com/wmzy/s200/blob/main/.releaserc.json) 把
 [semantic-release](https://semantic-release.gitbook.io) 接在 `main` 分支的
 conventional commits 之上：`fix:` → patch、`feat:` → minor、
 `BREAKING CHANGE`（footer 或 `!`）→ major，发布说明与 npm/GitHub 发布
