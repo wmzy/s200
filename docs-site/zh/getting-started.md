@@ -1,3 +1,8 @@
+---
+# 仅站点页面（docs/ 中无源文件）——隐藏 GitHub 编辑链接。
+editLink: false
+---
+
 # 快速开始
 
 s200 是一个构建在 Web Standard 之上的数据 + 函数服务端框架 —— koa 风格洋葱中间件、hono 风格多运行时可移植，以及完全 tree-shakable、可替换的模块面。零依赖。

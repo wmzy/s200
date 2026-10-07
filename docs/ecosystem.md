@@ -2,7 +2,7 @@
 
 Batteries are s200's unit of middleware reuse: an opt-in module behind its
 own package entry, options in, `Middleware` out (see
-[Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md) for the full contract). This
+[Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md) for the full contract). This
 page is the registry — what ships in the box, and how a third-party battery
 joins the list.
 
@@ -122,7 +122,7 @@ ecosystem around it is the point.
 
 - **Data + functions paradigm.** A factory takes options and returns a
   `Middleware` (or data) — no classes, no `this`, no module-level
-  registration side effects. [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)
+  registration side effects. [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md)
   walks the two runtime shapes (gates and unwind stampers) with examples
   from the built-ins.
 - **Tree-shakable.** One entry per capability, ESM, side-effect-free module
@@ -160,7 +160,7 @@ per this template:
 
 ### Process
 
-1. Author per the [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md) guide; ship
+1. Author per the [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md) guide; ship
    tests and a README with the measured size.
 2. Open a PR that adds your row to the registry table below — the table is
    the review surface, and landing the PR is the listing.

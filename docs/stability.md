@@ -191,6 +191,6 @@ before the 1.0 cutover:
 - [Migrating from Express](./migration-from-express.md)
 - [Migrating from Koa](./migration-from-koa.md)
 - [Migrating from Hono](./migration-from-hono.md)
-- [Authoring batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md) — the
+- [Authoring batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md) — the
   conventions new modules follow, including the type brands that flow into
   `s200/client`.

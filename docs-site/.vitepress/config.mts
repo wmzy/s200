@@ -7,6 +7,16 @@ export default defineConfig({
   title: 's200',
   description:
     'Data + functions server framework on the Web Standard: koa-style onion middleware, hono-style multi-runtime portability, replaceable modules, fully tree-shakable. Zero dependencies.',
+  head: [
+    [
+      'link',
+      {
+        rel: 'icon',
+        type: 'image/svg+xml',
+        href: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23646cff'/%3E%3Ctext x='32' y='45' font-family='system-ui,sans-serif' font-size='30' font-weight='700' fill='white' text-anchor='middle'%3Es200%3C/text%3E%3C/svg%3E",
+      },
+    ],
+  ],
   locales: {
     root: { label: 'English' },
     zh: {
@@ -25,6 +35,15 @@ export default defineConfig({
         darkModeSwitchLabel: '外观',
         lightModeSwitchTitle: '切换到浅色模式',
         darkModeSwitchTitle: '切换到深色模式',
+        lastUpdatedText: '上次更新',
+        editLink: {
+          pattern: 'https://github.com/wmzy/s200/edit/main/docs/:path',
+          text: '在 GitHub 上编辑此页',
+        },
+        footer: {
+          message: '基于 MIT 许可证发布。',
+          copyright: 'Copyright © 2026-present wmzy',
+        },
         nav: [
           { text: '首页', link: '/zh/' },
           { text: '文档', link: '/zh/getting-started' },
@@ -83,6 +102,26 @@ export default defineConfig({
     },
   },
   themeConfig: {
+    // Local search builds a per-locale index at build time; the zh
+    // button text comes from options.locales.
+    search: {
+      provider: 'local',
+      options: {
+        locales: {
+          zh: { translations: { button: { buttonText: '搜索' } } },
+        },
+      },
+    },
+    socialLinks: [{ icon: 'github', link: 'https://github.com/wmzy/s200' }],
+    editLink: {
+      pattern: 'https://github.com/wmzy/s200/edit/main/docs/:path',
+      text: 'Edit this page on GitHub',
+    },
+    lastUpdated: true,
+    footer: {
+      message: 'Released under the MIT License.',
+      copyright: 'Copyright © 2026-present wmzy',
+    },
     nav: [
       { text: 'Home', link: '/' },
       { text: 'Docs', link: '/getting-started' },

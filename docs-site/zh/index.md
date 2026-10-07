@@ -1,5 +1,7 @@
 ---
+# 仅站点页面（docs/ 中无源文件）——隐藏 GitHub 编辑链接。
 layout: home
+editLink: false
 
 hero:
   name: s200

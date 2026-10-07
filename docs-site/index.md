@@ -1,5 +1,7 @@
 ---
+# Site-only page (no docs/ source); suppress the GitHub edit link.
 layout: home
+editLink: false
 
 hero:
   name: s200

@@ -172,5 +172,5 @@ semantic-release 会覆写的占位符——版本号从不手工编辑。
 - [从 Express 迁移](./migration-from-express.md)
 - [从 Koa 迁移](./migration-from-koa.md)
 - [从 Hono 迁移](./migration-from-hono.md)
-- [编写 battery](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)
+- [编写 battery](https://github.com/wmzy/s200/blob/main/docs/zh/guides/battery-authoring.md)
   ——新模块遵循的约定，包括流入 `s200/client` 的类型品牌。

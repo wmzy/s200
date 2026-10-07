@@ -2,7 +2,7 @@
 
 battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后面的 opt-in
 模块，输入选项、输出 `Middleware`（完整契约见
-[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)）。
+[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/zh/guides/battery-authoring.md)）。
 本页就是注册表——盒子里装了什么，以及一个第三方 battery 如何加入这份
 名单。
 
@@ -120,7 +120,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 
 - **数据 + 函数范式。** 工厂接收选项并返回一个 `Middleware`（或
   数据）——没有类、没有 `this`、没有模块级注册副作用。
-  [编写 Battery](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)
+  [编写 Battery](https://github.com/wmzy/s200/blob/main/docs/zh/guides/battery-authoring.md)
   用内建 battery 的例子讲解两种运行时形态（门与 unwind 盖章器）。
 - **可 tree-shaking。** 每个能力一个入口，ESM，无副作用的模块作用域——
   导入你的 battery 不得拉取导入方没有点名的东西。
@@ -152,7 +152,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 
 ### 流程
 
-1. 按[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)
+1. 按[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/zh/guides/battery-authoring.md)
    指南编写；随附测试和带实测体积的 README。
 2. 开一个 PR 把你的行加进下面的注册表——表格就是评审面，PR 落地
    即上架。
