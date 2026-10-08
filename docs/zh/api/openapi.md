@@ -102,6 +102,7 @@ const user = (await client.get('/users/:id', { id: '1' })).json();
 | 函数 / 类型 | 含义 |
 | --- | --- |
 | `createClient(app, options?)` | `Client<R>` —— 每路由一个方法（`getApiV1Users` 风格命名），限制于已注册模式字面量 |
+| `Client<R>` | 八个方法命名空间 —— `get`、`post`、`put`、`patch`、`delete`（别名 `del`）、`head`、`options` —— 各自持有该方法路由的调用签名；其他方法注册的模式类型为 `never` |
 | `ClientInit` | `RequestInit & { query?: Record<string, string \| number \| boolean \| readonly (…)[] \| undefined> }` —— 数组值重复键、`undefined` 跳过、数字/布尔字符串化 |
 | `ClientOptions` | `{ baseUrl?, fetch? }` —— 拼到每个路径前的 base URL；可注入 fetch 用于测试与 edge 运行时 |
 | `ClientResponse<S, T>` | 状态判别响应联合：`res.status` 收窄 `res.json()` 的类型 |

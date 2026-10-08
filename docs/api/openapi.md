@@ -102,6 +102,7 @@ The client sends plain `fetch` requests (any base URL, any `fetch` implementatio
 | Function / Type | Meaning |
 | --- | --- |
 | `createClient(app, options?)` | `Client<R>` — one method per route (`getApiV1Users`-style names), restricted to registered pattern literals |
+| `Client<R>` | Eight method namespaces — `get`, `post`, `put`, `patch`, `delete` (with the `del` alias), `head`, `options` — each holding the call signatures of that method's routes; patterns registered under other methods type as `never` |
 | `ClientInit` | `RequestInit & { query?: Record<string, string \| number \| boolean \| readonly (…)[] \| undefined> }` — array values repeat the key, `undefined` is skipped, numbers/booleans stringify |
 | `ClientOptions` | `{ baseUrl?, fetch? }` — base URL prepended to every path; injectable fetch for tests and edge runtimes |
 | `ClientResponse<S, T>` | The status-discriminated response union: `res.status` narrows `res.json()`'s type |
