@@ -1,6 +1,11 @@
 import { defineConfig } from 'vitepress';
 
 export default defineConfig({
+  // Populate page.headers (useData().page.headers). The default
+  // theme's outline reads rendered headings from the DOM and local
+  // search splits its own HTML, but page data stays empty without
+  // this — the upstream default (opt-in since 1.x).
+  markdown: { headers: true },
   // Project pages serve from /s200/ (wmzy/s200). Only applied in CI so
   // `pnpm docs:dev` and `docs:preview` keep serving from / locally.
   base: process.env.GITHUB_ACTIONS ? '/s200/' : '/',

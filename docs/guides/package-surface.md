@@ -1,4 +1,17 @@
 # Package surface
 
-Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement (`defineMiddleware`, the third-party battery authoring hook, lives there too). The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`, `s200/otel`, `s200/codegen`, `s200/test`, `s200/multipart`, `s200/session`, `s200/swagger`, `s200/upload`, `s200/dev`, `s200/lifecycle`, `s200/health`, `s200/config`, `s200/schedule`, `s200/events`, `s200/version`, `s200/shard`, `s200/gateway`, `s200/shard-dev`, `s200/executor`, `s200/unit-metrics`) are separate package entries: importing one pulls exactly it. The core and every battery except `s200/events` are zero-dependency; `s200/events` adds [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter) as its single dependency. A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+## The core barrel
 
+Everything is a named export from the core barrel (`s200`) — tree-shaking starts at the import statement (`defineMiddleware`, the third-party battery authoring hook, lives there too).
+
+## Package entries
+
+The Node/Bun adapters (`s200/node`, `s200/bun`) and the batteries (`s200/cors`, `s200/logger`, `s200/route-table`, `s200/cookies`, `s200/validate`, `s200/query`, `s200/rate-limit`, `s200/compress`, `s200/streaming`, `s200/request-id`, `s200/timeout`, `s200/websocket` (+ `s200/websocket/node`, `s200/websocket/bun`), `s200/etag`, `s200/secure-headers`, `s200/auth`, `s200/accepts`, `s200/serialize`, `s200/client`, `s200/csrf`, `s200/jwt`, `s200/cache`, `s200/trust-proxy`, `s200/meta`, `s200/openapi`, `s200/deno`, `s200/cloudflare`, `s200/otel`, `s200/codegen`, `s200/test`, `s200/multipart`, `s200/session`, `s200/swagger`, `s200/upload`, `s200/dev`, `s200/lifecycle`, `s200/health`, `s200/config`, `s200/schedule`, `s200/events`, `s200/version`, `s200/shard`, `s200/gateway`, `s200/shard-dev`, `s200/executor`, `s200/unit-metrics`) are separate package entries: importing one pulls exactly it.
+
+## Dependencies
+
+The core and every battery except `s200/events` are zero-dependency; `s200/events` adds [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter) as its single dependency.
+
+## JSR
+
+A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
