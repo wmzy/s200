@@ -88,7 +88,7 @@ await streamForm(ctx, (part) => { /* part.name, part.data, … */ });
 
 内存按 part 而非按体受限：一个 part 的字节累积到其定界符到达，另加跨块边界的扫描窗口。part 的头块上限 16 KiB、传输填充上限 256 字节；越过任一即判为畸形。`limit` 预算在字节到达途中以 `413` `HttpError` 拒绝超限上传，同时取消平台体；已中止的 `ctx.signal` 浮现为 `AbortError`；对已流式化体的二次读取以 `409` 拒绝。
 
-## 上传（`s200/upload`）
+## 上传（`s200/upload`）{#upload-s200-upload}
 
 `uploadForm` 经 `streamForm` 解析 multipart 请求，把每个接受的文件走过注入的 **sink** —— s200 保持零依赖，sink 决定字节落点（磁盘、对象存储、哈希）。
 
