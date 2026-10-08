@@ -4,7 +4,7 @@
 
 ## 验证（`s200/validate`）
 
-把任意注入的解析函数包装为**闸门中间件**；解析值落在 `ctx.state.validated`。零依赖：带 zod、valibot、typebox 或手写检查即可 —— s200 只调用它。
+把任意注入的解析函数包装为**闸门中间件**；解析值落在 `ctx.state.validated`。零依赖：带手写检查（或库的 `.parse`）即可 —— s200 只调用它。
 
 ```ts
 post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
@@ -14,7 +14,7 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 
 | 函数 | 含义 |
 | --- | --- |
-| `validate(schema, options?)` | 纯解析函数 `(data) => T` 上的闸门；首个抛错 → 带其消息的 `422` `HttpError` |
+| `validate(parse, options?)` | 纯解析函数 `(ctx) => unknown` 上的闸门 —— 接收整个上下文，可自行读取方法、请求头或手工解析的请求体；抛出的值原样拒绝链（由应用的错误路径决定状态码） |
 | `jsonBody<S>(schema)` | JSON 体模式上的闸门 —— 解析函数**或** Standard Schema 值（任何带 `~standard` 的） |
 | `standardValidate(schema, data)` | 裸 Standard Schema 调用：`validate()` → `{ value }` 或 `{ issues }`；空 `issues` 算成功 |
 | `isStandardSchema(value)` | 结构性 `~standard` 谓词 |

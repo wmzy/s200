@@ -4,7 +4,7 @@ Validation gates, typed query parsing, content negotiation, and multipart handli
 
 ## Validate (`s200/validate`)
 
-Wraps any injected parse function as a **gate middleware**; the parsed value lands on `ctx.state.validated`. Zero-dependency: bring zod, valibot, typebox, or a hand-rolled check — s200 only calls it.
+Wraps any injected parse function as a **gate middleware**; the parsed value lands on `ctx.state.validated`. Zero-dependency: bring a hand-rolled check (or a library's `.parse`) — s200 only calls it.
 
 ```ts
 post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
@@ -14,7 +14,7 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 
 | Function | Meaning |
 | --- | --- |
-| `validate(schema, options?)` | Gate over a plain parse function `(data) => T`; first thrown error → `422` `HttpError` with its message |
+| `validate(parse, options?)` | Gate over a plain parse function `(ctx) => unknown` — it receives the whole context, so it can read the method, headers, or a manually-parsed body itself; a thrown value rejects the chain unchanged (the app's error path decides the status) |
 | `jsonBody<S>(schema)` | Gate over a JSON-body schema — a parse function **or** a Standard Schema value (anything with `~standard`) |
 | `standardValidate(schema, data)` | The raw Standard Schema call: `validate()` → `{ value }` or `{ issues }`; empty `issues` counts as success |
 | `isStandardSchema(value)` | Structural `~standard` predicate |
