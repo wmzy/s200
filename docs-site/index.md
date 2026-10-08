@@ -12,6 +12,9 @@ hero:
       text: Get Started
       link: /getting-started
     - theme: alt
+      text: API Reference
+      link: /api/core
+    - theme: alt
       text: GitHub
       link: https://github.com/wmzy/s200
 

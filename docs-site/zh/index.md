@@ -12,6 +12,9 @@ hero:
       text: 快速开始
       link: /zh/getting-started
     - theme: alt
+      text: API 参考
+      link: /zh/api/core
+    - theme: alt
       text: GitHub
       link: https://github.com/wmzy/s200
 
