@@ -68,7 +68,7 @@ use(app, trace({
 | `attributes` | — | Static record or per-request callback — spread over the defaults, so it can add (`url.route`, `service.name`) or override them |
 | `now` | `performance.now` | Clock override |
 
-Structural instrument types: `Counter` = `{ add(value, attributes?) }` (compatible with OTel's `UpDownCounter` — `add(+1)`/`add(-1)` balances the same), `Histogram` = `{ record(value, attributes?) }`. `InstrumentOptions`: `{ description?, unit?, advice?: { explicitBucketBoundaries? } }`. `AttributeValue`: `string | number | boolean | readonly (string | number | boolean)[]`.
+Structural instrument types: `Counter` = `{ add(value, attributes?) }` (compatible with OTel's `UpDownCounter` — `add(+1)`/`add(-1)` balances the same), `Histogram` = `{ record(value, attributes?) }`. `MetricAttributes`: `Record<string, AttributeValue>` — the attribute records instruments accept and `MetricsOptions.attributes` carries. `InstrumentOptions`: `{ description?, unit?, advice?: { explicitBucketBoundaries? } }`. `AttributeValue`: `string | number | boolean | readonly (string | number | boolean)[]`.
 
 ## API version (`s200/version`)
 

@@ -51,7 +51,9 @@ get(app, '/ready', readiness({ db: () => pool.query('select 1') }));
 | `readiness(checks, options?)` | 在一个每检查预算下并发运行每个命名检查；`200 {"status":"ok","checks":{…}}` 或 `503 {"status":"fail",…}` |
 | `createGate()` | 可复位排空开关：把 `gate.check` 接进就绪探针、把 `gate` 本身接进 `lifecycle` |
 
-`HealthCheck`：`() => void | Promise<void>` —— 健康时返回/resolve，不健康时以原因抛错/拒绝。`readiness` 选项：`{ timeout?: number }` —— 每检查预算（毫秒，默认 1000）；每个检查还与请求的 abort 信号竞速，因此挂死的依赖无法钉住 handler。失败原因截断到 200 字符。
+`HealthCheck`：`() => void | Promise<void>` —— 健康时返回/resolve，不健康时以原因抛错/拒绝。`ReadinessOptions`：`{ timeout?: number }` —— 每检查预算（毫秒，默认 1000）；每个检查还与请求的 abort 信号竞速，因此挂死的依赖无法钉住 handler。失败原因截断到 200 字符。
+
+响应体：`HealthBody` = `{ status: 'ok' }`（存活）；`ReadinessBody` = `{ status: 'ok' | 'fail'; checks: Record<string, string> }` —— 每个检查的结论是 `'ok'`，或其失败原因（超时、中止或抛出的消息，截断到 200 字符）。
 
 `Gate`：`{ check(): void; close(reason?): void; open(): void }` —— 触发时 `check` 抛出关闭原因（探针报告它）；`close` 触发闸门；`open` 复位。
 

@@ -21,6 +21,7 @@
 | `ErrorHandler<S>` | `(ctx, error) => Promise<void> \| void` —— 把抛出的值映射为响应 |
 | `NotFoundHandler<S>` | `(ctx) => Promise<void> \| void` —— 未匹配请求的最后机会；默认 404 |
 | `Plugin<S>` | `(app: App<S>) => void` —— 在可变应用数据上的扩展钩子 |
+| `HandleInit` | `{ signal?: AbortSignal }` —— `handle` 的可选 init；信号与适配器自身的取消组合 |
 
 ### 幻影类型通道
 
@@ -65,7 +66,7 @@ removeRoute(app, method, pattern);            // 运行时过滤（类型层对�
 ```
 
 - `use(app, prefix, …mws)` 按路径名前缀作用域（允许参数，如 `/users/:id`）；前缀不带中间件会抛错。
-- `mount` 拼接模式（`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`），把子应用的中间件作用域到每个挂载路由，从不修改子应用。父应用的 `match`/`onError`/`onNotFound` 生效；空子应用的中间件会丢失。
+- `mount` 拼接模式（`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`），把子应用的中间件作用域到每个挂载路由，从不修改子应用。父应用的 `match`/`onError`/`onNotFound` 生效；空子应用的中间件会丢失。类型层，`MountedDefs<R, Base>` 记录挂载的定义 —— 模式以前缀为基（根为 `/` 的子应用坍缩为裸前缀），`out`/`status`/`in`/`errors`/`branches` 幻影通道随行 —— 因此挂载的应用保留其类型化客户端面；`MountBase` 规范化前缀，`MergeRecords` 并集重叠的幻影键。
 - 方法注册器（`get`、`post` …）按 handler 参数类型重载：`get(app, '/users/:id', (ctx) => …)` 通过 `ParamsOf<'/users/:id'>` 类型化 `ctx.params`。
 - `all` 对所有方法注册；此类路由会被 OpenAPI 生成跳过。
 
@@ -77,7 +78,13 @@ removeRoute(app, method, pattern);            // 运行时过滤（类型层对�
 
 koa-compose 语义：下游按注册序、上游逆序。抛错使整链拒绝；结算前二次 `next()` 以 `Error('next() called multiple times')` 拒绝。可选的尾参 `next` 续到外层链，因此组合链本身可再组合。
 
-## 路由原语（`s200/router`）
+## `defineMiddleware(mw)` → `M`
+
+第三方电池作者的发布标识：把一个 `(ctx, next)` 函数包装为可复用的 s200 电池。零运行时成本 —— 恒等函数。它服务于可发现性（一个可导入的创作符号）与电池工具的挂点，并完整保留中间件类型 —— 包括路由注册器与 `s200/client` 消费的幻影 `_in` 闸品牌（`jsonBody` 的解析类型、`queryParams` 的读取类型）。见[编写电池模块](/zh/guides/battery-authoring)。
+
+## 路由原语（核心 barrel）
+
+这些由核心 barrel 导出 —— `import { matchRoutes } from 's200'` —— 而非独立的包入口：
 
 | 函数 | 含义 |
 | --- | --- |

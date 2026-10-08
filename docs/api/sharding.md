@@ -64,13 +64,15 @@ await supervisor.stop();
 
 | Member | Meaning |
 | --- | --- |
-| `start()` | Boots every owned unit (thread/process); inline units are the caller's |
+| `start()` | Boots every owned unit: **process** units fork immediately; **thread** units only pre-bind their port (a paused listener) — the worker thread spawns lazily on the first connection, so idle shards cost zero threads. Inline units are the caller's |
 | `stop()` | Drains every owned unit within `STOP_GRACE_MS` and force-kills whatever ignores it |
-| `units()` | Snapshots `UnitStatus[]`: `{ id, state, port?, restarts, lastError? }` |
+| `units()` | Snapshots `UnitStatus[]`: `{ id, state, port?, restarts, lastError? } |
 
-`ShardPlan`: `{ spec, executor: Executor, port? }` — explicit port override; omitted, thread/process units draw from the 31000+ counter. `UnitState`: `'spawning' | 'ready' | 'draining' | 'stopped' | 'failed' | 'external'`. Unexpected child exits restart with exponential backoff (100ms doubling, capped at 5s); a stable period resets it.
+`ShardPlan`: `{ spec, executor: Executor, port? }` — explicit port override; omitted, thread/process units draw from the 31000+ counter. `Executor`: `{ kind: 'inline'; app } \| { kind: 'thread'; entry } \| { kind: 'process'; entry } \| { kind: 'external'; address }`. `UnitState`: `'spawning' | 'ready' | 'draining' | 'stopped' | 'failed' | 'external'`. Unexpected child exits restart with exponential backoff (100ms doubling, capped at 5s); a stable period resets it.
 
-Also exported: `installShardResolution()`, `appFromEntry(entry)`, `createShardServer(app)`, `startShardWorker(...)`, `runThreadShard(...)` — the child-realm machinery `runShards` drives (a thread/process unit re-imports this module as its runtime).
+The thread hand-off is dual-mode: on runtimes that can transfer server handles (node ≥ 26) the pre-bound listener and its parked sockets move into the worker in one `postMessage` (zero proxying); on older runtimes the worker serves a private port instead and the supervisor pipes accepted sockets to it byte-for-byte — same lazy spawn, same first-request guarantee, the supervisor never parses HTTP. A worker that dies before adopting its sockets destroys the parked ones so their clients fail fast instead of hanging.
+
+Also exported: `installShardResolution()`, `appFromEntry(entry)`, `createShardServer(app)`, `startShardWorker(...)`, `runThreadShard(...)` — the child-realm machinery `runShards` drives (a thread/process unit re-imports this module as its runtime) — plus `WorkerLaunch` (`{ mode?: 'lazy' | 'eager'; port? }`), the supervisor→worker launch message.
 
 ## Unit metrics (`s200/unit-metrics`)
 

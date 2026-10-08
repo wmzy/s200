@@ -84,6 +84,21 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `JwtHeader` | `{ alg, kid? }` — what a `KeyResolver` sees |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
 | `JwksOptions` | `{ ttlMs?, fetchFn? }` |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, algorithms?, header?, prefix?, cookie?, verify? }` — the `jwtAuth` gate's options (table below) |
+
+`JwtAuthOptions` (the `jwtAuth` gate):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `secret` | — | HMAC secret (`string` or bytes) — one of `secret`/`key`/`keyResolver`/`jwks` is required unless `verify` is given |
+| `key` | — | Static key material (`CryptoKey`/JWK for RS/PS/ES, a secret for HS) |
+| `keyResolver` | — | Per-token key resolution (rotation, multi-issuer) |
+| `jwks` | — | JWKS endpoint — `string` or `{ url, ttlMs? }`; shorthand for `createJwksResolver` |
+| `algorithms` | every supported one | Algorithms the gate accepts |
+| `header` | `'authorization'` | Header carrying the token |
+| `prefix` | `'Bearer '` | Scheme prefix stripped from the header value |
+| `cookie` | — | Cookie name to fall back to when the header is absent |
+| `verify` | — | Custom verification (another library, exotic tokens) — the returned value lands on `ctx.state.jwt` |
 
 Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key — the confusion attack is structurally closed). `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
 
@@ -127,7 +142,7 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 | `limit` | `60` | Requests per window per key |
 | `key` | first `x-forwarded-for` hop | Identity selector `(ctx) => string` — pass your own (and a `now` clock for tests) |
 | `now` | `Date.now` | Clock override |
-| `store` | in-process deque per key | Shared counters across instances: `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` — must be atomic per key (the Redis INCR + PEXPIRE shape) |
+| `store` | in-process deque per key | Shared counters across instances: a `RateLimitStore` — `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` — must be atomic per key (the Redis INCR + PEXPIRE shape) |
 
 `RateLimitHit`: `{ count: number; retryAt: number }` — live count and the earliest retry time. The default store is per-instance; shared limits need an injected `store`.
 

@@ -64,13 +64,15 @@ await supervisor.stop();
 
 | 成员 | 含义 |
 | --- | --- |
-| `start()` | 启动每个自有单元（thread/process）；inline 单元是调用方的 |
+| `start()` | 启动每个自有单元：**process** 单元立即 fork；**thread** 单元只预绑定端口（暂停的监听器）—— 工作者线程在首个连接到达时才惰性生成，因此空闲分片零线程成本。inline 单元是调用方的 |
 | `stop()` | 在 `STOP_GRACE_MS` 内排空每个自有单元，强杀无视者 |
 | `units()` | 快照 `UnitStatus[]`：`{ id, state, port?, restarts, lastError? }` |
 
-`ShardPlan`：`{ spec, executor: Executor, port? }` —— 显式端口覆盖；省略时 thread/process 单元从 31000+ 计数器取。`UnitState`：`'spawning' | 'ready' | 'draining' | 'stopped' | 'failed' | 'external'`。意外子进程退出以指数退避重启（100ms 翻倍、上限 5s）；稳定期重置。
+`ShardPlan`：`{ spec, executor: Executor, port? }` —— 显式端口覆盖；省略时 thread/process 单元从 31000+ 计数器取。`Executor`：`{ kind: 'inline'; app } \| { kind: 'thread'; entry } \| { kind: 'process'; entry } \| { kind: 'external'; address }`。`UnitState`：`'spawning' | 'ready' | 'draining' | 'stopped' | 'failed' | 'external'`。意外子进程退出以指数退避重启（100ms 翻倍、上限 5s）；稳定期重置。
 
-另导出：`installShardResolution()`、`appFromEntry(entry)`、`createShardServer(app)`、`startShardWorker(...)`、`runThreadShard(...)` —— `runShards` 驱动的子域机制（thread/process 单元把本模块作为其运行时重新导入）。
+线程交接是双模式的：在能转移服务器句柄的运行时（node ≥ 26）上，预绑定的监听器与其停泊的套接字经一次 `postMessage` 移入工作者（零代理）；在更早的运行时上，工作者改为服务私有端口，监督器把接受的套接字逐字节管道到该端口 —— 同样的惰性生成、同样的首请求保证，监督器始终不解析 HTTP。工作者在采纳其套接字之前死亡时，停泊的套接字被销毁，客户端快速失败而非挂死。
+
+另导出：`installShardResolution()`、`appFromEntry(entry)`、`createShardServer(app)`、`startShardWorker(...)`、`runThreadShard(...)` —— `runShards` 驱动的子域机制（thread/process 单元把本模块作为其运行时重新导入）—— 以及 `WorkerLaunch`（`{ mode?: 'lazy' | 'eager'; port? }`），监督器→工作者的启动消息。
 
 ## 单元指标（`s200/unit-metrics`）
 

@@ -1,6 +1,6 @@
 # 编写 Battery
 
-battery 是 s200 复用中间件的基本单元：一个位于独立包入口（`s200/cors`、`s200/validate`、…）之后的可选模块，零运行时依赖，由纯函数构成——选项进、`Middleware` 出。内置 battery 是范本，核心 barrel 里的 `defineMiddleware` 则是打包你自己的 battery 的正式入口。本指南会依次讲两种运行时形态、流入 `s200/client` 的类型品牌、内置 battery 的结构约定，以及如何发布。想纵览当前已内置的内容，请看 [battery 总览](/guides/batteries)。
+battery 是 s200 复用中间件的基本单元：一个位于独立包入口（`s200/cors`、`s200/validate`、…）之后的可选模块，零运行时依赖，由纯函数构成——选项进、`Middleware` 出。内置 battery 是范本，核心 barrel 里的 `defineMiddleware` 则是打包你自己的 battery 的正式入口。本指南会依次讲两种运行时形态、流入 `s200/client` 的类型品牌、内置 battery 的结构约定，以及如何发布。想纵览当前已内置的内容，请看 [battery 总览](/zh/guides/batteries)。
 
 ## battery 是什么
 

@@ -113,6 +113,7 @@ const result = await uploadForm(ctx, {
 | `UploadFile` | `{ name, filename, contentType?, data: Uint8Array, size }` —— 一个缓冲的文件 part |
 | `UploadSink` | `(file: UploadFile) => Promise<string \| void> \| string \| void` —— 返回的字符串作为该文件的 `id` 报告；拒绝则中止整个上传 |
 | `UploadAccept` | `readonly string[]`（媒体类型前缀）或 `(part: FormPart) => boolean` |
+| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, accept? }` —— 全部可选；即上文示例展示的闸门 |
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 

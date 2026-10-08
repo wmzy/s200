@@ -26,7 +26,7 @@ await server.close();
 
 | Field | Meaning |
 | --- | --- |
-| `server` | The raw `HttpServer \| HttpsServer \| Http2SecureServer` — the graceful-drain surface for `s200/lifecycle` |
+| `server` | The raw `NodeServerKind` (`HttpServer \| HttpsServer \| Http2SecureServer`) — the graceful-drain surface for `s200/lifecycle` |
 | `url` | `http://host:port` |
 | `port` | Bound port |
 | `close()` | Stops accepting, drains in-flight requests, then resolves |

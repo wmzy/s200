@@ -68,7 +68,7 @@ use(app, trace({
 | `attributes` | — | 静态记录或逐请求回调 —— 铺在默认值之上，可追加（`url.route`、`service.name`）或覆盖 |
 | `now` | `performance.now` | 时钟覆盖 |
 
-结构性仪表类型：`Counter` = `{ add(value, attributes?) }`（兼容 OTel 的 `UpDownCounter` —— `add(+1)`/`add(-1` 同样平衡）、`Histogram` = `{ record(value, attributes?) }`。`InstrumentOptions`：`{ description?, unit?, advice?: { explicitBucketBoundaries? } }`。`AttributeValue`：`string | number | boolean | readonly (string | number | boolean)[]`。
+结构性仪表类型：`Counter` = `{ add(value, attributes?) }`（兼容 OTel 的 `UpDownCounter` —— `add(+1)`/`add(-1)` 同样平衡）、`Histogram` = `{ record(value, attributes?) }`。`MetricAttributes`：`Record<string, AttributeValue>` —— 仪表接受的属性记录，也是 `MetricsOptions.attributes` 携带的类型。`InstrumentOptions`：`{ description?, unit?, advice?: { explicitBucketBoundaries? } }`。`AttributeValue`：`string | number | boolean | readonly (string | number | boolean)[]`。
 
 ## API 版本（`s200/version`）
 

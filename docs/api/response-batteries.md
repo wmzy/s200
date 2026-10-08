@@ -27,8 +27,10 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 type SerializeSchema =
   | { type: 'object'; properties: { [key: string]: SerializeSchema }; required?: readonly string[] }
   | { type: 'array'; items: SerializeSchema }
-  | { type: 'string' | 'number' | 'integer' | 'boolean' | 'null'; nullable?: boolean };
+  | { readonly type: PrimitiveType; readonly nullable?: boolean };
 ```
+
+`PrimitiveType` names the leaf alternatives: `'string' | 'number' | 'integer' | 'boolean' | 'null'`.
 
 - `InferSchema<S>` derives the compile-time input type (`required` keys non-optional, `nullable: true` widens to `T | null`).
 - The payoff is the declared shape, not raw speed: an internal field can never leak through serialization. Modern engines' `JSON.stringify` stays competitive on typical payloads — use it when the shape contract matters, not as a speed hack.

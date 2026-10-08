@@ -26,7 +26,7 @@ await server.close();
 
 | 字段 | 含义 |
 | --- | --- |
-| `server` | 原始 `HttpServer \| HttpsServer \| Http2SecureServer` —— `s200/lifecycle` 的优雅排空面 |
+| `server` | 原始 `NodeServerKind`（`HttpServer \| HttpsServer \| Http2SecureServer`）—— `s200/lifecycle` 的优雅排空面 |
 | `url` | `http://host:port` |
 | `port` | 已绑定端口 |
 | `close()` | 停止接受、排空在途请求后 resolve |

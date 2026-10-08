@@ -84,6 +84,21 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `JwtHeader` | `{ alg, kid? }` —— `KeyResolver` 所见 |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
 | `JwksOptions` | `{ ttlMs?, fetchFn? }` |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, algorithms?, header?, prefix?, cookie?, verify? }` —— `jwtAuth` 闸门的选项（见下表） |
+
+`JwtAuthOptions`（`jwtAuth` 闸门）：
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `secret` | — | HMAC 密钥（`string` 或字节）—— 未提供 `verify` 时，`secret`/`key`/`keyResolver`/`jwks` 之一必填 |
+| `key` | — | 静态密钥材料（RS/PS/ES 用 `CryptoKey`/JWK，HS 用密钥） |
+| `keyResolver` | — | 逐令牌密钥解析（轮换、多发行方） |
+| `jwks` | — | JWKS 端点 —— `string` 或 `{ url, ttlMs? }`；`createJwksResolver` 的简写 |
+| `algorithms` | 全部支持 | 闸门接受的算法 |
+| `header` | `'authorization'` | 承载令牌的头 |
+| `prefix` | `'Bearer '` | 从头值中剥离的方案前缀 |
+| `cookie` | — | 头缺失时回退的 cookie 名 |
+| `verify` | — | 自定义校验（另一个库、奇异令牌）—— 返回值存入 `ctx.state.jwt` |
 
 密钥族必须与头部算法匹配（HS 需要密钥，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥 —— 混淆攻击在结构上被封死）。`jwtAuth` 的密钥来源：`secret`、`key`、`keyResolver`、`jwks`（`string` 或 `{ url, ttlMs? }`），或自定义 `verify`（另一个库、奇异令牌 —— 返回值落到 `ctx.state.jwt`）。
 
@@ -127,7 +142,7 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 | `limit` | `60` | 每窗口每密钥请求数 |
 | `key` | 首个 `x-forwarded-for` 跳 | 身份选择器 `(ctx) => string` —— 传你自己的（以及测试用的 `now` 时钟） |
 | `now` | `Date.now` | 时钟覆盖 |
-| `store` | 每密钥进程内双端队列 | 跨实例共享计数：`hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` —— 必须按键原子（Redis INCR + PEXPIRE 形状） |
+| `store` | 每密钥进程内双端队列 | 跨实例共享计数：一个 `RateLimitStore` —— `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` —— 必须按键原子（Redis INCR + PEXPIRE 形状） |
 
 `RateLimitHit`：`{ count: number; retryAt: number }` —— 存活计数与最早可重试时间。默认存储是每实例的；共享限流需要注入 `store`。
 

@@ -51,7 +51,9 @@ get(app, '/ready', readiness({ db: () => pool.query('select 1') }));
 | `readiness(checks, options?)` | Runs every named check concurrently under one per-check budget; `200 {"status":"ok","checks":{…}}` or `503 {"status":"fail",…}` |
 | `createGate()` | A resettable drain switch: wire `gate.check` into a readiness probe and `gate` itself into `lifecycle` |
 
-`HealthCheck`: `() => void | Promise<void>` — returns/resolves when healthy, throws/rejects with the reason when not. `readiness` options: `{ timeout?: number }` — per-check budget in ms (default 1000); each check is also raced against the request's abort signal, so a hung dependency cannot pin the handler. Failure reasons are truncated to 200 chars.
+`HealthCheck`: `() => void | Promise<void>` — returns/resolves when healthy, throws/rejects with the reason when not. `ReadinessOptions`: `{ timeout?: number }` — per-check budget in ms (default 1000); each check is also raced against the request's abort signal, so a hung dependency cannot pin the handler. Failure reasons are truncated to 200 chars.
+
+Response bodies: `HealthBody` = `{ status: 'ok' }` (liveness); `ReadinessBody` = `{ status: 'ok' | 'fail'; checks: Record<string, string> }` — each check's verdict is `'ok'`, or its failure reason (timeout, abort, or the thrown message, truncated to 200 chars).
 
 `Gate`: `{ check(): void; close(reason?): void; open(): void }` — `check` throws the close reason while tripped (the probe reports it); `close` trips the gate; `open` resets it.
 

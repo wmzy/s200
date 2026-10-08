@@ -27,8 +27,10 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 type SerializeSchema =
   | { type: 'object'; properties: { [key: string]: SerializeSchema }; required?: readonly string[] }
   | { type: 'array'; items: SerializeSchema }
-  | { type: 'string' | 'number' | 'integer' | 'boolean' | 'null'; nullable?: boolean };
+  | { readonly type: PrimitiveType; readonly nullable?: boolean };
 ```
+
+`PrimitiveType` 命名叶子备选：`'string' | 'number' | 'integer' | 'boolean' | 'null'`。
 
 - `InferSchema<S>` 派生编译期输入类型（`required` 键不可选，`nullable: true` 放宽为 `T | null`）。
 - 价值在声明的形状，而非原始速度：内部字段绝不会从序列化泄漏。现代引擎的 `JSON.stringify` 在典型负载上仍有竞争力 —— 在形状契约重要时使用，而非当加速黑客。

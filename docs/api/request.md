@@ -113,6 +113,7 @@ const result = await uploadForm(ctx, {
 | `UploadFile` | `{ name, filename, contentType?, data: Uint8Array, size }` — one buffered file part |
 | `UploadSink` | `(file: UploadFile) => Promise<string \| void> \| string \| void` — a returned string is reported as that file's `id`; a rejection aborts the whole upload |
 | `UploadAccept` | `readonly string[]` (media-type prefixes) or `(part: FormPart) => boolean` |
+| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, accept? }` — all optional; the gates the example above shows |
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 

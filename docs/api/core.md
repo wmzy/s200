@@ -21,6 +21,7 @@ The core barrel: application data, routing, onion composition, error values, and
 | `ErrorHandler<S>` | `(ctx, error) => Promise<void> \| void` — maps a thrown value to a response |
 | `NotFoundHandler<S>` | `(ctx) => Promise<void> \| void` — last chance to answer; default is a 404 |
 | `Plugin<S>` | `(app: App<S>) => void` — extension hook over the mutable app data |
+| `HandleInit` | `{ signal?: AbortSignal }` — `handle`'s optional init; the signal composes with the adapter's own cancellation |
 
 ### Phantom type channels
 
@@ -65,7 +66,7 @@ removeRoute(app, method, pattern);            // runtime filter (typed twin: Rou
 ```
 
 - `use(app, prefix, …mws)` scopes by pathname prefix (params allowed, e.g. `/users/:id`); a prefix with no middlewares throws.
-- `mount` joins patterns (`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`), scopes the sub-app's middlewares onto each mounted route, and never mutates the sub-app. The parent's `match`/`onError`/`onNotFound` apply; empty sub-app middlewares are lost.
+- `mount` joins patterns (`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`), scopes the sub-app's middlewares onto each mounted route, and never mutates the sub-app. The parent's `match`/`onError`/`onNotFound` apply; empty sub-app middlewares are lost. Type-level, `MountedDefs<R, Base>` logs the mounted defs — patterns prefixed under the base (a sub-app rooted at `/` collapses onto the bare prefix) with the `out`/`status`/`in`/`errors`/`branches` phantom channels riding along — so a mounted app keeps its typed client surface; `MountBase` normalizes the prefix and `MergeRecords` unions overlapping phantom keys.
 - Method registrars (`get`, `post`, …) overload on the handler's params type: `get(app, '/users/:id', (ctx) => …)` types `ctx.params` through `ParamsOf<'/users/:id'>`.
 - `all` registers for every method; such routes are skipped by OpenAPI emission.
 
@@ -77,7 +78,13 @@ The whole dispatch contract. Matches the route, builds the `Ctx`, runs the chain
 
 Koa-compose semantics: downstream in registration order, upstream in reverse. A throw rejects the chain; a second `next()` before settlement rejects with `Error('next() called multiple times')`. The optional trailing `next` continues into an outer chain, so composed chains are composable.
 
-## Router primitives (`s200/router`)
+## `defineMiddleware(mw)` → `M`
+
+The published identity for third-party battery authors: wrap a `(ctx, next)` function to publish it as a reusable s200 battery. Zero runtime cost — the identity function. It exists for discoverability (one importable symbol to author against) and as the attachment point for battery tooling, and it preserves the middleware's full type — including the phantom `_in` gate brands (`jsonBody`'s parse type, `queryParams`' read type) that route registrars and `s200/client` consume. See [Battery Authoring](/guides/battery-authoring).
+
+## Router primitives (core barrel)
+
+These ship from the core barrel — `import { matchRoutes } from 's200'` — not a separate package entry:
 
 | Function | Meaning |
 | --- | --- |

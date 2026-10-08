@@ -37,6 +37,8 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 | `onClose(cb)` | 以协商的关闭码触发一次（无关闭帧断开为 `1006`） |
 | `onError(cb)` | 本连接的传输/处理错误 |
 
+回调签名：`WsMessageCb` = `(data: WsData) => void`，`WsCloseCb` = `(code: number, reason: string) => void`，`WsErrorCb` = `(error: Error) => void`。
+
 `WebSocketHandler`：`(socket: WsSocket, ctx: Ctx) => void | Promise<void>`。
 
 ## Node（`s200/websocket/node`）
