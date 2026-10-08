@@ -15,3 +15,5 @@ Node/Bun 适配器（`s200/node`、`s200/bun`）与电池（`s200/cors`、`s200/
 ## JSR
 
 仓库维护一份 `jsr.json` —— `pnpm publish:jsr` 将构建产物作为 `@wmzy/s200` 发布到 [JSR](https://jsr.io)。
+
+每个入口的导出、签名与选项见 [API 参考](/zh/api/core)。

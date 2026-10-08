@@ -41,6 +41,7 @@ console.log(`listening on ${server.url}`);
 ## 下一步
 
 - 指南：[路由](/zh/guides/routing) · [中间件](/zh/guides/middleware) · [响应](/zh/guides/responding) · [请求体解析](/zh/guides/body) · [静态文件](/zh/guides/static-files)
+- [API 参考](/zh/api/core) —— 每个模块的导出、签名与选项
 - [电池模块](/zh/guides/batteries) —— cors、logger、auth、jwt、rate-limit、websocket 等
 - [错误](/zh/guides/errors) · [适配器](/zh/guides/adapters) · [包导出清单](/zh/guides/package-surface)
 - [s200 与其他框架对比](/zh/comparison) · [基准测试](/zh/benchmarks) · [迁移指南](/zh/migration-from-express)

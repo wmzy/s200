@@ -15,3 +15,5 @@ The core and every battery except `s200/events` are zero-dependency; `s200/event
 ## JSR
 
 A `jsr.json` is maintained — `pnpm publish:jsr` publishes the built dist to [JSR](https://jsr.io) as `@wmzy/s200`.
+
+Every entry's exports, signatures, and options are documented in the [API Reference](/api/core).
