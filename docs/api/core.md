@@ -2,7 +2,7 @@
 
 The core barrel: application data, routing, onion composition, error values, and the dispatch entry point. Everything here is a named export from `s200` — no classes, no `new App()`.
 
-The barrel also re-exports the [response helpers, body readers, and `serveStatic`](/api/respond) — `json`, `text`, `html`, `send`, `redirect`, `newResponse`, `readText` / `readJson` / `readForm` / `readStream`, and `serveStatic` — so one import surface serves the whole request/response cycle.
+The barrel also re-exports the [response helpers, body readers, and `serveStatic`](/api/respond) — `json`, `text`, `html`, `send`, `redirect`, `newResponse`, `escapeHtml`, `utf8Length`, `readText` / `readJson` / `readForm` / `readStream`, and `serveStatic` (plus the `StatusedResponse`, `JsonResponse`, `BodyOptions`, `StaticFileInfo`, and `ServeStaticOptions` types) — so one import surface serves the whole request/response cycle.
 
 ## Types
 
