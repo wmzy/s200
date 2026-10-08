@@ -80,7 +80,8 @@ Incremental `multipart/form-data` parsing — the whole body is **never** buffer
 
 ```ts
 import { streamForm } from 's200/multipart';
-await streamForm(ctx, { onPart: (part) => { /* part.name, part.data, … */ } });
+await streamForm(ctx, (part) => { /* part.name, part.data, … */ });
+// streamForm(ctx, onPart, options?) — options.limit budgets the whole body
 ```
 
 `FormPart`: `{ name: string; filename?: string; contentType?: string; data: Uint8Array }` — binary-safe, byte-exact.
@@ -95,18 +96,22 @@ Memory is bounded per part, not per body: one part's bytes accumulate until its 
 import { uploadForm } from 's200/upload';
 import { writeFile } from 'node:fs/promises';
 
-const result = await uploadForm(ctx, {
-  limit: 10 * 1024 * 1024,          // total body budget, enforced while streaming
-  maxFileSize: 5 * 1024 * 1024,     // per-file cap (413)
-  maxFiles: 8,                        // file-part cap (413)
-  accept: ['image/'],                 // content-type allowlist (415)
-}, (file) => writeFile(`/tmp/${file.filename}`, file.data));
+const result = await uploadForm(
+  ctx,
+  (file) => writeFile(`/tmp/${file.filename}`, file.data),   // the sink
+  {
+    limit: 10 * 1024 * 1024,          // total body budget, enforced while streaming
+    maxFileSize: 5 * 1024 * 1024,     // per-file cap (413)
+    maxFiles: 8,                        // file-part cap (413)
+    accept: ['image/'],                 // content-type allowlist (415)
+  }
+);
 // result: { files: UploadedFile[], fields: QueryRecord }
 ```
 
 | Function | Meaning |
 | --- | --- |
-| `uploadForm(ctx, options?, sink?)` | Parses, gates, and lands an upload; fields come back as text, files as buffered `UploadFile`s plus whatever id the sink returned |
+| `uploadForm(ctx, sink, options?)` | Parses, gates, and lands an upload; fields come back as text, files as buffered `UploadFile`s plus whatever id the sink returned |
 
 | Type | Meaning |
 | --- | --- |

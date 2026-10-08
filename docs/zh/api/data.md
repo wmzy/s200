@@ -90,6 +90,8 @@ scheduler.start();
 await scheduler.stop();   // 取消所有定时器，等待在途运行
 ```
 
+`createScheduler(options?)` → `Scheduler`：
+
 | 成员 | 含义 |
 | --- | --- |
 | `scheduler.cron(expr, fn)` | 注册 cron 作业（即时校验 —— `0 0 31 2 *` 这类不可满足表达式在此抛错）；在运行中的调度器上注册立即武装 |

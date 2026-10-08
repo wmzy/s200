@@ -23,6 +23,8 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 | `matchWebSocket(app, pathname)` | Longest-match lookup against the registry → `WebSocketMatch \| undefined` |
 | `createWsCtx(req, url, params)` | Builds a request-shaped `Ctx` (params/query/url) for a handler |
 
+`WebSocketRoute`: `{ pattern, segments, handler, protocols?, perMessageDeflate? }` — one registry entry. The registry lives off-app (a `WeakMap` beside the app), so the core `App` shape stays HTTP-only and WebSocket state tree-shakes out of every non-WS consumer. `WebSocketMatch`: `{ route, params }` — what `matchWebSocket` returns.
+
 `WebSocketRouteOptions`: `{ protocols?: readonly string[]; perMessageDeflate?: boolean }` — subprotocols in server preference order (the first one the client also offered wins); permessage-deflate (RFC 7692) negotiated as no-context-takeover both ways (node adapter implements it; the bun bridge leaves compression to Bun's native negotiation).
 
 `WsSocket` — the server side of one connection, plain function properties (no event-emitter object, no classes):

@@ -11,6 +11,8 @@ createRouteTable(app);
 // { routes: [{ method: 'GET', pattern: '/users/:id', params: ['id'], middlewareCount: 1 }, …] }
 ```
 
+`createRouteTable(app)` → `RouteTable`：`{ routes: readonly RouteTableEntry[] }`。
+
 `RouteTableEntry`：`{ method: string; pattern: string; params: readonly string[]; middlewareCount: number }` —— 参数名按捕获顺序（`:id`，然后 `*rest`）；函数本身不可序列化，因此只有中间件计数随行。便于路由清单或跨语言翻译 —— `s200/openapi` 基于同一张表构建。
 
 ## 元数据（`s200/meta`）
@@ -46,7 +48,7 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | 函数 | 含义 |
 | --- | --- |
 | `openapiSpec(app, info)` | `OpenApiDocument` —— `{ openapi: '3.1.0', info, paths }`，构造上即 JSON 兼容 |
-| `openapiJson(ctx, app, init?)` | 响应助手：spec 的 JSON 响应 |
+| `openapiJson(ctx, app, info?)` | 响应助手：spec 的 JSON 响应（`info` 覆盖与 `openapiSpec` 配套） |
 | `withRouteValidation(app)` | 纯数据变换（mount 家族）：只重建带 `body` 或 `query` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 |
 
 `withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名首个违规路径（`{"error":"body.tags.1: expected string, got number"}`）；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。spec 与闸门共享一个来源：标注被重新挂回重建的路由。

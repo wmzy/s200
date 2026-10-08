@@ -80,7 +80,8 @@ const type = want.type(['application/json', 'text/html']) ?? 'application/json';
 
 ```ts
 import { streamForm } from 's200/multipart';
-await streamForm(ctx, { onPart: (part) => { /* part.name, part.data, … */ } });
+await streamForm(ctx, (part) => { /* part.name, part.data, … */ });
+// streamForm(ctx, onPart, options?) —— options.limit 限制全体字节预算
 ```
 
 `FormPart`：`{ name: string; filename?: string; contentType?: string; data: Uint8Array }` —— 二进制安全、字节精确。
@@ -95,18 +96,22 @@ await streamForm(ctx, { onPart: (part) => { /* part.name, part.data, … */ } })
 import { uploadForm } from 's200/upload';
 import { writeFile } from 'node:fs/promises';
 
-const result = await uploadForm(ctx, {
-  limit: 10 * 1024 * 1024,          // 总体预算，流式过程中强制执行
-  maxFileSize: 5 * 1024 * 1024,     // 每文件上限（413）
-  maxFiles: 8,                        // 文件 part 上限（413）
-  accept: ['image/'],                 // content-type 白名单（415）
-}, (file) => writeFile(`/tmp/${file.filename}`, file.data));
+const result = await uploadForm(
+  ctx,
+  (file) => writeFile(`/tmp/${file.filename}`, file.data),   // sink
+  {
+    limit: 10 * 1024 * 1024,          // 总体预算，流式过程中强制执行
+    maxFileSize: 5 * 1024 * 1024,     // 每文件上限（413）
+    maxFiles: 8,                        // 文件 part 上限（413）
+    accept: ['image/'],                 // content-type 白名单（415）
+  }
+);
 // result: { files: UploadedFile[], fields: QueryRecord }
 ```
 
 | 函数 | 含义 |
 | --- | --- |
-| `uploadForm(ctx, options?, sink?)` | 解析、过滤并落地上传；字段以文本返回，文件以缓冲的 `UploadFile` 加 sink 返回的任意 id 返回 |
+| `uploadForm(ctx, sink, options?)` | 解析、过滤并落地上传；字段以文本返回，文件以缓冲的 `UploadFile` 加 sink 返回的任意 id 返回 |
 
 | 类型 | 含义 |
 | --- | --- |

@@ -11,6 +11,8 @@ createRouteTable(app);
 // { routes: [{ method: 'GET', pattern: '/users/:id', params: ['id'], middlewareCount: 1 }, …] }
 ```
 
+`createRouteTable(app)` → `RouteTable`: `{ routes: readonly RouteTableEntry[] }`.
+
 `RouteTableEntry`: `{ method: string; pattern: string; params: readonly string[]; middlewareCount: number }` — param names in capture order (`:id`, then `*rest`); the functions themselves are not serializable, so only the middleware count travels. Handy for route listing or cross-language translation — and `s200/openapi` builds on the same table.
 
 ## Metadata (`s200/meta`)
@@ -46,7 +48,7 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | Function | Meaning |
 | --- | --- |
 | `openapiSpec(app, info)` | The `OpenApiDocument` — `{ openapi: '3.1.0', info, paths }`, JSON-compatible by construction |
-| `openapiJson(ctx, app, init?)` | Response helper: the spec as a JSON response |
+| `openapiJson(ctx, app, info?)` | Response helper: the spec as a JSON response (the `info` override pairs with `openapiSpec`'s) |
 | `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` |
 
 `withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming the first offending path (`{"error":"body.tags.1: expected string, got number"}`); valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes.

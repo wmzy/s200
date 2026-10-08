@@ -89,8 +89,8 @@ get(app, '/events', (ctx) => streamSSE(ctx, async (sse) => {
 
 | Function | Meaning |
 | --- | --- |
-| `stream(ctx, pump)` | Chunked plain output; `pump(writer)` drives a `StreamWriter` |
-| `streamSSE(ctx, pump)` | Server-Sent Events; `pump(writer)` drives an `SseWriter` |
+| `stream(ctx, pump, init?)` | Chunked plain output (`application/octet-stream`); `pump(writer)` drives a `StreamWriter`; `init` overrides status/headers |
+| `streamSSE(ctx, pump, init?)` | Server-Sent Events (`text/event-stream`, `cache-control: no-cache`); `pump(writer)` drives an `SseWriter`; `init` overrides status/headers |
 
 | Type | Meaning |
 | --- | --- |

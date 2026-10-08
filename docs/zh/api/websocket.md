@@ -23,6 +23,8 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 | `matchWebSocket(app, pathname)` | 对注册表做最长匹配查找 → `WebSocketMatch \| undefined` |
 | `createWsCtx(req, url, params)` | 为 handler 构建请求形状的 `Ctx`（params/query/url） |
 
+`WebSocketRoute`：`{ pattern, segments, handler, protocols?, perMessageDeflate? }` —— 一条注册表项。注册表挂在应用之外（应用旁的 `WeakMap`），因此核心 `App` 形状保持纯 HTTP，WebSocket 状态在所有非 WS 消费者中被 tree-shake 掉。`WebSocketMatch`：`{ route, params }` —— `matchWebSocket` 的返回值。
+
 `WebSocketRouteOptions`：`{ protocols?: readonly string[]; perMessageDeflate?: boolean }` —— 子协议按服务端偏好序（客户端提供的第一个匹配者胜出）；permessage-deflate（RFC 7692）双向 no-context-takeover 协商（node 适配器实现；bun 桥把压缩交给 Bun 原生协商）。
 
 `WsSocket` —— 一连接的服务端，纯函数属性（无事件发射器对象、无类）：

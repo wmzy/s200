@@ -90,6 +90,8 @@ scheduler.start();
 await scheduler.stop();   // cancels all timers, waits for the in-flight run
 ```
 
+`createScheduler(options?)` → `Scheduler`:
+
 | Member | Meaning |
 | --- | --- |
 | `scheduler.cron(expr, fn)` | Registers a cron job (validated eagerly — unsatisfiable expressions like `0 0 31 2 *` throw here); registering on a running scheduler arms immediately |

@@ -89,8 +89,8 @@ get(app, '/events', (ctx) => streamSSE(ctx, async (sse) => {
 
 | 函数 | 含义 |
 | --- | --- |
-| `stream(ctx, pump)` | 分块纯文本输出；`pump(writer)` 驱动 `StreamWriter` |
-| `streamSSE(ctx, pump)` | Server-Sent Events；`pump(writer)` 驱动 `SseWriter` |
+| `stream(ctx, pump, init?)` | 分块纯文本输出（`application/octet-stream`）；`pump(writer)` 驱动 `StreamWriter`；`init` 覆盖状态码/头 |
+| `streamSSE(ctx, pump, init?)` | Server-Sent Events（`text/event-stream`、`cache-control: no-cache`）；`pump(writer)` 驱动 `SseWriter`；`init` 覆盖状态码/头 |
 
 | 类型 | 含义 |
 | --- | --- |
