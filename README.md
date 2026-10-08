@@ -3,7 +3,7 @@
 A data + functions server framework for the Web Standard. Koa-style onion middleware, hono-style multi-runtime portability, and a fully tree-shakable, replaceable module surface. Zero dependencies at the core — every battery too, except `s200/events`, which builds on [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter).
 
 ```ts
-import { createApp, get, json, use, readJson } from 's200';
+import { createApp, get, json, post, use, readJson } from 's200';
 import { serve } from 's200/node';
 
 const app = createApp();
@@ -62,7 +62,7 @@ The full frozen-surface list and policy: [docs/stability.md](docs/stability.md).
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 42 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 50 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
 pnpm vitest run            # single run (all tests; add --maxWorkers=4 to cap concurrency)
 pnpm lint / lint:ci
