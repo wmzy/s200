@@ -4,7 +4,7 @@ s200 is heading to 1.0. This page is the contract: what freezes at 1.0, how
 versions are cut, and — just as important — what is honestly **not** frozen
 yet. If you build on s200, this is the page to check before upgrading.
 
-## Frozen surface (the 1.0 contract)
+## Frozen surface (the 1.0 contract) {#frozen-surface-the-10-contract}
 
 Everything below is contractual from 1.0 on: it changes only in a major
 release (before 1.0, in a flagged minor — see the
@@ -150,7 +150,7 @@ s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
 s200/events
 ```
 
-## Semver policy
+## Semver policy {#semver-policy}
 
 Releases are automated. [`.releaserc.json`](https://github.com/wmzy/s200/blob/main/.releaserc.json) wires
 [semantic-release](https://semantic-release.gitbook.io) over conventional

@@ -25,7 +25,7 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | Route table as data | ✅ JSON-exportable + OpenAPI | ❌ | ❌ | ✅ | ❌ | ❌ |
 | HTTPS / HTTP/2 in adapter | ✅ | ✅ | ✅ | ✅ | 3rd-party | via runtime (Bun.serve) |
 | WebSocket | ✅ zero-dep RFC 6455 node + bun (subprotocols, permessage-deflate, heartbeat) | ✅ | 3rd-party | 3rd-party | 3rd-party | ✅ built-in `.ws()` (Bun API; crossws on node) |
-| Batteries | 31 opt-in (cors, cookies, csrf, jwt, cache, etag, compress, rate-limit, session, upload, …) | ~20 (incl. csrf/jwt/cache) | ecosystem | plugin ecosystem | ecosystem | ~15 official plugins (openapi, jwt, cors, rate-limit, …) |
+| Batteries | 45 opt-in (cors, cookies, csrf, jwt, cache, etag, compress, rate-limit, session, upload, …) | ~20 (incl. csrf/jwt/cache) | ecosystem | plugin ecosystem | ecosystem | ~15 official plugins (openapi, jwt, cors, rate-limit, …) |
 | Throughput class (see benchmarks) | Web Standard object class; opt-in light mode ~1.3–1.4× | same (patched: 1.5×) | ~0.6× | patched class | below | patched class; top of it on Bun |
 | Core size (min+gz) | size-limit-gated: ~4 kB minimal core / ~8 kB full barrel | ~10 kB+ | — | — | tiny, no batteries | 1.1 MB unpacked; 141 kB min hello-world (v2 beta) |
 | Validation integration | generic gate over any parser | zod/valibot/typebox built-in | ecosystem | JSON Schema native | ecosystem | TypeBox built-in (`t`) + standard schema |
