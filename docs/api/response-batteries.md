@@ -41,7 +41,7 @@ type SerializeSchema =
 
 ## ETag (`s200/etag`)
 
-Stamps a SHA-1 entity tag (weak by default) on byte-backed responses and answers `If-None-Match` hits with `304`. Byte-backed means an explicit `content-length` — s200's respond helpers set it, a bare `new Response('…')` does not. Chunked/streamed responses (SSE, `s200/streaming`) and range responses (206) are skipped, not buffered.
+Stamps a SHA-1 entity tag (weak by default) on byte-backed responses and answers `If-None-Match` hits with `304`. Byte-backed means an explicit `content-length` — s200's respond helpers set it, a bare `new Response('…')` does not. Chunked/streamed responses (SSE, `s200/streaming`) and range responses (206) are skipped, not buffered. Only `2xx` responses are stamped, and a response that already carries an `etag` passes through untouched — set your own and it wins.
 
 ```ts
 use(app, etag());                    // W/"…" by default
@@ -68,6 +68,8 @@ use(app, compress({ brotli: { compress: brotliCompress } }));
 | `brotli` | — | `{ compress: (bytes) => Promise<Uint8Array> }` — `br` is only negotiated when injected; brotli is a buffered path (byte-backed responses only; streamed responses fall back to gzip/deflate) |
 
 Encoding choice: the best `Accept-Encoding` match — gzip wins ties, `*` counts as gzip, `q=0` disqualifies, `br` loses ties to gzip.
+
+Skips: responses that already carry a `content-encoding`, range responses (`content-range`), `cache-control: no-transform` (the RFC's do-not-transform directive), and bodyless responses. Everything it compresses gets `Vary: Accept-Encoding` stamped. Register it after the logger/cors slot in `use` order — it rewrites the response on the unwind.
 
 ## Streaming (`s200/streaming`)
 

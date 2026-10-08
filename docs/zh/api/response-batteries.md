@@ -41,7 +41,7 @@ type SerializeSchema =
 
 ## ETag（`s200/etag`）
 
-在字节支撑的响应上盖 SHA-1 实体标签（默认弱标签），并以 `304` 应答 `If-None-Match` 命中。字节支撑意味着显式 `content-length` —— s200 的响应助手会设置，裸 `new Response('…')` 不会。分块/流式响应（SSE、`s200/streaming`）与 range 响应（206）被跳过而非缓冲。
+在字节支撑的响应上盖 SHA-1 实体标签（默认弱标签），并以 `304` 应答 `If-None-Match` 命中。字节支撑意味着显式 `content-length` —— s200 的响应助手会设置，裸 `new Response('…')` 不会。分块/流式响应（SSE、`s200/streaming`）与 range 响应（206）被跳过而非缓冲。仅 `2xx` 响应会被盖标签，已带 `etag` 头的响应原样透传 —— 自己设置的标签优先。
 
 ```ts
 use(app, etag());                    // 默认 W/"…"
@@ -68,6 +68,8 @@ use(app, compress({ brotli: { compress: brotliCompress } }));
 | `brotli` | — | `{ compress: (bytes) => Promise<Uint8Array> }` —— 注入时才协商 `br`；brotli 是缓冲路径（仅字节支撑响应；流式响应回退 gzip/deflate） |
 
 编码选择：最佳 `Accept-Encoding` 匹配 —— gzip 赢得平局，`*` 算 gzip，`q=0` 取消资格，`br` 平局负于 gzip。
+
+跳过：已带 `content-encoding` 的响应、range 响应（`content-range`）、`cache-control: no-transform`（RFC 的不转换指令）与无体响应。凡被压缩的响应均盖 `Vary: Accept-Encoding`。在 `use` 顺序中注册于 logger/cors 之后 —— 它在 unwind 上重写响应。
 
 ## 流式（`s200/streaming`）
 

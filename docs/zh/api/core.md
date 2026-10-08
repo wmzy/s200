@@ -2,6 +2,8 @@
 
 核心 barrel：应用数据、路由、洋葱组合、错误值与调度入口。全部是 `s200` 的具名导出 —— 没有类、没有 `new App()`。
 
+barrel 还再导出[响应助手、请求体读取与 `serveStatic`](/zh/api/respond) —— `json`、`text`、`html`、`send`、`redirect`、`newResponse`、`readText` / `readJson` / `readForm` / `readStream` 与 `serveStatic` —— 单一导入面覆盖整个请求/响应周期。
+
 ## 类型
 
 | 类型 | 形状 |
