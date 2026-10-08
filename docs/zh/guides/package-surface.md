@@ -8,7 +8,7 @@
 
 以下每个都是独立的包入口 —— 引入一个只拉入它本身。每个名字都链接到 [API 参考](/zh/api/core)中的对应章节：
 
-- **核心 barrel**: [`s200`](/zh/api/core) —— `createApp`、路由原语、respond/body/static 助手
+- **核心 barrel**: [`s200`](/zh/api/core) —— `createApp`、路由原语；barrel 的[响应助手](/zh/api/respond#响应助手)、[请求体读取](/zh/api/respond#请求体读取)与 [`serveStatic`](/zh/api/respond#静态文件)
 - **适配器**: [`s200/node`](/zh/api/node), [`s200/bun`](/zh/api/bun), [`s200/deno`](/zh/api/edge#deno-s200-deno), [`s200/cloudflare`](/zh/api/edge#cloudflare-workers-s200-cloudflare)
 - **安全**: [`s200/cors`](/zh/api/security#cors-s200-cors), [`s200/csrf`](/zh/api/security#csrf-s200-csrf), [`s200/auth`](/zh/api/security#认证-s200-auth), [`s200/jwt`](/zh/api/security#jwt-s200-jwt), [`s200/secure-headers`](/zh/api/security#安全头-s200-secure-headers), [`s200/rate-limit`](/zh/api/security#限流-s200-rate-limit), [`s200/trust-proxy`](/zh/api/security#信任代理-s200-trust-proxy)
 - **请求接入**: [`s200/validate`](/zh/api/request#验证-s200-validate), [`s200/query`](/zh/api/request#查询-s200-query), [`s200/accepts`](/zh/api/request#内容协商-s200-accepts), [`s200/multipart`](/zh/api/request#multipart-s200-multipart), [`s200/upload`](/zh/api/request#upload-s200-upload)

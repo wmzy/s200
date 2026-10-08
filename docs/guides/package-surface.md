@@ -8,7 +8,7 @@ Everything is a named export from the core barrel (`s200`) — tree-shaking star
 
 Each below is a separate package entry — importing one pulls exactly it. Every name links to its section in the [API Reference](/api/core):
 
-- **Core barrel**: [`s200`](/api/core) — `createApp`, the router primitives, the respond/body/static helpers
+- **Core barrel**: [`s200`](/api/core) — `createApp`, the router primitives; the barrel's [respond helpers](/api/respond#response-helpers), [body readers](/api/respond#body-reading), and [`serveStatic`](/api/respond#static-files)
 - **Adapters**: [`s200/node`](/api/node), [`s200/bun`](/api/bun), [`s200/deno`](/api/edge#deno-s200-deno), [`s200/cloudflare`](/api/edge#cloudflare-workers-s200-cloudflare)
 - **Security**: [`s200/cors`](/api/security#cors-s200-cors), [`s200/csrf`](/api/security#csrf-s200-csrf), [`s200/auth`](/api/security#auth-s200-auth), [`s200/jwt`](/api/security#jwt-s200-jwt), [`s200/secure-headers`](/api/security#secure-headers-s200-secure-headers), [`s200/rate-limit`](/api/security#rate-limit-s200-rate-limit), [`s200/trust-proxy`](/api/security#trust-proxy-s200-trust-proxy)
 - **Request intake**: [`s200/validate`](/api/request#validate-s200-validate), [`s200/query`](/api/request#query-s200-query), [`s200/accepts`](/api/request#accepts-s200-accepts), [`s200/multipart`](/api/request#multipart-s200-multipart), [`s200/upload`](/api/request#upload-s200-upload)
