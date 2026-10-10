@@ -171,7 +171,10 @@ export default defineConfig({
       pattern: 'https://github.com/wmzy/s200/edit/main/docs/:path',
       text: 'Edit this page on GitHub',
     },
-    lastUpdated: true,
+    // VitePress 1.6 types lastUpdated as LastUpdatedOptions
+    // (all-optional) — an empty object enables it with defaults,
+    // same runtime behavior as the old `true`.
+    lastUpdated: {},
     footer: {
       message: 'Released under the MIT License.',
       copyright: 'Copyright © 2026-present wmzy',
