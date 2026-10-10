@@ -2,7 +2,7 @@
 
 Batteries are s200's unit of middleware reuse: an opt-in module behind its
 own package entry, options in, `Middleware` out (see
-[Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md) for the full contract). This
+[Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md) for the full contract). This
 page is the registry — what ships in the box, and how a third-party battery
 joins the list.
 
@@ -13,9 +13,10 @@ entry, imported as `import { … } from
 's200/<entry>'` — pulling one entry never pulls another. All entries are
 zero-runtime-dependency except `s200/events`, which builds on
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
-(its only dependency — the core stays dependency-free). Sizes in the
-[Batteries](https://wmzy.github.io/s200/guides/batteries) section are tracked per
-release.
+(its only dependency — the core stays dependency-free). Entry sizes
+are tracked per release by the repo's
+[`size-limit`](https://github.com/wmzy/s200/blob/main/package.json)
+budgets (`pnpm size`).
 
 ### Middleware
 
@@ -91,6 +92,21 @@ support, in data + functions form:
 | `s200/schedule`   | `createScheduler`, `nextRun` — cron (5-field) and interval jobs, injectable clock |
 | `s200/events`     | `createBus` — typed event bus over `@for-fun/event-emitter` (sync emit, `emitAsync`) |
 
+### Sharding & scaling
+
+The horizontal-scaling layer — one app, partitioned across
+units, with the dispatch seam kept runtime-neutral:
+
+| Entry               | Gives you                                                        |
+| ------------------- | ---------------------------------------------------------------- |
+| `s200/shard`        | `policy`, `shardSpecs`, `shardApp`, `matchShard` — route policy annotations, the serializable shard descriptor, partition, and the dispatch seam |
+| `s200/gateway`      | `nginxConf`, `gatewayRoutes`, `albRules` — pure generators: the same specs → nginx.conf / Gateway API HTTPRoute / ALB listener rules |
+| `s200/shard-dev`    | `createDispatcher` — in-process dispatcher with the same prefix semantics — local parity without nginx |
+| `s200/executor`     | `runShards` — executors (`inline` / `thread` / `process` / `external`) + supervisor: lazy thread spawn with Node ≥26.6 listener transfer, forked process shims, restart with backoff |
+| `s200/unit-metrics` | `createUnitMetrics`, `unitMetricsEndpoint` — the scheduler's eyes: in-flight, queue depth, event-loop utilization, RSS, warm/cold — as middleware + endpoint |
+
+Full guide: [Sharding & Scheduling](/guides/sharding).
+
 ### Runtime adapters
 
 Not middleware — one line each to serve the same app on another runtime:
@@ -109,7 +125,7 @@ the file, bring your own client, inject:
 
 | Recipe                   | For                                                             |
 | ------------------------ | --------------------------------------------------------------- |
-| [`recipes/redis-stores.ts`](../recipes/redis-stores.ts) | shared `rateLimit`/`createSession` stores over Redis — full guide: [Distributed Stores](./guides/distributed-stores.md) |
+| [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | shared `rateLimit`/`createSession` stores over Redis — full guide: [Distributed Stores](./guides/distributed-stores.md) |
 
 ## Submit your battery
 
@@ -122,7 +138,7 @@ ecosystem around it is the point.
 
 - **Data + functions paradigm.** A factory takes options and returns a
   `Middleware` (or data) — no classes, no `this`, no module-level
-  registration side effects. [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)
+  registration side effects. [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md)
   walks the two runtime shapes (gates and unwind stampers) with examples
   from the built-ins.
 - **Tree-shakable.** One entry per capability, ESM, side-effect-free module
@@ -160,7 +176,7 @@ per this template:
 
 ### Process
 
-1. Author per the [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md) guide; ship
+1. Author per the [Authoring Batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md) guide; ship
    tests and a README with the measured size.
 2. Open a PR that adds your row to the registry table below — the table is
    the review surface, and landing the PR is the listing.

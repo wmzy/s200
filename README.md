@@ -3,7 +3,7 @@
 A data + functions server framework for the Web Standard. Koa-style onion middleware, hono-style multi-runtime portability, and a fully tree-shakable, replaceable module surface. Zero dependencies at the core — every battery too, except `s200/events`, which builds on [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter).
 
 ```ts
-import { createApp, get, json, use, readJson } from 's200';
+import { createApp, get, json, post, use, readJson } from 's200';
 import { serve } from 's200/node';
 
 const app = createApp();
@@ -50,6 +50,7 @@ npm install s200
 The full API documentation lives on the docs site — [wmzy.github.io/s200](https://wmzy.github.io/s200/) — available in English and [简体中文](https://wmzy.github.io/s200/zh/):
 
 - **Guides**: [Routing](https://wmzy.github.io/s200/guides/routing) · [Middleware](https://wmzy.github.io/s200/guides/middleware) · [Responding](https://wmzy.github.io/s200/guides/responding) · [Body parsing](https://wmzy.github.io/s200/guides/body) · [Static files](https://wmzy.github.io/s200/guides/static-files) · [Errors](https://wmzy.github.io/s200/guides/errors) · [Adapters](https://wmzy.github.io/s200/guides/adapters) · [Batteries](https://wmzy.github.io/s200/guides/batteries) · [Package surface](https://wmzy.github.io/s200/guides/package-surface)
+- **API Reference** — every module's exports, signatures, and options: [Core & routing](https://wmzy.github.io/s200/api/core) · [Responding · bodies · static](https://wmzy.github.io/s200/api/respond) · [Node](https://wmzy.github.io/s200/api/node) / [Bun](https://wmzy.github.io/s200/api/bun) / [Edge](https://wmzy.github.io/s200/api/edge) adapters · [Request intake](https://wmzy.github.io/s200/api/request) · [Security](https://wmzy.github.io/s200/api/security) · [Cookies & sessions](https://wmzy.github.io/s200/api/cookies-session) · [Response batteries](https://wmzy.github.io/s200/api/response-batteries) · [Observability](https://wmzy.github.io/s200/api/observability) · [Data & config](https://wmzy.github.io/s200/api/data) · [WebSocket](https://wmzy.github.io/s200/api/websocket) · [OpenAPI & tooling](https://wmzy.github.io/s200/api/openapi) · [Lifecycle · health · hot reload](https://wmzy.github.io/s200/api/lifecycle) · [Sharding & execution](https://wmzy.github.io/s200/api/sharding)
 - **Reference**: [Stability & contracts](https://wmzy.github.io/s200/stability) · [Benchmarks](https://wmzy.github.io/s200/benchmarks) · [Comparison](https://wmzy.github.io/s200/comparison) · [Migration: from Express](https://wmzy.github.io/s200/migration-from-express) / [from Koa](https://wmzy.github.io/s200/migration-from-koa) / [from Hono](https://wmzy.github.io/s200/migration-from-hono)
 - The Markdown sources live in [`docs/`](docs/) (English) and [`docs/zh/`](docs/zh/) (Chinese); the site includes them verbatim.
 
@@ -62,7 +63,7 @@ The full frozen-surface list and policy: [docs/stability.md](docs/stability.md).
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 42 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, 50 entries) + d.ts/d.mts emission
 pnpm test                  # vitest watch
 pnpm vitest run            # single run (all tests; add --maxWorkers=4 to cap concurrency)
 pnpm lint / lint:ci
@@ -84,9 +85,9 @@ preview stay rooted at `/`. Available in English and
 [简体中文](/zh/) — `docs/` holds the English source of truth and `docs/zh/`
 the Chinese translation, included verbatim into `docs-site/`.
 
-Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
+Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms), `upload-app` (streaming multipart uploads with `s200/upload`): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
 
-See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/compare.md](docs/compare.md) for how s200 stacks up against the alternatives (Hono, Express, Fastify, Koa, Elysia), and the [migration guides](docs/) when coming from Express, Koa, or Hono.
+See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/comparison.md](docs/comparison.md) for how s200 stacks up against the alternatives (Hono, Express, Fastify, Koa, Elysia), and the [migration guides](docs/) when coming from Express, Koa, or Hono.
 
 ## License
 

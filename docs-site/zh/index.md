@@ -1,5 +1,7 @@
 ---
+# 仅站点页面（docs/ 中无源文件）——隐藏 GitHub 编辑链接。
 layout: home
+editLink: false
 
 hero:
   name: s200
@@ -9,6 +11,9 @@ hero:
     - theme: brand
       text: 快速开始
       link: /zh/getting-started
+    - theme: alt
+      text: API 参考
+      link: /zh/api/core
     - theme: alt
       text: GitHub
       link: https://github.com/wmzy/s200

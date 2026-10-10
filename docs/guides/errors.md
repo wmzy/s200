@@ -1,5 +1,7 @@
 # Errors
 
+## Tagged data
+
 Errors are tagged data, checked structurally — no `instanceof` chains across bundle boundaries:
 
 ```ts
@@ -14,6 +16,8 @@ const app = createApp({
   },
 });
 ```
+
+## Default mapping
 
 Unhandled `HttpError`s render as `{ status, body: { "error": message } }`; anything else is logged via `console.error` and rendered as a generic 500 (never leaking internals). Provide `onError` to own the mapping (and the logging) instead — or just swap the sink, keeping the default mapping:
 

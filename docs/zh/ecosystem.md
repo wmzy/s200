@@ -2,7 +2,7 @@
 
 battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后面的 opt-in
 模块，输入选项、输出 `Middleware`（完整契约见
-[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)）。
+[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/zh/guides/battery-authoring.md)）。
 本页就是注册表——盒子里装了什么，以及一个第三方 battery 如何加入这份
 名单。
 
@@ -13,8 +13,9 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 除 `s200/events` 外，所有入口都是零运行时依赖；`s200/events` 构建在
 [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter)
 之上（这是它唯一的依赖——核心保持零依赖）。
-[Batteries](https://wmzy.github.io/s200/guides/batteries) 一节按每个 release
-追踪各入口体积。
+各入口体积由仓库的
+[`size-limit`](https://github.com/wmzy/s200/blob/main/package.json)
+预算（`pnpm size`）按 release 追踪。
 
 ### 中间件
 
@@ -90,6 +91,20 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | `s200/schedule`   | `createScheduler`、`nextRun` —— cron（5 字段）与间隔任务，时钟可注入 |
 | `s200/events`     | `createBus` —— 基于 `@for-fun/event-emitter` 的类型化事件总线（同步 emit、`emitAsync`） |
 
+### 分片与伸缩
+
+水平伸缩层——一个应用，按单元分区，分发接缝保持运行时中立：
+
+| 入口               | 提供什么                                                        |
+| ------------------- | ---------------------------------------------------------------- |
+| `s200/shard`        | `policy`、`shardSpecs`、`shardApp`、`matchShard` —— 路由策略注解、可序列化的分片描述符、分区与分发接缝 |
+| `s200/gateway`      | `nginxConf`、`gatewayRoutes`、`albRules` —— 纯生成器：同样的描述符 → nginx.conf / Gateway API HTTPRoute / ALB 监听规则 |
+| `s200/shard-dev`    | `createDispatcher` —— 相同前缀语义的进程内分发器 —— 无需 nginx 的本地对等 |
+| `s200/executor`     | `runShards` —— 执行器（`inline` / `thread` / `process` / `external`）+ supervisor：Node ≥26.6 监听器传递的惰性线程生成、fork 进程 shim、带退避的重启 |
+| `s200/unit-metrics` | `createUnitMetrics`、`unitMetricsEndpoint` —— 调度器的眼睛：在途数、队列深度、事件循环利用率、RSS、冷热 —— 作为中间件 + 端点 |
+
+完整指南：[分片与调度](/zh/guides/sharding)。
+
 ### 运行时适配器
 
 不是中间件——每条一行，把同一个应用跑在另一个运行时上：
@@ -108,7 +123,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 
 | 配方                   | 用途                                                             |
 | ---------------------- | ---------------------------------------------------------------- |
-| [`recipes/redis-stores.ts`](../recipes/redis-stores.ts) | 经 Redis 共享的 `rateLimit`/`createSession` 存储——完整指南：[分布式存储](./guides/distributed-stores.md) |
+| [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | 经 Redis 共享的 `rateLimit`/`createSession` 存储——完整指南：[分布式存储](./guides/distributed-stores.md) |
 
 ## 提交你的 battery
 
@@ -120,7 +135,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 
 - **数据 + 函数范式。** 工厂接收选项并返回一个 `Middleware`（或
   数据）——没有类、没有 `this`、没有模块级注册副作用。
-  [编写 Battery](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)
+  [编写 Battery](https://github.com/wmzy/s200/blob/main/docs/zh/guides/battery-authoring.md)
   用内建 battery 的例子讲解两种运行时形态（门与 unwind 盖章器）。
 - **可 tree-shaking。** 每个能力一个入口，ESM，无副作用的模块作用域——
   导入你的 battery 不得拉取导入方没有点名的东西。
@@ -152,7 +167,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 
 ### 流程
 
-1. 按[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md)
+1. 按[编写 Battery](https://github.com/wmzy/s200/blob/main/docs/zh/guides/battery-authoring.md)
    指南编写；随附测试和带实测体积的 README。
 2. 开一个 PR 把你的行加进下面的注册表——表格就是评审面，PR 落地
    即上架。

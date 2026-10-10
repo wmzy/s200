@@ -1,3 +1,8 @@
+---
+# Site-only page (no docs/ source); suppress the GitHub edit link.
+editLink: false
+---
+
 # Getting Started
 
 s200 is a data + functions server framework for the Web Standard — koa-style onion middleware, hono-style multi-runtime portability, and a fully tree-shakable, replaceable module surface. Zero dependencies.
@@ -36,6 +41,7 @@ console.log(`listening on ${server.url}`);
 ## Next steps
 
 - Guides: [Routing](/guides/routing) · [Middleware](/guides/middleware) · [Responding](/guides/responding) · [Body parsing](/guides/body) · [Static files](/guides/static-files)
+- [API Reference](/api/core) — every module's exports, signatures, and options
 - [Batteries](/guides/batteries) — cors, logger, auth, jwt, rate-limit, websocket, and friends
 - [Errors](/guides/errors) · [Adapters](/guides/adapters) · [Package surface](/guides/package-surface)
 - [Compare s200 with other frameworks](/comparison) · [Benchmarks](/benchmarks) · [Migration guides](/migration-from-express)

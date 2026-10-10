@@ -4,7 +4,7 @@ s200 is heading to 1.0. This page is the contract: what freezes at 1.0, how
 versions are cut, and — just as important — what is honestly **not** frozen
 yet. If you build on s200, this is the page to check before upgrading.
 
-## Frozen surface (the 1.0 contract)
+## Frozen surface (the 1.0 contract) {#frozen-surface-the-10-contract}
 
 Everything below is contractual from 1.0 on: it changes only in a major
 release (before 1.0, in a flagged minor — see the
@@ -147,12 +147,13 @@ s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta  s200/openapi
 s200/trust-proxy  s200/otel  s200/codegen  s200/test  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/dev
 s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
+s200/shard  s200/shard-dev  s200/executor  s200/gateway  s200/unit-metrics
 s200/events
 ```
 
-## Semver policy
+## Semver policy {#semver-policy}
 
-Releases are automated. [`.releaserc.json`](../.releaserc.json) wires
+Releases are automated. [`.releaserc.json`](https://github.com/wmzy/s200/blob/main/.releaserc.json) wires
 [semantic-release](https://semantic-release.gitbook.io) over conventional
 commits on `main`: `fix:` → patch, `feat:` → minor, `BREAKING CHANGE` (footer
 or `!`) → major, release notes and the npm/GitHub publishes included. The
@@ -191,6 +192,6 @@ before the 1.0 cutover:
 - [Migrating from Express](./migration-from-express.md)
 - [Migrating from Koa](./migration-from-koa.md)
 - [Migrating from Hono](./migration-from-hono.md)
-- [Authoring batteries](https://github.com/wmzy/s200/blob/main/docs/battery-authoring.md) — the
+- [Authoring batteries](https://github.com/wmzy/s200/blob/main/docs/guides/battery-authoring.md) — the
   conventions new modules follow, including the type brands that flow into
   `s200/client`.

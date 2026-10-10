@@ -25,7 +25,7 @@ tree-shaking、可替换。
 | 路由表作为数据 | ✅ 可导出 JSON + OpenAPI | ❌ | ❌ | ✅ | ❌ | ❌ |
 | 适配器内的 HTTPS / HTTP/2 | ✅ | ✅ | ✅ | ✅ | 第三方 | 经运行时（Bun.serve） |
 | WebSocket | ✅ 零依赖 RFC 6455 node + bun（子协议、permessage-deflate、心跳） | ✅ | 第三方 | 第三方 | 第三方 | ✅ 内建 `.ws()`（Bun API；node 上为 crossws） |
-| battery | 31 个 opt-in（cors、cookies、csrf、jwt、cache、etag、compress、rate-limit、session、upload、…） | ~20 个（含 csrf/jwt/cache） | 生态 | 插件生态 | 生态 | ~15 个官方插件（openapi、jwt、cors、rate-limit、…） |
+| battery | 45 个 opt-in（cors、cookies、csrf、jwt、cache、etag、compress、rate-limit、session、upload、…） | ~20 个（含 csrf/jwt/cache） | 生态 | 插件生态 | 生态 | ~15 个官方插件（openapi、jwt、cors、rate-limit、…） |
 | 吞吐量类别（见基准测试） | Web 标准对象类别；opt-in light 模式 ~1.3–1.4× | 同类（patched：1.5×） | ~0.6× | patched 类别 | 更低 | patched 类别；在 Bun 上居其榜首 |
 | 核心体积（min+gz） | 由 size-limit 门控：~4 kB 最小核心 / ~8 kB 完整 barrel | ~10 kB+ | — | — | 极小，无 battery | 解包 1.1 MB；141 kB min 的 hello-world（v2 beta） |
 | 校验集成 | 覆盖任意解析器的通用门 | 内建 zod/valibot/typebox | 生态 | 原生 JSON Schema | 生态 | 内建 TypeBox（`t`）+ standard schema |

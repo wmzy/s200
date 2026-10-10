@@ -1,5 +1,7 @@
 ---
+# Site-only page (no docs/ source); suppress the GitHub edit link.
 layout: home
+editLink: false
 
 hero:
   name: s200
@@ -9,6 +11,9 @@ hero:
     - theme: brand
       text: Get Started
       link: /getting-started
+    - theme: alt
+      text: API Reference
+      link: /api/core
     - theme: alt
       text: GitHub
       link: https://github.com/wmzy/s200
