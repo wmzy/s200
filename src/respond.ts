@@ -24,6 +24,29 @@ export function utf8Length(value: string): number {
   return value.length;
 }
 
+/** Headers stashed by {@link setHeader} while no response exists yet.
+ * WeakKeyed: entries die with the request context. */
+const pendingHeaders = new WeakMap<Ctx, Map<string, string>>();
+
+/**
+ * Applies and clears `ctx`'s pending {@link setHeader} entries onto `res`.
+ * Every first response materialization funnels here — {@link newResponse},
+ * the bare-`Response` adoption, and the error mapping in `app.ts` — so a
+ * header set before any response exists rides whichever response the
+ * request ends up with: the handler's, a 404/405/500 fallback, or an error
+ * response. Low-level: battery/adapter authors adopting a response that
+ * bypassed `newResponse` call this; application code never needs it.
+ */
+export function drainPendingHeaders(ctx: Ctx, res: Response): void {
+  const pending = pendingHeaders.get(ctx);
+  if (pending !== undefined) {
+    for (const [name, value] of pending) {
+      res.headers.set(name, value);
+    }
+    pendingHeaders.delete(ctx);
+  }
+}
+
 /**
  * Builds the response object for this request context: a {@link LightResponse}
  * on the adapter's opt-in light path, the platform `Response` everywhere
@@ -35,11 +58,45 @@ export function newResponse(
   body: BodyInit | Uint8Array | null,
   init?: ResponseInit
 ): Response {
-  return (
+  const res = (
     isLightRequest(ctx.req)
       ? new LightResponse(body, init)
       : new Response(body as BodyInit, init)
   ) as Response;
+  drainPendingHeaders(ctx, res);
+  return res;
+}
+
+/**
+ * Sets one response header — the concise form of
+ * `ctx.res?.headers.set(name, value)`. After `await next()` the response is
+ * always materialized, so the header lands on it directly; called earlier
+ * (no response yet) it is deferred and stamped onto whichever response the
+ * request first materializes. A deferred value overrides the response's own
+ * header of the same name — middleware policy (`x-powered-by`,
+ * `cache-control`, security headers) wins over what the handler built.
+ */
+export function setHeader(ctx: Ctx, name: string, value: string): void {
+  if (ctx.res !== undefined) {
+    ctx.res.headers.set(name, value);
+    return;
+  }
+  const pending = pendingHeaders.get(ctx);
+  if (pending !== undefined) {
+    pending.set(name, value);
+  } else {
+    pendingHeaders.set(ctx, new Map([[name, value]]));
+  }
+}
+
+/** {@link setHeader} for many headers at once, in insertion order. */
+export function setHeaders(
+  ctx: Ctx,
+  headers: Readonly<Record<string, string>>
+): void {
+  for (const [name, value] of Object.entries(headers)) {
+    setHeader(ctx, name, value);
+  }
 }
 
 /** A `Response` branded with the status literal its builder used — the

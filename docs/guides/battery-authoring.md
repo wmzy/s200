@@ -86,7 +86,7 @@ import { defineMiddleware } from 's200';
 /** Marks every response, error responses included, as no-store. */
 export const noStore = defineMiddleware(async (ctx, next) => {
   await next();
-  ctx.res?.headers.set('cache-control', 'no-store');
+  setHeader(ctx, 'cache-control', 'no-store');
 });
 ```
 

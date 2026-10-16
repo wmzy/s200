@@ -12,6 +12,26 @@ redirect(ctx, '/login');                 // 302
 send(ctx, bytes, { headers: { 'content-type': 'application/pdf' } });
 ```
 
+## 设置响应头
+
+`setHeader` / `setHeaders` 是 `ctx.res?.headers.set(...)` 的简洁形式 —— 而且在响应还不存在时也能用：
+
+```ts
+use(app, async (ctx, next) => {
+  setHeader(ctx, 'x-powered-by', 's200');     // 尚无响应：先挂起
+  const start = performance.now();
+  await next();
+  setHeader(ctx, 'x-duration', String(performance.now() - start));  // 直接写入
+});
+// 一次设置多个：
+use(app, async (ctx, next) => {
+  setHeaders(ctx, { 'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff' });
+  await next();
+});
+```
+
+响应存在之前设置的头部会盖印到请求首次物化的那个响应上 —— 处理器响应、`404`/`405`/`500` 回退或错误响应 —— 并覆盖响应自带的同名头部（中间件策略胜出）。`await next()` 之后响应必定已物化，头部直接落在它上面。
+
 ## 转义
 
 `html` **不**转义 —— 插值用户输入是模板的工作（或先运行 `escapeHtml(value)`），与 `hono/html` 的显式转义契约一致：`html(ctx, \`<p>${escapeHtml(user)}</p>\`)`。

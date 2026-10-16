@@ -25,7 +25,7 @@ s200 keeps the mental model you know — routes, middlewares, `req`/`res`-style 
 | `express.static('public')` | `serveStatic({ read: createFileReader('public'), ... })` |
 | `app.use((err, req, res, next) => …)` | `createApp({ onError: (ctx, error) => … })` |
 | `express-async-errors` | not needed — thrown errors are mapped in-chain |
-| `res.set('x', 'y')` | `ctx.res?.headers.set('x', 'y')` on the unwind |
+| `res.set('x', 'y')` | `setHeader(ctx, 'x', 'y')` — direct on the unwind, deferred if called earlier |
 
 ## Key differences
 

@@ -9,7 +9,7 @@ use(app, async (ctx, next) => {
   const start = performance.now();
   await next();
   ctx.state.duration = performance.now() - start;
-  ctx.res?.headers.set('x-duration', String(ctx.state.duration));
+  setHeader(ctx, 'x-duration', String(ctx.state.duration));
 });
 ```
 

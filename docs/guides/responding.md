@@ -12,6 +12,26 @@ redirect(ctx, '/login');                 // 302
 send(ctx, bytes, { headers: { 'content-type': 'application/pdf' } });
 ```
 
+## Setting headers
+
+`setHeader` / `setHeaders` are the concise form of `ctx.res?.headers.set(...)` — and they work before a response exists, too:
+
+```ts
+use(app, async (ctx, next) => {
+  setHeader(ctx, 'x-powered-by', 's200');     // no response yet: deferred
+  const start = performance.now();
+  await next();
+  setHeader(ctx, 'x-duration', String(performance.now() - start));  // direct
+});
+// many at once:
+use(app, async (ctx, next) => {
+  setHeaders(ctx, { 'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff' });
+  await next();
+});
+```
+
+A header set before the response exists is stamped onto whichever response the request first materializes — the handler's, a `404`/`405`/`500` fallback, or an error response — and overrides the response's own header of the same name (middleware policy wins). After `await next()` the response is always materialized, so the header lands on it directly.
+
 ## Escaping
 
 `html` does **not** escape — interpolating user input is a template's job (or run `escapeHtml(value)` first), mirroring `hono/html`'s explicit-escape contract: `html(ctx, \`<p>${escapeHtml(user)}</p>\`)`.

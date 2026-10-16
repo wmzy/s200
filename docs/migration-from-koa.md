@@ -52,7 +52,7 @@ s200 is the koa model you know — onion middlewares, `ctx.state`, a mutable `ct
 use(app, async (ctx, next) => {
   const start = performance.now();
   await next();
-  ctx.res?.headers.set('x-duration', String(performance.now() - start));
+  setHeader(ctx, 'x-duration', String(performance.now() - start));
 });
 ```
 

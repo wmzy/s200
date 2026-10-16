@@ -27,7 +27,7 @@ import { isHttpError, toErrorResponse } from './errors';
 import { compose } from './compose';
 import { cachedUrl, isLightRequest, isLightResponse, setCachedUrl } from './light';
 import { neverSignal } from './signal';
-import { newResponse } from './respond';
+import { drainPendingHeaders, newResponse } from './respond';
 import { createMatcher, createRoute, createSegments, matchSegments } from './router';
 
 /**
@@ -703,6 +703,11 @@ function getRouteChain(route: Route): ReturnType<typeof compose> {
         throw returned;
       }
     }
+    // A response adopted here (returned rather than written) bypassed
+    // newResponse — apply any headers deferred onto this ctx first.
+    if (routeCtx.res !== undefined) {
+      drainPendingHeaders(routeCtx, routeCtx.res);
+    }
   };
   const chain = compose([...route.middlewares, terminator]);
   routeChainCache.set(route, chain);
@@ -729,13 +734,18 @@ async function mapError<S extends State = State>(
       (app.logError ?? console.error)(error);
     }
     ctx.res = toErrorResponse(error);
-    return;
+  } else {
+    try {
+      await app.onError(ctx, error);
+    } catch (handlerError) {
+      // A crashing error handler is itself a failure — default mapping.
+      ctx.res = toErrorResponse(handlerError);
+    }
   }
-  try {
-    await app.onError(ctx, error);
-  } catch (handlerError) {
-    // A crashing error handler is itself a failure — default mapping.
-    ctx.res = toErrorResponse(handlerError);
+  // The error response bypassed newResponse (or onError wrote one raw) —
+  // headers deferred onto this ctx still ride it.
+  if (ctx.res !== undefined) {
+    drainPendingHeaders(ctx, ctx.res);
   }
 }
 

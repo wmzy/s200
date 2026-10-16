@@ -14,7 +14,7 @@ import { compress } from '../src/compress';
 import { etag } from '../src/etag';
 import { isLightRequest } from '../src/light';
 import { createFileRangeReader, createFileReader, createFileStat, serve } from '../src/node';
-import { json, text } from '../src/respond';
+import { json, setHeader, setHeaders, text } from '../src/respond';
 import { serveStatic } from '../src/static';
 import { stream, streamSSE } from '../src/streaming';
 
@@ -354,6 +354,58 @@ describe('light headers duck type over real http (both modes)', () => {
     );
     (seen.normal ?? '').should.equal('one, two');
     (seen.light ?? '').should.equal('one, two');
+  });
+});
+
+describe('setHeader / setHeaders over real http (both modes)', () => {
+  let urls: { normal: string; light: string };
+
+  beforeAll(async () => {
+    urls = await serveBoth(() => {
+      const app = createApp({ logError: () => undefined });
+      use(app, async (ctx, next) => {
+        // Deferred: no response exists yet — must ride whichever one the
+        // request materializes, including the light duck headers.
+        setHeaders(ctx, { 'x-defer-a': 'pre', 'x-defer-b': 'pre' });
+        setHeader(ctx, 'x-defer-b', 'overwritten');
+        await next();
+        setHeader(ctx, 'x-unwind', 'post');
+      });
+      get(app, '/', (ctx) => {
+        return json(ctx, { ok: true });
+      });
+      get(app, '/throw', () => {
+        throw new Error('boom');
+      });
+      return app;
+    });
+  });
+
+  it('defers pre-next and stamps post-next headers identically in both modes', async () => {
+    const seen = await inBoth(urls, async (url) => {
+      const res = await fetch(`${url}/`);
+      return {
+        a: res.headers.get('x-defer-a'),
+        b: res.headers.get('x-defer-b'),
+        unwind: res.headers.get('x-unwind'),
+      };
+    });
+    for (const mode of ['normal', 'light'] as const) {
+      (seen[mode].a ?? '').should.equal('pre');
+      (seen[mode].b ?? '').should.equal('overwritten');
+      (seen[mode].unwind ?? '').should.equal('post');
+    }
+  });
+
+  it('deferred headers ride the 500 error response in both modes', async () => {
+    const seen = await inBoth(urls, async (url) => {
+      const res = await fetch(`${url}/throw`);
+      return { status: res.status, stamped: res.headers.get('x-defer-a') };
+    });
+    for (const mode of ['normal', 'light'] as const) {
+      seen[mode].status.should.equal(500);
+      (seen[mode].stamped ?? '').should.equal('pre');
+    }
   });
 });
 

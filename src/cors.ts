@@ -11,7 +11,7 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
-import { newResponse } from './respond';
+import { newResponse, setHeaders } from './respond';
 
 /**
  * Options for {@link cors}. The default `'*'` origin emits the literal
@@ -102,12 +102,9 @@ export function cors(options: CorsOptions = {}): Middleware {
     }
 
     return next().then(() => {
-      // Actual response: stamp on the unwind, when one was written.
-      if (ctx.res !== undefined) {
-        for (const [name, value] of Object.entries(corsHeaders)) {
-          ctx.res.headers.set(name, value);
-        }
-      }
+      // Actual response: stamp on the unwind — setHeaders writes straight
+      // onto the materialized response (always present by then).
+      setHeaders(ctx, corsHeaders);
     });
   };
 }

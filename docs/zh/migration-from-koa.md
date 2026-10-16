@@ -62,7 +62,7 @@ s200 就是你熟悉的那套 koa 模型——洋葱模型中间件、`ctx.state
 use(app, async (ctx, next) => {
   const start = performance.now();
   await next();
-  ctx.res?.headers.set('x-duration', String(performance.now() - start));
+  setHeader(ctx, 'x-duration', String(performance.now() - start));
 });
 ```
 

@@ -26,7 +26,7 @@ s200 保留了你熟悉的心智模型——路由、中间件、`req`/`res` 式
 | `express.static('public')` | `serveStatic({ read: createFileReader('public'), ... })` |
 | `app.use((err, req, res, next) => …)` | `createApp({ onError: (ctx, error) => … })` |
 | `express-async-errors` | 不需要 —— 抛出的错误在链内被映射 |
-| `res.set('x', 'y')` | `ctx.res?.headers.set('x', 'y')`，在回卷时执行 |
+| `res.set('x', 'y')` | `setHeader(ctx, 'x', 'y')` —— 回卷时直接写入，更早调用则挂起到响应物化 |
 
 ## 关键差异
 

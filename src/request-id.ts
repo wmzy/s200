@@ -10,6 +10,8 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
+import { setHeader } from './respond';
+
 export type RequestIdOptions = {
   /** Request/response header name; default `x-request-id`. */
   readonly header?: string;
@@ -28,9 +30,7 @@ export function requestId(options: RequestIdOptions = {}): Middleware {
     ctx.state.requestId = id;
     ctx.req.headers.set(header, id);
     return next().then(() => {
-      if (ctx.res !== undefined) {
-        ctx.res.headers.set(header, id);
-      }
+      setHeader(ctx, header, id);
     });
   };
 }
