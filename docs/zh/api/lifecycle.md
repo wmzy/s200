@@ -113,3 +113,36 @@ use(app, routeHints(app));
 | 两者皆否（仅有弱同方法候选，或毫无重合） | 原样不动 |
 
 开发电池而非热路径：每个默认 404 体都会被克隆解析，每次未命中都扫描路由表 —— 开发期很便宜，生产环境纯属无谓开销。
+
+### 开发运行器与 CLI
+
+`s200 dev`（`s200` bin）把热重载核心接线成运行器：整个会话一个服务器身份，首次加载打印路由表 —— 一行计数加上对齐的 `METHOD  PATTERN` 行（`createRouteTable` + `formatRouteTable`，注册序）。每次重载仍只打一行 `reloaded (N routes)` 计数。
+
+```sh
+s200 dev ./app.ts --port 3000 --overlay
+```
+
+路由提示默认开启（`--no-hints` 关闭）：运行器把每次加载出的表包进一个携带 `routeHints` 中间件的派生副本 —— 用户的应用对象从不被变异，重载保持纯表交换。错误 overlay（`--overlay`，默认关闭）经由同一派生副本缝隙再加两样东西：
+
+- 一个中间件，把内联的零依赖 `<script>` 注入到**字节支撑**的 `text/html` 响应最后的 `</body>` 之前 —— 即携带 `content-length` 的响应，`json`/`text`/`html`/`send` 的契约。流式 HTML（`stream()`/`streamSSE()`，无 `content-length`）原样放行 —— 已文档化的行为：为了注入而缓冲它就违背了流式本身。重建的响应保留状态与响应头，并带上诚实的新 `content-length`；`HEAD` 请求跳过注入。
+- 内部 SSE 路由 `/__s200/dev-events`（基于 `streamSSE` 构建），仅在 overlay 开启时存在，分帧 `reload` 与 `error {message, stack}` 事件。注入的脚本在 `reload` 时刷新页面，在 `error` 时显示固定定位、可关闭的错误框；加载失败保留旧表（一如既往）并呈现在 overlay 里。该路由追加在用户路由之后 —— 先注册者胜，用户在同一路径上注册的路由优先。
+
+面向运行器的 `s200/dev` 导出：
+
+| 导出 | 含义 |
+| --- | --- |
+| `createDevEventBus()` | `{ publish(event), subscribe(listener) }` —— 运行器向其发布 reload/加载失败事件的同步扇出；`subscribe` 返回取消订阅函数 |
+| `withRouteHints(userApp, live)` | `userApp` 的派生副本，链首 prepend `routeHints(live)` —— 用户的应用数据从不被触碰，中间件每请求重读 `live.routes` |
+| `withDevOverlay(userApp, bus)` | 派生副本，链首 prepend 脚本注入中间件，并追加 `/__s200/dev-events` 路由 |
+| `DEV_EVENTS_PATH` | `'/__s200/dev-events'` —— overlay 事件的服务地址 |
+
+`DevEvent`：`{ type: 'reload' } | { type: 'error'; message: string; stack?: string }`。`DevEventBus`：`{ publish(event: DevEvent): void; subscribe(listener: (event: DevEvent) => void): () => void }`。
+
+`dev` 之外还有两个一次性子命令，用同一加载器（default 导出或具名 `app`，默认 `./app.ts`）与同一 TypeScript 下限加载入口：
+
+```sh
+s200 routes ./app.ts --json
+s200 codegen ./app.ts --name makeApi --base-url https://api.test --out src/client.ts
+```
+
+`s200 routes [entry] [--json]` 打印对齐表（注册序；空表打印 `(no routes)`），或加 `--json` 打印完整可序列化的 `createRouteTable` 数据 —— 含参数与中间件计数。`s200 codegen [entry] [--out file] [--name X] [--base-url U]` 把 `generateClient` 模块写到 stdout，或写到 `--out`（带尾换行）。未知命令以非零码退出，并附上列出全部命令的用法文本。

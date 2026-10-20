@@ -15,6 +15,7 @@ import { rateLimit } from 's200/rate-limit';
 import { compress } from 's200/compress';
 import { stream, streamSSE } from 's200/streaming';
 import { requestId } from 's200/request-id';
+import { als, currentCtx } from 's200/als';
 import { timeout } from 's200/timeout';
 import { upgradeWebSocket } from 's200/websocket';
 import { createUpgradeHandler } from 's200/websocket/node';
@@ -169,7 +170,7 @@ get(app, '/list', queryParams((q) => ({
 
 ## WebSocket
 
-`upgradeWebSocket(app, pattern, handler)` 注册一条 ws 路由（路由器模式语法，先注册先得）；处理器得到一个 `send`/`close`/`onMessage`/`onClose`/`onError` socket 外加请求形状的 `ctx`（params/query/url）。Node 通过适配器的 `upgrade` 选项接线一个零依赖的 RFC 6455 服务器 —— 明文 `ws://`，或把 `upgrade` 与 `https` 配对得到 `wss://`（只有 `http2: true` 排除它）；Bun 通过桥接插入 `Bun.serve`：
+`upgradeWebSocket(app, pattern, ...middlewares, handler)` 注册一条 ws 路由（路由器模式语法，先注册先得）—— 与 HTTP 注册器相同的 `...middlewares, handler` variadic 形状，用于路由级门控；处理器得到一个 `send`/`close`/`onMessage`/`onClose`/`onError` socket 外加请求形状的 `ctx`（params/query/url）。升级在握手完成之前先运行应用的 `use(app, …)` 中间件链与路由的中间件：写 `ctx.res`、返回 `Response` 或抛错（与 HTTP 相同地映射 —— `HttpError` → 状态码 + 信封）的中间件拒绝升级，改以该 HTTP 响应作答而非 `101`；批准时 `ctx.state` 的修改随 handler 一并传递，回卷侧中间件看到 `res: undefined` —— socket 即响应（细节见 [WebSocket API](../api/websocket.md#升级上的中间件与鉴权)）。Node 通过适配器的 `upgrade` 选项接线一个零依赖的 RFC 6455 服务器 —— 明文 `ws://`，或把 `upgrade` 与 `https` 配对得到 `wss://`（只有 `http2: true` 排除它）；Bun 通过桥接插入 `Bun.serve`：
 
 ```ts
 import { upgradeWebSocket } from 's200/websocket';
@@ -326,6 +327,17 @@ get(app, '/events', (ctx) => streamSSE(ctx, async (writer) => {
 ```ts
 use(app, requestId());          // x-request-id
 use(app, requestId({ header: 'x-trace', generator: () => nanoid() }));
+```
+
+## ALS
+
+环境 ctx 访问 —— 显式 ctx 传递的可选补充，面向无法沿途传递它的调用栈（日志 sink、深层遗留助手）。`als()` 把下方链包进 `node:async_hooks` 的 `AsyncLocalStorage`，`currentCtx()` 在该范围内的任何位置解析出正在执行的请求的 ctx —— 深层 await、`setTimeout` 回调、从未见过参数的代码。交错的请求保持隔离；请求之外 `currentCtx()` 是 `undefined`。仅限 Node/Bun/Deno —— Cloudflare Workers 没有 async_hooks，在那里导入该入口会失败（让它远离 edge 产物）：
+
+```ts
+import { als, currentCtx } from 's200/als';
+
+use(app, als());
+const ctx = currentCtx();   // the executing request's Ctx, or undefined
 ```
 
 ## Timeout

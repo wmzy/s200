@@ -72,6 +72,10 @@ type Ctx = { req, url, params, query, state, signal, res };
   response**: an error boundary inside the chain maps thrown errors before
   the unwind, so middlewares observe (and may overwrite) the real response
   even for 500s. Before anything is written, `res` is `undefined`.
+- **`onFinish(ctx, fn)`** — registers a once-per-request callback receiving
+  `{ aborted }`: `false` after the response is fully written, `true` when
+  the connection ends first (see the adapters' pages for the per-runtime
+  triggers).
 
 ### Responding
 
@@ -91,7 +95,9 @@ written `Response`. The surrounding contracts:
   explicitly whenever the size is known (platforms serialize lazily, so a
   bare `new Response('…')` carries none). HEAD responses keep the would-be
   size, and size-aware middlewares (`compress`'s `minBytes`, `s200/etag`'s
-  byte-backed detection) rely on it.
+  byte-backed detection) rely on it. The one exception is `304`: the header
+  is omitted — not the would-be size, not `0` (RFC 9110 §15.4.5), both in
+  `send` and in the conditional layers (static files, `s200/etag`).
 - `html` does **not** escape — `escapeHtml` exists for that, and the
   non-escaping semantics are part of the contract.
 
@@ -152,6 +158,7 @@ s200/session  s200/swagger  s200/upload  s200/dev
 s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
 s200/shard  s200/shard-dev  s200/executor  s200/gateway  s200/unit-metrics
 s200/events
+s200/als
 ```
 
 ## Semver policy {#semver-policy}

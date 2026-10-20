@@ -10,16 +10,27 @@ import type { App } from '../src/app';
 import type { WatchOptions } from '../src/cli';
 import type { WatchAndReloadHandle } from '../src/dev';
 
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, it, vi } from 'vitest';
 
-import { createApp, get } from '../src/app';
-import { isMainEntry, main, parseDevArgs, runDev, supportsTypeStripping } from '../src/cli';
-import { text } from '../src/respond';
+import { createApp, get, post } from '../src/app';
+import {
+  isMainEntry,
+  main,
+  parseCodegenArgs,
+  parseDevArgs,
+  parseRoutesArgs,
+  runCodegen,
+  runDev,
+  runRoutes,
+  supportsTypeStripping,
+} from '../src/cli';
+import { html, text } from '../src/respond';
+import { stream } from '../src/streaming';
 
 // vitest's should chain has no rejectedWith; capture manually instead.
 async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
@@ -42,15 +53,45 @@ const makeApp = (routes: Record<string, string>): App => {
 const appA = makeApp({ '/a': 'a' });
 const appB = makeApp({ '/b': 'b' });
 
+/** An app whose misses overlap enough for a hint (2 of 3 segments static). */
+const hintsApp = (): App => makeApp({ '/a/b/c': 'x' });
+
+/** One byte-backed HTML page and one streamed HTML page. */
+const overlayApp = (): App => {
+  const app = createApp();
+  get(app, '/page', (ctx) => html(ctx, '<html><body>hello</body></html>'));
+  get(
+    app,
+    '/streamed',
+    (ctx) =>
+      stream(
+        ctx,
+        async (writer) => {
+          await writer.write('<html><body>stream');
+          await writer.write('</body></html>');
+        },
+        { headers: { 'content-type': 'text/html' } }
+      )
+  );
+  return app;
+};
+
 /** Everything the stub watcher captured from the runner. */
 type Capture = {
   dirs: readonly string[] | undefined;
   hot: { app: App; reload(next: App): void } | undefined;
   load: (() => Promise<App>) | undefined;
+  onError: ((error: unknown) => void) | undefined;
   closes: () => number;
 };
 
-let captured: Capture = { dirs: undefined, hot: undefined, load: undefined, closes: () => 0 };
+let captured: Capture = {
+  dirs: undefined,
+  hot: undefined,
+  load: undefined,
+  onError: undefined,
+  closes: () => 0,
+};
 
 const stubWatch = (options: WatchOptions): WatchAndReloadHandle => {
   // Per-handle counter: a later runDev must not rewire an older handle's
@@ -60,6 +101,7 @@ const stubWatch = (options: WatchOptions): WatchAndReloadHandle => {
     dirs: options.dirs,
     hot: options.hot,
     load: options.load,
+    onError: options.onError,
     closes: () => handle.closes,
   };
   return {
@@ -179,20 +221,339 @@ describe('runDev', () => {
   });
 });
 
+describe('runDev startup report', () => {
+  it('prints the aligned route table on first load (registration order)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      get(app, '/a', (ctx) => text(ctx, 'a'));
+      post(app, '/a/b', (ctx) => text(ctx, 'ab'));
+      const dev = await runDev([], { load: async () => app, port: 0, watch: stubWatch });
+      const out = log.mock.calls.map((call) => call.join(' ')).join('\n');
+      out.should.contain('s200 dev: 2 routes');
+      out.should.contain('GET   /a'); // method column padded to POST's width
+      out.should.contain('POST  /a/b');
+      await dev.close();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('prints the count line only when the table is empty', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const dev = await runDev([], { load: async () => createApp(), port: 0, watch: stubWatch });
+      log.mock.calls.map((call) => call.join(' ')).join('\n').should.contain('s200 dev: 0 routes');
+      await dev.close();
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
+describe('runDev route hints', () => {
+  it('decorates default 404s by default — across reloads, without touching the user app', async () => {
+    const dev = await runDev([], { load: async () => hintsApp(), port: 0, watch: stubWatch });
+    const href = dev.url.href;
+    const miss = await fetch(`${href}a/b/x`); // 2 of 3 segments overlap
+    miss.status.should.equal(404);
+    (await miss.json()).should.deep.equal({
+      error: 'Not Found',
+      hint: 'did you mean GET /a/b/c?',
+    });
+
+    // Reload through the same seam the real watcher uses; the reloaded
+    // table gets hints too, and the user's app object stays pristine.
+    const next = makeApp({ '/x/y/z': 'y' });
+    captured.hot!.reload(next);
+    next.middlewares.should.have.length(0);
+    next.routes.should.have.length(1);
+    (await (await fetch(`${href}x/y/w`)).json()).should.deep.equal({
+      error: 'Not Found',
+      hint: 'did you mean GET /x/y/z?',
+    });
+    await dev.close();
+  });
+
+  it('leaves the default 404 body untouched with --no-hints', async () => {
+    const dev = await runDev(['--no-hints'], {
+      load: async () => hintsApp(),
+      port: 0,
+      watch: stubWatch,
+    });
+    const miss = await fetch(`${dev.url.href}a/b/x`);
+    miss.status.should.equal(404);
+    (await miss.text()).should.equal('{"error":"Not Found"}');
+    await dev.close();
+  });
+
+  it('never clobbers a custom 404 body even with hints on', async () => {
+    const app = createApp({
+      onNotFound: (ctx) => {
+        text(ctx, 'custom miss', { status: 404 });
+      },
+    });
+    get(app, '/a/b/c', (ctx) => text(ctx, 'x'));
+    const dev = await runDev([], { load: async () => app, port: 0, watch: stubWatch });
+    const miss = await fetch(`${dev.url.href}a/b/x`);
+    (await miss.text()).should.equal('custom miss');
+    await dev.close();
+  });
+});
+
+describe('runDev error overlay (--overlay)', () => {
+  it('is off by default: no script, no /__s200/dev-events route', async () => {
+    const dev = await runDev([], { load: async () => overlayApp(), port: 0, watch: stubWatch });
+    const href = dev.url.href;
+    (await (await fetch(`${href}page`)).text()).should.not.contain('__s200');
+    (await fetch(`${href}__s200/dev-events`)).status.should.equal(404);
+    await dev.close();
+  });
+
+  it('injects the inline script before </body> with an honest content-length', async () => {
+    const dev = await runDev(['--overlay'], {
+      load: async () => overlayApp(),
+      port: 0,
+      watch: stubWatch,
+    });
+    const res = await fetch(`${dev.url.href}page`);
+    res.headers.get('content-type')?.should.contain('text/html');
+    const body = await res.text();
+    body.should.contain('/__s200/dev-events'); // the script's EventSource
+    (body.lastIndexOf('<script>')! < body.lastIndexOf('</body>')!).should.be.true;
+    res.headers.get('content-length')?.should.equal(String(body.length)); // ASCII body
+    await dev.close();
+  });
+
+  it('skips streamed HTML (no content-length — buffering would defeat streaming)', async () => {
+    const dev = await runDev(['--overlay'], {
+      load: async () => overlayApp(),
+      port: 0,
+      watch: stubWatch,
+    });
+    const body = await (await fetch(`${dev.url.href}streamed`)).text();
+    body.should.contain('</body>');
+    body.should.not.contain('__s200');
+    await dev.close();
+  });
+
+  it('streams reload|error events over /__s200/dev-events', async () => {
+    const dev = await runDev(['--overlay'], {
+      load: async () => appA,
+      port: 0,
+      watch: stubWatch,
+    });
+    const res = await fetch(`${dev.url.href}__s200/dev-events`);
+    res.status.should.equal(200);
+    res.headers.get('content-type')?.should.contain('text/event-stream');
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let seen = '';
+    const readUntil = async (what: string): Promise<void> => {
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && !seen.includes(what)) {
+        const { value, done } = await reader.read();
+        seen += decoder.decode(value ?? new Uint8Array());
+        if (done) {
+          break;
+        }
+      }
+      seen.should.contain(what);
+    };
+    try {
+      await readUntil('event: ready'); // opens the stream
+      captured.hot!.reload(appB); // exactly what the real watcher drives
+      await readUntil('event: reload');
+      captured.onError!(new Error('compile failed')); // load failure path
+      await readUntil('compile failed');
+      seen.should.contain('event: error');
+    } finally {
+      await reader.cancel();
+      await dev.close();
+    }
+  });
+});
+
+describe('s200 routes', () => {
+  /** Writes a real entry exporting an app with GET /a and POST /a/b. */
+  const writeEntry = async (dir: string, body?: string): Promise<string> => {
+    const appSrc = fileURLToPath(new URL('../src/app.ts', import.meta.url));
+    await writeFile(
+      join(dir, 'entry.mjs'),
+      `import { createApp, get, post } from ${JSON.stringify(pathToFileURL(appSrc).href)};\n` +
+        `const app = createApp();\n` +
+        (body ?? "get(app, '/a', () => new Response('a'));\npost(app, '/a/b', () => new Response('ab'));\n") +
+        'export default app;\n'
+    );
+    return join(dir, 'entry.mjs');
+  };
+
+  it('prints the aligned table in registration order', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-cli-routes-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const entry = await writeEntry(dir);
+      await main(['routes', entry]);
+      const out = log.mock.calls.map((call) => call.join(' ')).join('\n');
+      out.should.contain('GET   /a');
+      out.should.contain('POST  /a/b');
+    } finally {
+      log.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints the full serializable table with --json', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-cli-routes-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const entry = await writeEntry(dir);
+      await main(['routes', entry, '--json']);
+      const table = JSON.parse(log.mock.calls.map((call) => call.join(' ')).join('\n')) as {
+        routes: { method: string; pattern: string; params: string[]; middlewareCount: number }[];
+      };
+      table.routes.should.deep.equal([
+        { method: 'GET', pattern: '/a', params: [], middlewareCount: 0 },
+        { method: 'POST', pattern: '/a/b', params: [], middlewareCount: 0 },
+      ]);
+    } finally {
+      log.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints (no routes) for an empty app and rejects bad argv', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-cli-routes-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const entry = await writeEntry(dir, '');
+      await runRoutes([entry]);
+      log.mock.calls.map((call) => call.join(' ')).join('\n').should.contain('(no routes)');
+      parseRoutesArgs([]).should.deep.equal({ entry: './app.ts', json: false });
+      parseRoutesArgs(['--json', 'api.mjs']).should.deep.equal({
+        entry: 'api.mjs',
+        json: true,
+      });
+      ((await rejectionOf(Promise.resolve().then(() => runRoutes(['--jsonx'])))) as Error).message.should.contain(
+        'unknown option'
+      );
+      ((await rejectionOf(Promise.resolve().then(() => runRoutes(['a.mjs', 'b.mjs'])))) as Error).message.should.contain(
+        'unexpected argument'
+      );
+    } finally {
+      log.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('s200 codegen', () => {
+  const writeEntry = async (dir: string): Promise<string> => {
+    const appSrc = fileURLToPath(new URL('../src/app.ts', import.meta.url));
+    await writeFile(
+      join(dir, 'entry.mjs'),
+      `import { createApp, get } from ${JSON.stringify(pathToFileURL(appSrc).href)};\n` +
+        `const app = createApp();\n` +
+        "get(app, '/users/:id', () => new Response('u'));\n" +
+        'export default app;\n'
+    );
+    return join(dir, 'entry.mjs');
+  };
+
+  it('prints the generateClient module to stdout', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-cli-codegen-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const entry = await writeEntry(dir);
+      await main(['codegen', entry]);
+      const out = log.mock.calls.map((call) => call.join(' ')).join('\n');
+      out.should.contain('export function createClient(baseUrl: string, fetcher: typeof fetch = fetch)');
+      out.should.contain('getUsersId');
+    } finally {
+      log.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('bakes --name/--base-url and writes --out with a trailing newline', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-cli-codegen-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const entry = await writeEntry(dir);
+      const out = join(dir, 'client.ts');
+      await main(['codegen', entry, '--name', 'makeApi', '--base-url', 'https://api.test', '--out', out]);
+      const file = await readFile(out, 'utf8');
+      file.should.contain("export function makeApi(baseUrl: string = 'https://api.test'");
+      file.endsWith('\n').should.be.true;
+      log.mock.calls.map((call) => call.join(' ')).join('\n').should.contain('wrote');
+      parseCodegenArgs([]).should.deep.equal({
+        entry: './app.ts',
+        out: undefined,
+        name: undefined,
+        baseUrl: undefined,
+      });
+      parseCodegenArgs(['--name=X', '--base-url=http://x', '--out=y.ts', 'api.mjs']).should.deep.equal({
+        entry: 'api.mjs',
+        out: 'y.ts',
+        name: 'X',
+        baseUrl: 'http://x',
+      });
+      ((await rejectionOf(Promise.resolve().then(() => runCodegen(['--name'])))) as Error).message.should.contain(
+        'requires a value'
+      );
+      ((await rejectionOf(Promise.resolve().then(() => runCodegen(['--nope'])))) as Error).message.should.contain(
+        'unknown option'
+      );
+    } finally {
+      log.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('parseDevArgs', () => {
-  it('defaults entry to ./app.ts and leaves port unset', () => {
-    parseDevArgs([]).should.deep.equal({ entry: './app.ts', port: undefined });
+  it('defaults entry to ./app.ts and leaves port/hints/overlay unset', () => {
+    parseDevArgs([]).should.deep.equal({
+      entry: './app.ts',
+      port: undefined,
+      hints: undefined,
+      overlay: undefined,
+    });
   });
 
   it('takes one entry plus --port in both spellings', () => {
-    parseDevArgs(['./src/api.ts']).should.deep.equal({ entry: './src/api.ts', port: undefined });
+    parseDevArgs(['./src/api.ts']).should.deep.equal({
+      entry: './src/api.ts',
+      port: undefined,
+      hints: undefined,
+      overlay: undefined,
+    });
     parseDevArgs(['./src/api.ts', '--port', '4123']).should.deep.equal({
       entry: './src/api.ts',
       port: 4123,
+      hints: undefined,
+      overlay: undefined,
     });
     parseDevArgs(['--port=4123', './src/api.ts']).should.deep.equal({
       entry: './src/api.ts',
       port: 4123,
+      hints: undefined,
+      overlay: undefined,
+    });
+  });
+
+  it('parses --no-hints and --overlay in either order', () => {
+    parseDevArgs(['--overlay', '--no-hints']).should.deep.equal({
+      entry: './app.ts',
+      port: undefined,
+      hints: false,
+      overlay: true,
+    });
+    parseDevArgs(['entry.mjs', '--no-hints']).should.deep.equal({
+      entry: 'entry.mjs',
+      port: undefined,
+      hints: false,
+      overlay: undefined,
     });
   });
 
@@ -210,8 +571,10 @@ describe('parseDevArgs', () => {
 });
 
 describe('main', () => {
-  it('rejects unknown commands and bad flags with usage', async () => {
-    ((await rejectionOf(main(['build']))) as Error).message.should.contain('unknown command');
+  it('rejects unknown commands with usage and the full command list', async () => {
+    const error = (await rejectionOf(main(['build']))) as Error;
+    error.message.should.contain('unknown command');
+    error.message.should.contain('dev, routes, codegen');
     ((await rejectionOf(main(['dev', '--nope']))) as Error).message.should.contain('usage:');
   });
 });

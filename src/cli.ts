@@ -1,47 +1,77 @@
 /**
- * `s200 dev` — the dev-server runner. One HTTP server identity for the
- * whole session; reloads swap the app's route table atomically (see
+ * The `s200` CLI: `s200 dev` runs the dev server — one HTTP server identity
+ * for the whole session; reloads swap the app's route table atomically (see
  * {@link createHotApp}), so in-flight requests finish on the old chain
  * while new requests hit the fresh table. No restart, no port churn.
+ * `s200 routes` and `s200 codegen` are one-shot table inspections.
  *
- * This module is pure wiring over two batteries — `s200/dev` (identity +
- * swap + watch) and `s200/node` (`serve`) — plus an argv parser. The
- * `load` and `watch` seams keep the runner testable without a filesystem:
- * tests inject an in-memory app factory and a stub watcher.
+ * This module is pure wiring over four batteries — `s200/dev` (identity +
+ * swap + watch + hints/overlay), `s200/node` (`serve`), `s200/route-table`
+ * and `s200/codegen` — plus argv parsers. The `load` and `watch` seams
+ * keep the runner testable without a filesystem: tests inject an in-memory
+ * app factory and a stub watcher.
  *
  * @module
  */
 
 import type { App } from './app';
-import type { HotApp, WatchAndReloadHandle } from './dev';
+import type { DevEvent, DevEventBus, HotApp, WatchAndReloadHandle } from './dev';
 
 import * as nodeModule from 'node:module';
 import { realpathSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { createHotApp, importFresh, watchAndReload } from './dev';
+import {
+  createDevEventBus,
+  createHotApp,
+  importFresh,
+  watchAndReload,
+  withDevOverlay,
+  withRouteHints,
+} from './dev';
 import { serve } from './node';
+import { generateClient } from './codegen';
+import { createRouteTable, formatRouteTable } from './route-table';
 
-const USAGE = `usage: s200 dev [entry] [--port N]
+const USAGE = `usage: s200 <command> [args]
 
-  entry    app module exporting the app as default or as a named export "app"
-           (default ./app.ts)
-  --port   listen port (default $PORT or 3000; 0 picks a free port)
+commands:
+  dev <entry> [--port N] [--no-hints] [--overlay]    dev server with hot reload
+  routes <entry> [--json]                            print the route table
+  codegen <entry> [--out file] [--name X] [--base-url U]
+                                                    print a typed client module
 
-TypeScript entries need Node >= 22.18 (or >= 22.6 with --experimental-strip-types).`;
+dev options:
+  entry     app module exporting the app as default or as a named export "app"
+            (default ./app.ts)
+  --port    listen port (default $PORT or 3000; 0 picks a free port)
+  --no-hints   disable the 404 route-hints middleware (on by default)
+  --overlay    enable the browser error overlay (off by default)
 
-/** Parsed `s200 dev` arguments — `port` is `undefined` when no flag given. */
+Every command loads its entry with the same convention (default export or a
+named export "app"; default ./app.ts). TypeScript entries need Node >= 22.18
+(or >= 22.6 with --experimental-strip-types).`;
+
+/** Parsed `s200 dev` arguments — `port`/`hints`/`overlay` are `undefined`
+ * when their flags are absent, so an embedding `runDev` call can supply its
+ * own defaults. */
 export type DevArgs = {
   readonly entry: string;
   readonly port: number | undefined;
+  readonly hints: boolean | undefined;
+  readonly overlay: boolean | undefined;
 };
 
-/** The argv grammar of `s200 dev`: `[entry] [--port N]`. Throws on anything
- * else, with the usage text in the message. */
+/** The argv grammar of `s200 dev`: `[entry] [--port N] [--no-hints]
+ * [--overlay]`. Throws on anything else, with the usage text in the
+ * message. */
 export function parseDevArgs(argv: readonly string[]): DevArgs {
   let entry: string | undefined;
   let port: number | undefined;
+  let hints: boolean | undefined;
+  let overlay: boolean | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     const flagValue = (): string => {
@@ -63,6 +93,10 @@ export function parseDevArgs(argv: readonly string[]): DevArgs {
       i += 1;
     } else if (arg.startsWith('--port=')) {
       port = checkPort(arg.slice('--port='.length));
+    } else if (arg === '--no-hints') {
+      hints = false;
+    } else if (arg === '--overlay') {
+      overlay = true;
     } else if (arg.startsWith('--')) {
       throw new Error(`s200 dev: unknown option "${arg}"\n${USAGE}`);
     } else if (entry !== undefined) {
@@ -71,7 +105,7 @@ export function parseDevArgs(argv: readonly string[]): DevArgs {
       entry = arg;
     }
   }
-  return { entry: entry ?? './app.ts', port };
+  return { entry: entry ?? './app.ts', port, hints, overlay };
 }
 
 /** What the watch seam receives: everything `watchAndReload` needs. */
@@ -99,6 +133,10 @@ export type RunDevOptions = {
   readonly onReload?: (app: App) => void;
   /** Watch seam — `watchAndReload` in production, a stub in tests. */
   readonly watch?: (options: WatchOptions) => WatchAndReloadHandle;
+  /** 404 route hints on by default; `--no-hints` turns them off. */
+  readonly hints?: boolean;
+  /** Browser error overlay (`--overlay`), off by default. */
+  readonly overlay?: boolean;
 };
 
 /** The running dev server: where it listens, the adapter's handle, and a
@@ -241,8 +279,12 @@ function assertTypeScriptEntrySupported(entry: string): void {
 /**
  * Runs the dev server for one entry: loads the app, serves the hot app
  * identity (one server for the whole session), and wires the watcher whose
- * reloads swap the route table in place. Returns the listening URL, the
- * adapter's server handle, and a `close()` that stops watcher then server.
+ * reloads swap the route table in place. The first load prints the aligned
+ * route table; reloads keep the one-line count. Route hints (`--no-hints`
+ * to disable) and the error overlay (`--overlay`) wrap every loaded table
+ * as derived copies — the user's app data is never mutated. Returns the
+ * listening URL, the adapter's server handle, and a `close()` that stops
+ * watcher then server.
  */
 export async function runDev(
   argv: readonly string[],
@@ -254,6 +296,8 @@ export async function runDev(
   if (!Number.isInteger(port) || port < 0) {
     throw new Error(`s200 dev: invalid port "${String(port)}"\n${USAGE}`);
   }
+  const hints = parsed.hints ?? opts.hints ?? true;
+  const overlay = parsed.overlay ?? opts.overlay ?? false;
   const baseLoader = opts.load ?? loadFromEntry(parsed.entry);
   const watchDirs = [dirname(resolve(parsed.entry)), ...(opts.watchDirs ?? [])];
   // Populate the graph roots before the first load so even the initial
@@ -277,15 +321,50 @@ export async function runDev(
     return baseLoader();
   };
 
-  const hot = createHotApp(await loader());
+  const first = await loader();
+  const hot = createHotApp(first);
+  // Startup report: the aligned table (registration order) after a count
+  // line — reloads keep the one-line count (see defaultOnReload).
+  const table = createRouteTable(first);
+  console.log(`s200 dev: ${table.routes.length} routes`);
+  if (table.routes.length > 0) {
+    console.log(formatRouteTable(table));
+  }
+  // Dev extras wrap every loaded table WITHOUT touching the user's app
+  // data: each load yields a derived copy (see withRouteHints and
+  // withDevOverlay), and the live hot identity stays the only object the
+  // runner mutates — through hot.reload, as before. routeHints closes over
+  // the live app, so reloads need no re-registration of anything.
+  const bus: DevEventBus | undefined = overlay ? createDevEventBus() : undefined;
+  const decorate = (userApp: App): App => {
+    let decorated = userApp;
+    if (hints) {
+      decorated = withRouteHints(decorated, hot.app);
+    }
+    if (bus !== undefined) {
+      decorated = withDevOverlay(decorated, bus);
+    }
+    return decorated;
+  };
+  const decoratedFirst = decorate(first);
+  if (decoratedFirst !== first) {
+    hot.reload(decoratedFirst);
+  }
+
   const onReload = opts.onReload ?? defaultOnReload;
+  const reportError = (error: unknown): void => {
+    console.error(error);
+    bus?.publish(devErrorOf(error));
+  };
   // watchAndReload only knows `hot.reload` — hand it a wrapper so every
-  // successful swap also reports through onReload (default: the log line).
+  // successful swap also reports through onReload (default: the log line)
+  // and tells the overlay's browsers to reload.
   const reporting: HotApp = {
     app: hot.app,
     reload(next: App): void {
-      hot.reload(next);
+      hot.reload(decorate(next));
       onReload(next);
+      bus?.publish({ type: 'reload' });
     },
   };
 
@@ -294,7 +373,7 @@ export async function runDev(
     dirs: watchDirs,
     hot: reporting,
     load: loader,
-    onError: console.error,
+    onError: reportError,
   });
 
   return {
@@ -307,18 +386,155 @@ export async function runDev(
   };
 }
 
+/** Shapes any thrown value into the overlay's `error` event. */
+const devErrorOf = (error: unknown): DevEvent =>
+  error instanceof Error
+    ? { type: 'error', message: error.message, stack: error.stack }
+    : { type: 'error', message: String(error) };
+
+/** Parsed `s200 routes` arguments. */
+export type RoutesArgs = {
+  readonly entry: string;
+  readonly json: boolean;
+};
+
+/** The argv grammar of `s200 routes`: `[entry] [--json]`. Throws on
+ * anything else, with the usage text in the message. */
+export function parseRoutesArgs(argv: readonly string[]): RoutesArgs {
+  let entry: string | undefined;
+  let json = false;
+  for (const arg of argv) {
+    if (arg === '--json') {
+      json = true;
+    } else if (arg.startsWith('--')) {
+      throw new Error(`s200 routes: unknown option "${arg}"\n${USAGE}`);
+    } else if (entry !== undefined) {
+      throw new Error(`s200 routes: unexpected argument "${arg}"\n${USAGE}`);
+    } else {
+      entry = arg;
+    }
+  }
+  return { entry: entry ?? './app.ts', json };
+}
+
 /**
- * CLI entry point: `s200 dev [entry] [--port N]`. Rejects on bad argv
- * (usage text rides along in the message) and on a failing first load —
- * the self-run guard below maps rejections to a non-zero exit.
+ * `s200 routes [entry] [--json]`: loads the entry once (the same loader
+ * and TypeScript floor as `s200 dev`) and prints the route table — aligned
+ * `METHOD  PATTERN` lines in registration order, or the full serializable
+ * table with `--json`.
+ */
+export async function runRoutes(argv: readonly string[]): Promise<void> {
+  const args = parseRoutesArgs(argv);
+  const app = await loadAppFromEntry(args.entry);
+  const table = createRouteTable(app);
+  if (args.json) {
+    console.log(JSON.stringify(table, null, 2));
+    return;
+  }
+  console.log(table.routes.length > 0 ? formatRouteTable(table) : '(no routes)');
+}
+
+/** Parsed `s200 codegen` arguments — `undefined` means the flag was absent. */
+export type CodegenArgs = {
+  readonly entry: string;
+  readonly out: string | undefined;
+  readonly name: string | undefined;
+  readonly baseUrl: string | undefined;
+};
+
+/** The argv grammar of `s200 codegen`: `[entry] [--out file] [--name X]
+ * [--base-url U]` (both spellings, `--flag value` and `--flag=value`).
+ * Throws on anything else, with the usage text in the message. */
+export function parseCodegenArgs(argv: readonly string[]): CodegenArgs {
+  let entry: string | undefined;
+  let out: string | undefined;
+  let name: string | undefined;
+  let baseUrl: string | undefined;
+  const flagValue = (flag: string, raw: string | undefined): string => {
+    if (raw === undefined) {
+      throw new Error(`s200 codegen: ${flag} requires a value\n${USAGE}`);
+    }
+    return raw;
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === '--out') {
+      out = flagValue(arg, argv[++i]);
+    } else if (arg.startsWith('--out=')) {
+      out = arg.slice('--out='.length);
+    } else if (arg === '--name') {
+      name = flagValue(arg, argv[++i]);
+    } else if (arg.startsWith('--name=')) {
+      name = arg.slice('--name='.length);
+    } else if (arg === '--base-url') {
+      baseUrl = flagValue(arg, argv[++i]);
+    } else if (arg.startsWith('--base-url=')) {
+      baseUrl = arg.slice('--base-url='.length);
+    } else if (arg.startsWith('--')) {
+      throw new Error(`s200 codegen: unknown option "${arg}"\n${USAGE}`);
+    } else if (entry !== undefined) {
+      throw new Error(`s200 codegen: unexpected argument "${arg}"\n${USAGE}`);
+    } else {
+      entry = arg;
+    }
+  }
+  return { entry: entry ?? './app.ts', out, name, baseUrl };
+}
+
+/**
+ * `s200 codegen [entry] [--out file] [--name X] [--base-url U]`: loads the
+ * entry once (the same loader and TypeScript floor as `s200 dev`) and
+ * writes the `generateClient` module to stdout, or to `--out` (with a
+ * trailing newline).
+ */
+export async function runCodegen(argv: readonly string[]): Promise<void> {
+  const args = parseCodegenArgs(argv);
+  const app = await loadAppFromEntry(args.entry);
+  const source = generateClient(app, {
+    ...(args.name === undefined ? {} : { name: args.name }),
+    ...(args.baseUrl === undefined ? {} : { baseUrl: args.baseUrl }),
+  });
+  if (args.out === undefined) {
+    console.log(source);
+    return;
+  }
+  const file = resolve(args.out);
+  await writeFile(file, `${source}${source.endsWith('\n') ? '' : '\n'}`, 'utf8');
+  console.log(`s200 codegen: wrote ${file}`);
+}
+
+/** One fresh load of an entry: the TypeScript floor first (the remedy is
+ * clearer than Node's module error), then `importFresh` + the export
+ * convention. Shared by every non-dev command. */
+const loadAppFromEntry = async (entry: string): Promise<App> => {
+  assertTypeScriptEntrySupported(entry);
+  return appFromModule(entry, await importFresh(entry));
+};
+
+/**
+ * CLI entry point: `s200 dev`, `s200 routes`, `s200 codegen`. Rejects on
+ * an unknown command (listing every command) and on bad argv (usage text
+ * rides along in the message); the self-run guard below maps rejections
+ * to a non-zero exit.
  */
 export async function main(argv: readonly string[]): Promise<void> {
   const command = argv[0];
-  if (command !== 'dev') {
-    throw new Error(`s200 dev: unknown command "${command ?? '(none)'}"\n${USAGE}`);
+  if (command === 'dev') {
+    const dev = await runDev(argv.slice(1));
+    console.log(`s200 dev: listening on ${dev.url.href}`);
+    return;
   }
-  const dev = await runDev(argv.slice(1));
-  console.log(`s200 dev: listening on ${dev.url.href}`);
+  if (command === 'routes') {
+    await runRoutes(argv.slice(1));
+    return;
+  }
+  if (command === 'codegen') {
+    await runCodegen(argv.slice(1));
+    return;
+  }
+  throw new Error(
+    `s200: unknown command "${command ?? '(none)'}" — available commands: dev, routes, codegen\n${USAGE}`
+  );
 }
 
 // Self-run when executed as the bin (`s200 dev …`). Same dual-format

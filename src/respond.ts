@@ -141,9 +141,13 @@ export function send<S extends number = 200>(
     length = 0;
   }
   // RFC 9110 §8.6: no content-length on 1xx or 204 — a null-body send with
-  // such a status must not advertise the empty size.
+  // such a status must not advertise the empty size. 304 joins them
+  // (§15.4.5): the would-be length is the only honest size, and s200 omits
+  // the header rather than echo the size or advertise 0 — conditional 304s
+  // (static layer, `s200/etag`) build on this.
   const status = init?.status ?? 200;
-  const nullBodyStatus = status >= 100 && status < 200 || status === 204;
+  const nullBodyStatus =
+    (status >= 100 && status < 200) || status === 204 || status === 304;
   if (length !== undefined && !nullBodyStatus) {
     headers.set('content-length', String(length));
   }

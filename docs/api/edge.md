@@ -19,7 +19,7 @@ await server.finished;          // resolves when the server stops
 | `port` | Bound port |
 | `close()` | `server.shutdown()` |
 
-`DenoServeOptions`: `{ port?, hostname?, onListen? }` — `port` defaults to `8000`. Pass `port: 0` for an ephemeral port — the bound port still reaches `onListen`, but `server.port`/`server.url` keep the requested value, so pick one explicitly when reading them. Deno aborts the fetch-handler request's signal on client disconnect; the adapter feature-detects it and passes that signal into `handle` (`init.signal`) for cooperative cancellation.
+`DenoServeOptions`: `{ port?, hostname?, onListen? }` — `port` defaults to `8000`. Pass `port: 0` for an ephemeral port — the bound port still reaches `onListen`, but `server.port`/`server.url` keep the requested value, so pick one explicitly when reading them. Deno aborts the fetch-handler request's signal on client disconnect; the adapter feature-detects it and passes that signal into `handle` (`init.signal`) for cooperative cancellation. Deno.serve has no write-completion event, so [`onFinish`](/api/node#onfinish) callbacks ride the response body: when any are registered the adapter wraps the body — cancel (client gone → `{ aborted: true }`) or completion (`{ aborted: false }`) runs them exactly once; a null-body response finishes as soon as the handler returns it.
 
 ## Cloudflare Workers (`s200/cloudflare`)
 
@@ -40,4 +40,4 @@ type WorkerHandler = {
 };
 ```
 
-Workers abort the fetch-handler request's signal on client disconnect; the adapter feature-detects it and hands that signal to `handle` (`init.signal`), so body reads and `ctx.signal` consumers cancel promptly on disconnect.
+Workers abort the fetch-handler request's signal on client disconnect; the adapter feature-detects it and hands that signal to `handle` (`init.signal`), so body reads and `ctx.signal` consumers cancel promptly on disconnect. There is no write-completion event either, so [`onFinish`](/api/node#onfinish) callbacks ride the response body the same way as on Deno: cancel → `{ aborted: true }`, completion → `{ aborted: false }`, exactly once; a null-body response finishes when the handler returns it.

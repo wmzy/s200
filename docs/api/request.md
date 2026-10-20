@@ -16,6 +16,8 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 | --- | --- |
 | `validate(parse, options?)` | Gate over a plain parse function `(ctx) => unknown` — it receives the whole context, so it can read the method, headers, or a manually-parsed body itself; a thrown value rejects the chain unchanged (the app's error path decides the status) |
 | `jsonBody<S>(schema)` | Gate over a JSON-body schema — a parse function **or** a Standard Schema value (anything with `~standard`) |
+| `requiresHeaders<K>(...keys)` | Declares the request headers a route reads — a pure pass-through gate in the `throws` mold: nothing is checked, the keys just ride the route's `in` channel so `s200/client` demands them as `init.headers` (a record with every key required). Enforcement is middleware's job — `validate(parse)` reading `ctx.req.headers` is the runtime twin |
+| `bodyShape<T>()` | Declares the structured body type a route reads (`bodyShape<FormData>()` on an upload route, `bodyShape<Blob>()` on a binary one) — same declaration-only mold; `s200/client` types (and demands) `init.body` as exactly `T`, passed to fetch untouched. Runtime reading stays with the handler (`streamForm`, `uploadForm`, or the raw `ctx.req.body`) |
 | `standardValidate(schema, data)` | The raw Standard Schema call: `validate()` → `{ value }` or `{ issues }`; empty `issues` counts as success |
 | `isStandardSchema(value)` | Structural `~standard` predicate |
 

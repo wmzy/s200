@@ -113,3 +113,36 @@ Ranking is boring and deterministic: routes by positional static-segment overlap
 | Neither (weak same-method candidates only, or nothing overlaps) | untouched |
 
 Dev battery, not hot path: every default-404 body is cloned and parsed, and every miss scans the route table — cheap in development, pointless overhead in production.
+
+### The dev runner & CLI
+
+`s200 dev` (the `s200` bin) wires the hot-reload core into a runner: one server identity for the whole session, and the first load prints the route table — a count line plus the aligned `METHOD  PATTERN` lines (`createRouteTable` + `formatRouteTable`, registration order). Every reload keeps the one-line `reloaded (N routes)` count.
+
+```sh
+s200 dev ./app.ts --port 3000 --overlay
+```
+
+Route hints are on by default (`--no-hints` disables them): the runner wraps every loaded table in a derived copy carrying the `routeHints` middleware — the user's app object is never mutated, and a reload stays a pure table swap. The error overlay (`--overlay`, off by default) adds two more things through the same derived-copy seam:
+
+- a middleware that injects an inline, zero-dependency `<script>` right before the closing `</body>` of **byte-backed** `text/html` responses — those carrying a `content-length`, the `json`/`text`/`html`/`send` contract. Streamed HTML (`stream()`/`streamSSE()`, no `content-length`) passes through untouched — documented behavior: buffering it to inject would defeat the streaming. The rebuilt response keeps status and headers with an honest new `content-length`; `HEAD` requests skip injection.
+- the internal SSE route `/__s200/dev-events` (built on `streamSSE`), which exists only while the overlay is enabled and frames `reload` and `error {message, stack}` events. The injected script reloads the page on `reload` and shows a fixed-position, dismissible error box on `error`; a failed load keeps the previous table (as always) and surfaces in the overlay. The route is appended after the user's routes — first registration wins, so a user route on the same path takes precedence.
+
+The runner-facing `s200/dev` exports:
+
+| Export | Meaning |
+| --- | --- |
+| `createDevEventBus()` | `{ publish(event), subscribe(listener) }` — the synchronous fan-out the runner publishes reload/load-error events to; `subscribe` returns the unsubscribe function |
+| `withRouteHints(userApp, live)` | Derived copy of `userApp` with `routeHints(live)` prepended to the middleware chain — the user's app data is never touched, and the middleware re-reads `live.routes` per request |
+| `withDevOverlay(userApp, bus)` | Derived copy with the script-injection middleware prepended and the `/__s200/dev-events` route appended |
+| `DEV_EVENTS_PATH` | `'/__s200/dev-events'` — where the overlay's events are served |
+
+`DevEvent`: `{ type: 'reload' } | { type: 'error'; message: string; stack?: string }`. `DevEventBus`: `{ publish(event: DevEvent): void; subscribe(listener: (event: DevEvent) => void): () => void }`.
+
+Beyond `dev`, two one-shot subcommands load their entry with the same loader (default export or named `app`, default `./app.ts`) and the same TypeScript floor:
+
+```sh
+s200 routes ./app.ts --json
+s200 codegen ./app.ts --name makeApi --base-url https://api.test --out src/client.ts
+```
+
+`s200 routes [entry] [--json]` prints the aligned table (registration order; `(no routes)` when empty), or with `--json` the full serializable `createRouteTable` data — params and middleware counts included. `s200 codegen [entry] [--out file] [--name X] [--base-url U]` writes the `generateClient` module to stdout, or to `--out` (with a trailing newline). An unknown command exits non-zero with the usage text listing every command.

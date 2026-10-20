@@ -3,8 +3,10 @@ import type { NodeServer } from '../src/node';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import http from 'node:http';
 import { connect } from 'node:http2';
 import https from 'node:https';
+import { Socket } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
@@ -37,6 +39,9 @@ describe('node adapter (real http)', () => {
     get(app, '/boom', () => {
       throw new Error('boom');
     });
+    get(app, '/host-echo', (ctx) =>
+      json(ctx, { host: ctx.url.host, pathname: ctx.url.pathname })
+    );
     nodeServer = await serve(app, { port: 0 });
 
     dir = await mkdtemp(join(tmpdir(), 's200-node-'));
@@ -88,6 +93,88 @@ describe('node adapter (real http)', () => {
     const res = await fetch(`${nodeServer.url}/boom`);
     res.status.should.equal(500);
     (await res.json()).should.deep.equal({ error: 'Internal Server Error' });
+  });
+
+  describe('Host header sanitization', () => {
+    // Raw http.request: fetch cannot carry a crafted Host (forbidden header).
+    const echo = async (
+      host: string
+    ): Promise<{ host: string; pathname: string }> => {
+      const body = await new Promise<string>((resolve, reject) => {
+        const request = http.request(
+          {
+            host: '127.0.0.1',
+            port: nodeServer.port,
+            path: '/host-echo',
+            headers: { host },
+          },
+          (message) => {
+            let data = '';
+            message.on('data', (chunk: Buffer) => (data += chunk.toString()));
+            message.on('end', () => resolve(data));
+          }
+        );
+        request.on('error', reject);
+        request.end();
+      });
+      return JSON.parse(body) as { host: string; pathname: string };
+    };
+
+    it('keeps a path-polluting Host out of the parsed URL', async () => {
+      const echoed = await echo('evil.com/a');
+      echoed.host.should.equal('localhost');
+      echoed.pathname.should.equal('/host-echo');
+    });
+
+    it('falls back to localhost for userinfo/query/fragment/backslash/whitespace Hosts', async () => {
+      const bad = [
+        'user@evil.com',
+        'evil.com?x=1',
+        'evil.com#f',
+        'evil.com\\..',
+        'evil. com',
+        'evil.com\t/a',
+      ];
+      for (const candidate of bad) {
+        const echoed = await echo(candidate);
+        echoed.host.should.equal('localhost');
+        echoed.pathname.should.equal('/host-echo');
+      }
+    });
+
+    it('falls back to localhost for an empty Host (raw socket)', async () => {
+      // http.request replaces an empty Host with its own computed (legal)
+      // one — only a raw socket reaches the adapter with `Host:` empty. (A
+      // request with no Host at all is rejected by node's own parser with
+      // a 400 before the adapter ever sees it.)
+      const raw = (request: string): Promise<string> =>
+        new Promise((resolve, reject) => {
+          const socket = new Socket();
+          let data = '';
+          socket.on('error', reject);
+          socket.on('data', (chunk: Buffer) => (data += chunk.toString()));
+          socket.on('close', () => resolve(data));
+          socket.connect(nodeServer.port, '127.0.0.1');
+          socket.write(request);
+        });
+      const response = await raw(
+        'GET /host-echo HTTP/1.1\r\nHost:\r\nConnection: close\r\n\r\n'
+      );
+      const echoed = JSON.parse(
+        response.slice(response.indexOf('\r\n\r\n') + 4)
+      ) as { host: string; pathname: string };
+      echoed.host.should.equal('localhost');
+      echoed.pathname.should.equal('/host-echo');
+    });
+
+    it('keeps legal hosts, ports and IPv6 literals untouched', async () => {
+      (await echo('example.com')).host.should.equal('example.com');
+      (await echo('example.com:8080')).host.should.equal('example.com:8080');
+      (await echo('[::1]:3000')).host.should.equal('[::1]:3000');
+      (await echo('sub.example-site.com')).host.should.equal(
+        'sub.example-site.com'
+      );
+    });
   });
 
   describe('createFileReader', () => {
@@ -223,6 +310,52 @@ describe('node adapter TLS', () => {
         });
         result.status.should.equal(200);
         JSON.parse(result.body).should.deep.equal({ hello: 'h2' });
+      } finally {
+        client.close();
+      }
+    } finally {
+      await tls.close();
+    }
+  });
+
+  it('keeps a legal :authority on HTTP/2 (polluted ones die at the protocol level)', async () => {
+    // nghttp2 validates host/:authority values as authorities — a polluted
+    // one (e.g. with '/') is answered NGHTTP2_PROTOCOL_ERROR before the
+    // adapter ever sees it, so the h2 half of the SAFE_HOST gate is
+    // defense in depth; what is reachable and contractual is the legal
+    // passthrough.
+    const app = createApp();
+    get(app, '/host-echo', (ctx) =>
+      json(ctx, { host: ctx.url.host, pathname: ctx.url.pathname })
+    );
+    const tls = await serve(app, {
+      port: 0,
+      https: {
+        key: await readFile(KEY_PATH),
+        cert: await readFile(CERT_PATH),
+        http2: true,
+      },
+    });
+    try {
+      const client = connect(tls.url, { rejectUnauthorized: false });
+      try {
+        const echoed = await new Promise<{ host: string; pathname: string }>(
+          (resolve, reject) => {
+            const req = client.request({
+              ':path': '/host-echo',
+              ':authority': 'example.com',
+            });
+            let data = '';
+            req.on('response', () => {
+              req.on('data', (chunk: Buffer) => (data += chunk.toString()));
+              req.on('end', () => resolve(JSON.parse(data)));
+            });
+            req.on('error', reject);
+            req.end();
+          }
+        );
+        echoed.host.should.equal('example.com');
+        echoed.pathname.should.equal('/host-echo');
       } finally {
         client.close();
       }

@@ -46,9 +46,10 @@ export type ClientOptions = {
  * ({@link ClientBranches}) — one {@link BranchResponse} per status the
  * route's branches and error declarations name, so `res.status` narrows
  * `res.json()`. Input phantoms ride the same signature: a `jsonBody` gate
- * types (and demands) `init.body`, a `queryParams` gate narrows
- * `init.query`; routes with neither gate keep the loose
- * {@link ClientInit} exactly. */
+ * types (and demands) `init.body`, a `bodyShape` gate types it as the
+ * declared structured type instead, a `queryParams` gate narrows
+ * `init.query`, a `requiresHeaders` gate demands `init.headers`; routes
+ * with no gate keep the loose {@link ClientInit} exactly. */
 type RouteCall<D extends RouteDef> = D extends {
   readonly pattern: infer P extends string;
 }
@@ -57,20 +58,33 @@ type RouteCall<D extends RouteDef> = D extends {
     : (path: P, args: ParamsOf<P>, ...init: InitArg<D>) => Promise<ClientBranches<D>>
   : never;
 
-/** The init argument as a rest tuple: a JSON-body brand makes init
- * required (the route reads a body — the caller must send one); every
+/** The init argument as a rest tuple: a body brand — JSON (`jsonBody`) or
+ * structured (`bodyShape`) — makes init required (the route reads a body,
+ * the caller must send one); a headers brand (`requiresHeaders`) makes it
+ * required too (the route reads headers, the caller must send them); every
  * other route keeps today's optional init. */
 type InitArg<D extends RouteDef> = [DefBody<D>] extends [undefined]
-  ? [init?: RouteInit<D>]
+  ? [DefHeaders<D>] extends [undefined]
+    ? [init?: RouteInit<D>]
+    : [init: RouteInit<D>]
   : [init: RouteInit<D>];
 
 /** The init one route accepts: unbranded routes keep {@link ClientInit}
- * verbatim; a `jsonBody` brand retypes `body` as the gate's parse type (a
- * JSON shape by contract — the client stringifies it at call time); a
- * `queryParams` brand replaces the loose `query` sugar with the gate's
- * declared read. `body`/`query` are omitted-and-readded so the branded
- * members win instead of intersecting the platform's looser ones. */
-type RouteInit<D extends RouteDef> = [DefBody<D>] extends [undefined]
+ * verbatim; a `jsonBody` or `bodyShape` brand retypes `body` as the gate's
+ * declared type (a JSON shape is stringified at call time, a structured
+ * `bodyShape` value rides to fetch untouched); a `queryParams` brand
+ * replaces the loose `query` sugar with the gate's declared read; a
+ * `requiresHeaders` brand retypes `headers` as the plain-record form with
+ * the gate's keys required. `body`/`query`/`headers` are
+ * omitted-and-readded so the branded members win instead of intersecting
+ * the platform's looser ones. */
+type RouteInit<D extends RouteDef> = [DefHeaders<D>] extends [undefined]
+  ? BodyQueryInit<D>
+  : Omit<BodyQueryInit<D>, 'headers'> & { headers: RouteHeaders<DefHeaders<D>> };
+
+/** The body × query core of {@link RouteInit} — the headers stage wraps
+ * it, so the two legacy channels keep their exact shapes. */
+type BodyQueryInit<D extends RouteDef> = [DefBody<D>] extends [undefined]
   ? [DefQuery<D>] extends [undefined]
     ? ClientInit
     : ClientInit & { query: DefQuery<D> }
@@ -80,6 +94,11 @@ type RouteInit<D extends RouteDef> = [DefBody<D>] extends [undefined]
         body: DefBody<D>;
         query: DefQuery<D>;
       };
+
+/** The client-side `init.headers` type for a headers-branded route: the
+ * plain-record member of `HeadersInit` with the gate's keys required —
+ * the index signature still absorbs any extra headers a caller adds. */
+type RouteHeaders<H> = Record<string, string> & H;
 
 /** The response-body type a route def carries, `unknown` when untyped. */
 type DefOut<D extends RouteDef> = D extends { readonly out: infer O }
@@ -115,12 +134,18 @@ type ValueOf<E> = E[keyof E];
 
 /** The JSON-body type a route's `jsonBody` gate declares, `undefined`
  * when there is none. Tuple-guarded: `unknown` (the gate-less `in`) must
- * fall through to the absent case, not distribute into the pattern. */
+ * fall through to the absent case, not distribute into the pattern. A
+ * `bodyShape` gate's structured type (the `{ body: T }` member —
+ * `FormData`, `Blob`, …) reads through the same extractor, so both body
+ * gates demand init and type `init.body`; a route carrying both flavors
+ * resolves to the JSON one (the first member matched). */
 type DefBody<D extends RouteDef> = [DefIn<D>] extends [
   { readonly json: infer T }
 ]
   ? T
-  : undefined;
+  : [DefIn<D>] extends [{ readonly body: infer B }]
+    ? B
+    : undefined;
 
 /** The query type a route's `queryParams` gate declares, `undefined` when
  * there is none. */
@@ -128,6 +153,15 @@ type DefQuery<D extends RouteDef> = [DefIn<D>] extends [
   { readonly query: infer Q }
 ]
   ? Q
+  : undefined;
+
+/** The headers record a route's `requiresHeaders` gate declares
+ * (`s200/validate`), `undefined` when there is none — same tuple-guard
+ * discipline as {@link DefBody}. */
+type DefHeaders<D extends RouteDef> = [DefIn<D>] extends [
+  { readonly headers: infer H }
+]
+  ? H
   : undefined;
 
 /**
@@ -379,8 +413,11 @@ function buildPathFn(
  * Inputs type from the same route log: the pattern fixes the path and
  * params, and the route's gates tighten `init` — a `jsonBody` gate types
  * and demands `init.body` (a JSON shape, stringified with a default
- * `content-type: application/json` unless already set), a `queryParams`
- * gate replaces the loose `init.query` sugar. Response bodies still type
+ * `content-type: application/json` unless already set), a `bodyShape`
+ * gate demands `init.body` as its declared structured type (passed to
+ * fetch untouched), a `queryParams` gate replaces the loose `init.query`
+ * sugar, a `requiresHeaders` gate demands `init.headers` as a record
+ * with the gate's keys required. Response bodies still type
  * from the handler's `json()` branding alone.
  *
  * Dynamic-pattern routes (registered via the `pattern: string` overload)

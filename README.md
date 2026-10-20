@@ -74,8 +74,8 @@ The full frozen-surface list and policy: [docs/stability.md](docs/stability.md).
 
 ```sh
 pnpm build                 # vite lib build (es + cjs, 50 entries) + d.ts/d.mts emission
-pnpm test                  # vitest watch
-pnpm vitest run            # single run (all tests; add --maxWorkers=4 to cap concurrency)
+pnpm test                  # vitest single run (add --maxWorkers=4 to cap concurrency)
+pnpm start                 # vitest watch
 pnpm lint / lint:ci
 pnpm check:paradigm        # enforces data + functions (no class/this/new/extends in src)
 pnpm verify:tree-shaking   # asserts unused modules are shaken from a minimal bundle
@@ -90,12 +90,24 @@ pnpm publish:jsr           # build + prepare declarations for JSR + npx jsr publ
 `s200 dev ./app.ts` — the dev runner. Reloads swap the route table atomically
 on one server: in-flight requests finish on the old chain, new requests hit
 the fresh table — no restart, no port churn. The entry must export the app
-as default or as a named export `app`. On Node ≥ 22.15 the whole module
-graph re-evaluates per reload (edit any imported module, not just the
-entry); watch events fire only for source files, so an app writing logs or
-data files into its own directory can't feed reload loops. TypeScript
-entries need Node ≥ 22.18 (or ≥ 22.6 with `--experimental-strip-types`)
-— the runner fails fast with that remedy on older Nodes.
+as default or as a named export `app`. The first load prints the route table
+(aligned `METHOD  PATTERN`, registration order); reloads keep the one-line
+count. 404 route hints are on by default (`--no-hints` disables) — misses
+that overlap the table get a `did you mean` hint, and the user's app object
+is never mutated. `--overlay` (off by default) injects a zero-dependency
+script into byte-backed `text/html` responses and serves
+`/__s200/dev-events` (SSE) so the browser reloads on `s200 dev` reloads and
+shows a dismissible error box when a load fails; streamed HTML is skipped.
+On Node ≥ 22.15 the whole module graph re-evaluates per reload (edit any
+imported module, not just the entry); watch events fire only for source
+files, so an app writing logs or data files into its own directory can't
+feed reload loops. TypeScript entries need Node ≥ 22.18 (or ≥ 22.6 with
+`--experimental-strip-types`) — the runner fails fast with that remedy on
+older Nodes. Two one-shot subcommands share the same loader and TypeScript
+floor: `s200 routes <entry> [--json]` prints the route table (aligned, or
+the full JSON data), `s200 codegen <entry> [--out file] [--name X]
+[--base-url U]` prints a typed client module; unknown commands exit
+non-zero listing every command.
 
 The docs site deploys automatically to GitHub Pages (`/s200/`) by
 [.github/workflows/docs.yml](.github/workflows/docs.yml) on pushes to `main`

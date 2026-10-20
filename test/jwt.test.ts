@@ -1,3 +1,5 @@
+import type { JwtKeyStore, JwksEntry, JwksStore } from '../src/jwt';
+
 import { describe, it } from 'vitest';
 
 import { createApp, get, use, handle  } from '../src/app';
@@ -211,6 +213,195 @@ describe('jwt', () => {
         new Request('http://localhost/me', { headers: { authorization: `Bearer ${token}` } })
       );
       ok.status.should.equal(200);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('bounds the default key cache: LRU evicts the oldest import', async () => {
+    const token = await signJwt({ a: 1 }, 'key-lru-anchor');
+    // WebCrypto spec-mandates a DataError for zero-length HMAC keys, and
+    // the rejection is cached like any import: replaying the same cached
+    // rejected promise re-throws the identical Error object — the one
+    // observable difference between a cache hit and a re-import.
+    const first = (await rejectionOf(verifyJwt(token, ''))) as Error;
+    const again = (await rejectionOf(verifyJwt(token, ''))) as Error;
+    again.should.equal(first);
+    // 100 distinct secrets (the default bound) push the entry out.
+    for (let i = 0; i < 100; i += 1) {
+      await rejectionOf(verifyJwt(token, `key-lru-${i}`));
+    }
+    const reimported = (await rejectionOf(verifyJwt(token, ''))) as Error;
+    reimported.should.not.equal(first);
+  });
+
+  it('bounds the default jwks cache: LRU evicts the least recently used URL', async () => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    const jwks = JSON.stringify({ keys: [{ ...publicJwk, kid: 'k' }] });
+    let fetches = 0;
+    const fetchFn = async () => {
+      fetches += 1;
+      return new Response(jwks, { status: 200 });
+    };
+    const resolverAt = (i: number) =>
+      createJwksResolver(`https://idp-lru.test/jwks-${i}`, { ttlMs: 600_000, fetchFn });
+    // Fill the cache to its bound (50 URLs).
+    for (let i = 0; i < 50; i += 1) {
+      await resolverAt(i)({ alg: 'ES256' });
+    }
+    fetches.should.equal(50);
+    // Touching URL 0 bumps its recency without a refetch.
+    await resolverAt(0)({ alg: 'ES256' });
+    fetches.should.equal(50);
+    // One more URL evicts the oldest — URL 1, not the touched URL 0.
+    await resolverAt(50)({ alg: 'ES256' });
+    fetches.should.equal(51);
+    await resolverAt(0)({ alg: 'ES256' });
+    fetches.should.equal(51);
+    await resolverAt(1)({ alg: 'ES256' });
+    fetches.should.equal(52);
+  });
+
+  it('verifies through an injected key store, bypassing the default cache', async () => {
+    const token = await signJwt({ sub: 'store' }, 'inject-key-secret');
+    const backing = new Map<string, Promise<CryptoKey>>();
+    const gets: string[] = [];
+    const store: JwtKeyStore = {
+      get: (key) => {
+        gets.push(key);
+        return backing.get(key);
+      },
+      set: (key, value) => {
+        backing.set(key, value);
+      },
+    };
+    (await verifyJwt(token, 'inject-key-secret', { keyStore: store })).sub?.should.equal('store');
+    gets.length.should.equal(1);
+    backing.size.should.equal(1);
+    // The second verify is a store hit — no fresh import, no growth.
+    await verifyJwt(token, 'inject-key-secret', { keyStore: store });
+    gets.length.should.equal(2);
+    backing.size.should.equal(1);
+    // A pre-imported key served verbatim from the store verifies too.
+    const preseeded = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode('preseeded-secret'),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign', 'verify']
+    );
+    const preToken = await signJwt({ sub: 'pre' }, 'preseeded-secret');
+    (await verifyJwt(preToken, 'preseeded-secret', {
+      keyStore: { get: () => Promise.resolve(preseeded), set: () => undefined },
+    })).sub?.should.equal('pre');
+  });
+
+  it('serves jwks resolution from an injected store with TTL refresh intact', async () => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    const jwks = JSON.stringify({ keys: [{ ...publicJwk, kid: 'k' }] });
+    let fetches = 0;
+    const fetchFn = async () => {
+      fetches += 1;
+      return new Response(jwks, { status: 200 });
+    };
+    const backing = new Map<string, JwksEntry>();
+    const store: JwksStore = {
+      get: (url) => backing.get(url),
+      set: (url, entry) => backing.set(url, entry),
+    };
+    const resolver = createJwksResolver('https://idp-injected.test/jwks', {
+      ttlMs: 600_000,
+      fetchFn,
+      store,
+    });
+    await resolver({ alg: 'ES256' });
+    await resolver({ alg: 'ES256', kid: 'k' });
+    fetches.should.equal(1);
+    backing.size.should.equal(1);
+    // An expired entry refreshes even in an injected store.
+    const stale = new Map<string, JwksEntry>([
+      ['https://idp-stale.test/jwks', { exp: Date.now() - 1, keys: [{ kid: 'old' }] }],
+    ]);
+    const staleResolver = createJwksResolver('https://idp-stale.test/jwks', {
+      ttlMs: 600_000,
+      fetchFn,
+      store: { get: (url) => stale.get(url), set: (url, entry) => stale.set(url, entry) },
+    });
+    ((await staleResolver({ alg: 'ES256', kid: 'k' })) as JsonWebKey & { kid?: string }).kid?.should.equal('k');
+    fetches.should.equal(2);
+    // An unexpired pre-seeded entry skips the fetch entirely.
+    const fresh = new Map<string, JwksEntry>([
+      ['https://idp-fresh.test/jwks', { exp: Date.now() + 600_000, keys: [{ ...publicJwk, kid: 'seeded' }] }],
+    ]);
+    const freshResolver = createJwksResolver('https://idp-fresh.test/jwks', {
+      fetchFn,
+      store: { get: (url) => fresh.get(url), set: () => undefined },
+    });
+    ((await freshResolver({ alg: 'ES256', kid: 'seeded' })) as JsonWebKey & { kid?: string }).kid?.should.equal('seeded');
+    fetches.should.equal(2);
+  });
+
+  it('threads an injected key store through jwtAuth', async () => {
+    const sets: string[] = [];
+    const store: JwtKeyStore = {
+      get: () => undefined,
+      set: (key) => {
+        sets.push(key);
+      },
+    };
+    const app = createApp();
+    use(app, jwtAuth({ secret: 'auth-store-secret', keyStore: store }));
+    get(app, '/me', () => new Response('ok'));
+    const token = await signJwt({ sub: 'a' }, 'auth-store-secret');
+    const ok = await handle(
+      app,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${token}` } })
+    );
+    ok.status.should.equal(200);
+    sets.length.should.equal(1);
+  });
+
+  it('accepts a jwks store through the jwtAuth shorthand', async () => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    let fetches = 0;
+    const backing = new Map<string, JwksEntry>();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      fetches += 1;
+      return new Response(JSON.stringify({ keys: [{ ...publicJwk, kid: 'k1' }] }));
+    };
+    try {
+      const app = createApp();
+      use(app, jwtAuth({
+        jwks: {
+          url: 'https://idp-shorthand.test/jwks',
+          store: { get: (url) => backing.get(url), set: (url, entry) => backing.set(url, entry) },
+        },
+      }));
+      get(app, '/me', () => new Response('ok'));
+      const token = await signJwt({ sub: 'g' }, pair.privateKey, { alg: 'ES256' });
+      const ok = await handle(
+        app,
+        new Request('http://localhost/me', { headers: { authorization: `Bearer ${token}` } })
+      );
+      ok.status.should.equal(200);
+      fetches.should.equal(1);
+      backing.size.should.equal(1);
     } finally {
       globalThis.fetch = originalFetch;
     }

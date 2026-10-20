@@ -131,17 +131,61 @@ export function isJwtError(error: unknown): boolean {
   return error instanceof Error && error.name === 'JwtError';
 }
 
+/**
+ * Key-import cache: one entry per (algorithm, key material, usage) — the
+ * cache key encodes all three. The default is an in-process LRU; injecting
+ * a store (e.g. Redis) shares imports across instances and bypasses the
+ * default cache entirely.
+ */
+export type JwtKeyStore = {
+  get(key: string): Promise<CryptoKey> | undefined;
+  set(key: string, value: Promise<CryptoKey>): void;
+};
+
+/** Default key-store bound: past this many distinct imports the least
+ * recently used entry is dropped (re-imported on demand), so attacker-
+ * shaped key material cannot grow the cache without bound. */
+const KEY_CACHE_LIMIT = 100;
+
 const keyCache = new Map<string, Promise<CryptoKey>>();
+
+/** LRU read over a plain Map: re-insertion bumps recency (insertion order
+ * is recency order), zero dependencies. */
+function lruGet<K, V>(cache: Map<K, V>, key: K): V | undefined {
+  const value = cache.get(key);
+  if (value !== undefined) {
+    cache.delete(key);
+    cache.set(key, value);
+  }
+  return value;
+}
+
+/** LRU write over a plain Map: one past the bound, the oldest entry goes. */
+function lruSet<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
+  cache.set(key, value);
+  if (cache.size > limit) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) {
+      cache.delete(oldest.value);
+    }
+  }
+}
+
+const defaultKeyStore: JwtKeyStore = {
+  get: (key) => lruGet(keyCache, key),
+  set: (key, value) => lruSet(keyCache, key, value, KEY_CACHE_LIMIT),
+};
 
 /** One imported HMAC key per (secret text, hash, usage) — importing per
  * signature would cost a key-derivation pass on every request. */
 function getHmacKey(
   secretText: string,
   hash: string,
-  usages: readonly KeyUsage[]
+  usages: readonly KeyUsage[],
+  store: JwtKeyStore
 ): Promise<CryptoKey> {
   const cacheKey = `${hash}:${usages.join('+')}:${secretText}`;
-  let key = keyCache.get(cacheKey);
+  let key = store.get(cacheKey);
   if (key === undefined) {
     key = crypto.subtle.importKey(
       'raw',
@@ -150,7 +194,7 @@ function getHmacKey(
       false,
       usages
     );
-    keyCache.set(cacheKey, key);
+    store.set(cacheKey, key);
   }
   return key;
 }
@@ -159,11 +203,12 @@ function getHmacKey(
 function importAsymKey(
   jwk: JsonWebKey,
   alg: JwtAlgorithm,
-  usages: readonly KeyUsage[]
+  usages: readonly KeyUsage[],
+  store: JwtKeyStore
 ): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
   const cacheKey = `${alg}:${usages.join('+')}:${JSON.stringify(jwk)}`;
-  let key = keyCache.get(cacheKey);
+  let key = store.get(cacheKey);
   if (key === undefined) {
     if (info.kind === 'rsa') {
       key = crypto.subtle.importKey(
@@ -184,7 +229,7 @@ function importAsymKey(
     } else {
       throw jwtError(`HMAC key material cannot be imported as a JWK (${alg})`);
     }
-    keyCache.set(cacheKey, key);
+    store.set(cacheKey, key);
   }
   return key;
 }
@@ -217,7 +262,7 @@ async function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
     if (!isSecretKey(key)) {
       throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
     }
-    return getHmacKey(secretText(key), info.hash, ['sign']);
+    return getHmacKey(secretText(key), info.hash, ['sign'], defaultKeyStore);
   }
   if (key instanceof CryptoKey) {
     if (!keyMatches(key, info)) {
@@ -230,13 +275,17 @@ async function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
   if (jwk.kty !== expected) {
     throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
   }
-  return importAsymKey(jwk, alg, ['sign']);
+  return importAsymKey(jwk, alg, ['sign'], defaultKeyStore);
 }
 
 /** Resolves verification key material, rejecting family mismatches (this
  * is the algorithm-confusion defense: an RS header can never be verified
  * with HMAC secret bytes, and vice versa). */
-async function getVerifyKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
+async function getVerifyKey(
+  key: JwtKey,
+  alg: JwtAlgorithm,
+  store: JwtKeyStore
+): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
   if (info.kind === 'hmac') {
     if (!isSecretKey(key)) {
@@ -244,7 +293,7 @@ async function getVerifyKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> 
     }
     // HMAC verification re-signs and compares constant-time, so the key
     // needs the sign usage (verify comes along for free).
-    return getHmacKey(secretText(key), info.hash, ['sign', 'verify']);
+    return getHmacKey(secretText(key), info.hash, ['sign', 'verify'], store);
   }
   if (key instanceof CryptoKey) {
     if (!keyMatches(key, info)) {
@@ -257,7 +306,7 @@ async function getVerifyKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> 
   if (jwk.kty !== expected) {
     throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
   }
-  return importAsymKey(jwk, alg, ['verify']);
+  return importAsymKey(jwk, alg, ['verify'], store);
 }
 
 export type JwtSignOptions = {
@@ -354,6 +403,12 @@ export type JwtVerifyOptions = {
   readonly issuer?: string | readonly string[];
   /** Clock skew tolerance in seconds; default 0. */
   readonly clockTolerance?: number;
+  /**
+   * Key-import cache. The default is an in-process LRU bounded at 100
+   * entries; injecting a store (e.g. Redis) bypasses the default cache
+   * entirely and shares imports across instances.
+   */
+  readonly keyStore?: JwtKeyStore;
 };
 
 function hasValue<T>(list: readonly T[] | undefined, value: unknown, what: string): void {
@@ -404,7 +459,11 @@ export async function verifyJwt<T = Record<string, unknown>>(
   }
   const alg = header.alg as JwtAlgorithm;
   const info = ALG_INFO[alg];
-  const verifyingKey = await getVerifyKey(key, alg);
+  const verifyingKey = await getVerifyKey(
+    key,
+    alg,
+    options.keyStore ?? defaultKeyStore
+  );
   const data = encoder.encode(`${headerText}.${payloadText}`);
   if (info.kind === 'hmac') {
     const expected = new Uint8Array(
@@ -484,18 +543,48 @@ export type JwksOptions = {
   readonly ttlMs?: number;
   /** Fetch implementation; default the global fetch. */
   readonly fetchFn?: typeof fetch;
+  /**
+   * Document cache. The default is an in-process LRU bounded at 50 URLs;
+   * injecting a store bypasses the default cache entirely. Entries keep
+   * the `{ exp, keys }` shape, so TTL refresh applies to any store.
+   */
+  readonly store?: JwksStore;
 };
 
-const jwksCache = new Map<
-  string,
-  { readonly exp: number; readonly keys: JwkWithKid[] }
->();
+/** One cached JWKS document: `exp` is the ms-epoch refresh deadline. */
+export type JwksEntry = {
+  readonly exp: number;
+  readonly keys: readonly (JsonWebKey & { readonly kid?: string })[];
+};
+
+/**
+ * JWKS document cache keyed by endpoint URL — see {@link JwksOptions.store}.
+ * The injected store owns its own bounds and lifetime policy; TTL refresh
+ * still happens on read.
+ */
+export type JwksStore = {
+  get(url: string): JwksEntry | undefined;
+  set(url: string, entry: JwksEntry): void;
+};
+
+/** Default JWKS-store bound: past this many distinct endpoints the least
+ * recently used document is dropped (refetched on demand), so a multi-
+ * tenant issuer allowlist cannot grow the cache without bound. */
+const JWKS_CACHE_LIMIT = 50;
+
+const jwksCache = new Map<string, JwksEntry>();
+
+const defaultJwksStore: JwksStore = {
+  get: (url) => lruGet(jwksCache, url),
+  set: (url, entry) => lruSet(jwksCache, url, entry, JWKS_CACHE_LIMIT),
+};
 
 /**
  * Builds a {@link KeyResolver} over a JWKS endpoint: fetches the key set,
  * caches it for `ttlMs`, and picks by `kid` (first key when the token
- * carries none). Fetches are cached per URL module-wide, so many app
- * instances in one process share the rotation.
+ * carries none). Documents are cached per URL module-wide in an LRU
+ * bounded at 50 endpoints, so many app instances in one process share
+ * the rotation; inject a `store` to share across processes instead.
  */
 export function createJwksResolver(
   url: string,
@@ -503,9 +592,10 @@ export function createJwksResolver(
 ): KeyResolver {
   const ttl = options.ttlMs ?? 300_000;
   const fetchFn = options.fetchFn ?? globalThis.fetch;
+  const store = options.store ?? defaultJwksStore;
   return async (header) => {
     const now = Date.now();
-    let cached = jwksCache.get(url);
+    let cached = store.get(url);
     if (cached === undefined || cached.exp <= now) {
       const res = await fetchFn(url);
       if (!res.ok) {
@@ -516,7 +606,7 @@ export function createJwksResolver(
         throw jwtError('malformed jwks: missing keys');
       }
       cached = { exp: now + ttl, keys: body.keys };
-      jwksCache.set(url, cached);
+      store.set(url, cached);
     }
     const candidates =
       header.kid === undefined
@@ -543,7 +633,17 @@ export type JwtAuthOptions = {
   /** Per-token key resolution (key rotation, multi-issuer). */
   readonly keyResolver?: KeyResolver;
   /** JWKS endpoint — shorthand for {@link createJwksResolver}. */
-  readonly jwks?: string | { readonly url: string; readonly ttlMs?: number };
+  readonly jwks?: string | {
+    readonly url: string;
+    readonly ttlMs?: number;
+    readonly store?: JwksStore;
+  };
+  /**
+   * Key-import cache forwarded to `verifyJwt`. The default is an
+   * in-process LRU bounded at 100 entries; injecting a store bypasses
+   * the default cache entirely.
+   */
+  readonly keyStore?: JwtKeyStore;
   /** Algorithms the gate accepts; default every supported one. */
   readonly algorithms?: readonly JwtAlgorithm[];
   /** Header carrying the token; default `authorization`. */
@@ -606,7 +706,7 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
           typeof options.jwks === 'string' ? options.jwks : options.jwks.url,
           typeof options.jwks === 'string'
             ? undefined
-            : { ttlMs: options.jwks.ttlMs }
+            : { ttlMs: options.jwks.ttlMs, store: options.jwks.store }
         )
       : undefined);
   return async (ctx: Ctx, next) => {
@@ -629,7 +729,7 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
               resolver !== undefined
                 ? await resolver(parseHeaderOf(token))
                 : (staticKey as JwtKey),
-              { algorithms: options.algorithms }
+              { algorithms: options.algorithms, keyStore: options.keyStore }
             );
     } catch (error) {
       if (isJwtError(error)) {

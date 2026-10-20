@@ -41,7 +41,7 @@ type SerializeSchema =
 
 ## ETag（`s200/etag`）
 
-在字节支撑的响应上盖 SHA-1 实体标签（默认弱标签），并以 `304` 应答 `If-None-Match` 命中。字节支撑意味着显式 `content-length` —— s200 的响应助手会设置，裸 `new Response('…')` 不会。分块/流式响应（SSE、`s200/streaming`）与 range 响应（206）被跳过而非缓冲。仅 `2xx` 响应会被盖标签，已带 `etag` 头的响应原样透传 —— 自己设置的标签优先。
+在字节支撑的响应上盖 SHA-1 实体标签（默认弱标签），并以 `304` 应答 `If-None-Match` 命中。字节支撑意味着显式 `content-length` —— s200 的响应助手会设置，裸 `new Response('…')` 不会。分块/流式响应（SSE、`s200/streaming`）与 range 响应（206）被跳过而非缓冲。仅 `2xx` 响应会被盖标签，已带 `etag` 头的响应原样透传 —— 自己设置的标签优先。`304` 会丢弃复制来的 `content-length`（RFC 9110 §15.4.5：省略，而非本应具有的大小），其余盖过标签的头保留。
 
 ```ts
 use(app, etag());                    // 默认 W/"…"

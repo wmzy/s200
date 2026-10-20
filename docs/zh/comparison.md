@@ -27,7 +27,7 @@ tree-shaking、可替换。
 | WebSocket | ✅ 零依赖 RFC 6455 node + bun（子协议、permessage-deflate、心跳） | ✅ | 第三方 | 第三方 | 第三方 | ✅ 内建 `.ws()`（Bun API；node 上为 crossws） |
 | battery | 45 个 opt-in（cors、cookies、csrf、jwt、cache、etag、compress、rate-limit、session、upload、…） | ~20 个（含 csrf/jwt/cache） | 生态 | 插件生态 | 生态 | ~15 个官方插件（openapi、jwt、cors、rate-limit、…） |
 | 吞吐量类别（见基准测试） | Web 标准对象类别；opt-in light 模式 ~1.3–1.4× | 同类（patched：1.5×） | ~0.6× | patched 类别 | 更低 | patched 类别；在 Bun 上居其榜首 |
-| 核心体积（min+gz） | 由 size-limit 门控：~4 kB 最小核心 / ~8 kB 完整 barrel | ~10 kB+ | — | — | 极小，无 battery | 解包 1.1 MB；141 kB min 的 hello-world（v2 beta） |
+| 核心体积（min+gz） | 由 size-limit 门控：~4 kB 最小核心 / ~8 kB 完整 barrel | ~10 kB+ | — | — | 极小，无 battery | 解包 1.1 MB；141 kB min 的 hello-world（v2 rc） |
 | 校验集成 | 覆盖任意解析器的通用门 | 内建 zod/valibot/typebox | 生态 | 原生 JSON Schema | 生态 | 内建 TypeBox（`t`）+ standard schema |
 | OpenAPI | ✅ 从路由表原生 3.1 | zod-openapi（依赖） | ❌ | swagger 插件 | ❌ | ✅ 插件（Scalar/Swagger UI） |
 | JSX / SSG / 开发服务器 | ❌（经 `s200/dev` 的路由表热重载） | ✅ | ❌ | ❌ | ❌ | ❌（html 插件） |
@@ -127,11 +127,18 @@ resolve），不是 s200 与 Koa 共享的洋葱模型。如果你的目标是 B
   Node ≥ 20.3、适配器作为第一方子路径入口（`s200/node`、`s200/bun`），
   无需一次 major 就已经存在。
 - **Elysia**（[releases](https://github.com/elysiajs/elysia/releases)、
-  [v2 beta 公告](https://elysiajs.com/blog/elysia-20)）：1.4.x 线只修
-  安全问题；v2——一次彻底重写，仍是 beta——主打可 tree-shaking 的
-  模块与 AOT 编译。这正是上游为得到 s200 上市即有的东西而付出的重写
-  成本：`sideEffects: false`、50 个可 tree-shaking 的包入口、以及为
-  每次发布把关的 size-limit 预算。
+  [v2 RC 公告](https://next.elysiajs.com/blog/elysia-20-rc/)）：1.4.x 线只修
+  安全问题；v2——一次彻底重写，已到 release candidate（2.0.0-rc.0，
+  2026-10-19）——主打更低内存、更快启动、可 tree-shaking 的模块与 AOT
+  编译。这正是上游为得到 s200 上市即有的东西而付出的重写成本：
+  `sideEffects: false`、50 个可 tree-shaking 的包入口、以及为每次发布
+  把关的 size-limit 预算。
+- **Fastify**（[releases](https://github.com/fastify/fastify/releases)）：
+  稳定线按 [LTS 政策](https://fastify.dev/docs/latest/Reference/LTS/)停留在
+  v5.12.x，v6.0.0-alpha.5（2026-10-16）主打每请求成本削减——优化的
+  header 处理、字符串 body 只解码一次、已解析 content-type 的缓存。
+  每请求成本正是 s200 的 opt-in light 模式挣得 ~1.4× 的那条轴
+  （fastify 直接接管裸 `IncomingMessage`，本来就不付 undici 的构造税）。
 
 ## 迁移指南
 

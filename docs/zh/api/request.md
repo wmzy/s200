@@ -16,6 +16,8 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 | --- | --- |
 | `validate(parse, options?)` | 纯解析函数 `(ctx) => unknown` 上的闸门 —— 接收整个上下文，可自行读取方法、请求头或手工解析的请求体；抛出的值原样拒绝链（由应用的错误路径决定状态码） |
 | `jsonBody<S>(schema)` | JSON 体模式上的闸门 —— 解析函数**或** Standard Schema 值（任何带 `~standard` 的） |
+| `requiresHeaders<K>(...keys)` | 声明路由读取的请求头 —— `throws` 同款的纯透传闸门：不检查任何东西，键只随路由的 `in` 通道走，让 `s200/client` 把它们要求为 `init.headers`（每个键必填的 record）。执法归中间件 —— 读 `ctx.req.headers` 的 `validate(parse)` 是运行时孪生 |
+| `bodyShape<T>()` | 声明路由读取的结构化请求体类型（上传路由 `bodyShape<FormData>()`、二进制路由 `bodyShape<Blob>()`）—— 同款纯声明模具；`s200/client` 把 `init.body` 类型化（并要求）为恰好 `T`，原样传给 fetch。运行时读取留在 handler（`streamForm`、`uploadForm` 或裸 `ctx.req.body`） |
 | `standardValidate(schema, data)` | 裸 Standard Schema 调用：`validate()` → `{ value }` 或 `{ issues }`；空 `issues` 算成功 |
 | `isStandardSchema(value)` | 结构性 `~standard` 谓词 |
 

@@ -20,11 +20,11 @@
  */
 
 import type { App } from './app';
-import type { Params } from './types';
+import type { Ctx } from './types';
 
 import {
-  createWsCtx,
   matchWebSocket,
+  resolveUpgrade,
   type WebSocketHandler,
   type WsCloseCb,
   type WsData,
@@ -58,11 +58,16 @@ export type BunWsHandlers = {
 
 /**
  * The two halves `s200/bun`'s `serve` consumes: `upgrade` decides (inside
- * the fetch handler) whether the request becomes a WebSocket, and
- * `websocket` carries the per-connection callbacks for Bun.serve.
+ * the fetch handler) whether the request becomes a WebSocket — `true`
+ * means upgraded, a `Response` is a middleware rejection answered as
+ * plain HTTP, `false` falls through to the HTTP handler — and `websocket`
+ * carries the per-connection callbacks for Bun.serve.
  */
 export type BunWebSocketBridge = {
-  readonly upgrade: (req: Request, server: BunUpgrader) => boolean;
+  readonly upgrade: (
+    req: Request,
+    server: BunUpgrader
+  ) => Promise<boolean | Response>;
   readonly websocket: BunWsHandlers;
 };
 
@@ -77,26 +82,37 @@ type BunSession = {
 /** The per-upgrade record carried through Bun's ws.data to `open`. */
 type UpgradePayload = {
   readonly route: { readonly handler: WebSocketHandler };
-  readonly params: Params;
-  readonly url: URL;
-  readonly req: Request;
+  /** The ctx the middleware decision built — `state` mutations from the
+   * chain ride into the handler through it. */
+  readonly ctx: Ctx;
   readonly protocol?: string;
 };
 
 /**
  * Builds the bridge for `s200/bun`'s `serve({ websocket })`. Requests that
- * match a registered WebSocket route upgrade; everything else falls
- * through to the HTTP handler. The matched handler runs when the
- * connection opens; its listeners receive Bun's message/close events.
+ * match a registered WebSocket route upgrade after the app + route
+ * middleware chain approves (a rejecting middleware's Response is
+ * returned as plain HTTP instead); everything else falls through to the
+ * HTTP handler. The matched handler runs when the connection opens; its
+ * listeners receive Bun's message/close events.
  */
 export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
   const sessions = new Map<BunWs, BunSession>();
 
-  const upgrade = (req: Request, server: BunUpgrader): boolean => {
+  const upgrade = async (
+    req: Request,
+    server: BunUpgrader
+  ): Promise<boolean | Response> => {
     const url = new URL(req.url);
     const matched = matchWebSocket(app, url.pathname);
     if (matched === undefined) {
       return false;
+    }
+    // The chain decides first: a rejection Response is answered as plain
+    // HTTP by the fetch handler; approval carries the chain-stamped ctx.
+    const decision = await resolveUpgrade(app, matched.route, req, url, matched.params);
+    if (!decision.ok) {
+      return decision.response;
     }
     // Subprotocol negotiation (server preference order), mirrored from the
     // node adapter so both runtimes pick identically.
@@ -114,7 +130,7 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
     }
     // The data record reaches `open` via Bun's ws.data.
     return server.upgrade(req, {
-      data: { route: matched.route, params: matched.params, url, req, protocol },
+      data: { route: matched.route, ctx: decision.ctx, protocol },
       headers: protocol === undefined ? undefined : { 'sec-websocket-protocol': protocol },
     });
   };
@@ -152,7 +168,7 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
           session.onPong.push(cb);
         },
       };
-      const ctx = createWsCtx(payload.req, payload.url, payload.params);
+      const ctx = payload.ctx;
       void Promise.resolve()
         .then(() => payload.route.handler(socket, ctx))
         .catch((error: unknown) => {

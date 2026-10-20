@@ -1,6 +1,6 @@
 # WebSocket（`s200/websocket`、`s200/websocket/node`、`s200/websocket/bun`）
 
-`data + functions` 形状的 WebSocket 路由：`upgradeWebSocket` 在应用上记录 `pattern → handler` 路由（普通数据），运行时适配器在连接升级时查询注册表。模式使用路由的分段语法（`:param`、末端 `*rest`）；匹配严格、先注册先得，与 HTTP 路由完全一致。
+`data + functions` 形状的 WebSocket 路由：`upgradeWebSocket` 在应用上记录 `pattern → handler` 路由（普通数据），运行时适配器在连接升级时查询注册表。模式使用路由的分段语法（`:param`、末端 `*rest`）；匹配严格、先注册先得，与 HTTP 路由完全一致。升级在握手完成前先运行应用的中间件链与路由的中间件 —— 见[升级上的中间件与鉴权](#升级上的中间件与鉴权)。
 
 ## 注册（`s200/websocket`）
 
@@ -19,11 +19,14 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 
 | 函数 | 含义 |
 | --- | --- |
-| `upgradeWebSocket(app, pattern, handler, options?)` | 注册 handler；返回应用 |
+| `upgradeWebSocket(app, pattern, ...middlewares, handler, options?)` | 注册路由级中间件 + handler；返回应用 |
 | `matchWebSocket(app, pathname)` | 对注册表做最长匹配查找 → `WebSocketMatch \| undefined` |
+| `resolveUpgrade(app, route, request, url, params)` | 运行应用 + 路由中间件链 → `WsUpgradeDecision`（适配器共用的判定帮助函数） |
 | `createWsCtx(req, url, params)` | 为 handler 构建请求形状的 `Ctx`（params/query/url） |
 
-`WebSocketRoute`：`{ pattern, segments, handler, protocols?, perMessageDeflate? }` —— 一条注册表项。注册表挂在应用之外（应用旁的 `WeakMap`），因此核心 `App` 形状保持纯 HTTP，WebSocket 状态在所有非 WS 消费者中被 tree-shake 掉。`WebSocketMatch`：`{ route, params }` —— `matchWebSocket` 的返回值。
+`upgradeWebSocket` 镜像 HTTP 注册器的 variadic 形状：模式与末端 handler 之间的每个实参都是路由级中间件；旧的四参形式（无中间件的 `handler, options?`）继续有效。
+
+`WebSocketRoute`：`{ pattern, segments, middlewares, handler, protocols?, perMessageDeflate? }` —— 一条注册表项。注册表挂在应用之外（应用旁的 `WeakMap`），因此核心 `App` 形状保持纯 HTTP，WebSocket 状态在所有非 WS 消费者中被 tree-shake 掉。`WebSocketMatch`：`{ route, params }` —— `matchWebSocket` 的返回值。
 
 `WebSocketRouteOptions`：`{ protocols?: readonly string[]; perMessageDeflate?: boolean }` —— 子协议按服务端偏好序（客户端提供的第一个匹配者胜出）；permessage-deflate（RFC 7692）双向 no-context-takeover 协商（node 适配器实现；bun 桥把压缩交给 Bun 原生协商）。
 
@@ -43,6 +46,51 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 
 `WebSocketHandler`：`(socket: WsSocket, ctx: Ctx) => void | Promise<void>`。
 
+## 升级上的中间件与鉴权
+
+WebSocket 升级在握手完成之前，先运行应用的中间件链（与 HTTP 相同的那些 `use(app, …)` 中间件），再运行路由自己的中间件。中间件通过写 `ctx.res`（或返回一个 `Response`、或抛错）作答：该响应即拒绝升级，并以普通 HTTP 应答替代 `101` —— node 适配器在写出任何协议字节之前把它写回 socket，bun 桥从 fetch handler 返回它。鉴权门因此就是一个普通中间件：
+
+```ts
+import { httpError, use } from 's200';
+import { upgradeWebSocket } from 's200/websocket';
+
+// 应用级：门控此应用上的每次升级（不限作用域时 HTTP 请求同样经过）——
+// 缺少 token 的握手以 401 拒绝。
+use(app, async (ctx, next) => {
+  const user = await verifyToken(ctx.req.headers.get('authorization'));
+  if (user === null) {
+    ctx.res = new Response('missing token', { status: 401 });
+    return;
+  }
+  ctx.state.user = user;
+  await next();
+});
+
+// 路由级：与 HTTP 注册器相同的形状。
+upgradeWebSocket(
+  app,
+  '/ws/room/:id',
+  async (ctx, next) => {
+    if (ctx.state.user !== 'admin' && ctx.params.id === 'ops') {
+      throw httpError(403, 'ops room is admin-only');
+    }
+    await next();
+  },
+  (socket, ctx) => {
+    socket.onMessage((data) => socket.send(`${String(ctx.state.user)}: ${String(data)}`));
+  }
+);
+```
+
+精确语义，与 HTTP 分发一致：
+
+- **顺序** —— 先应用中间件（含 `use(app, '/ws', …)` 前缀作用域组 —— 作用域检查用 `ctx.url.pathname`），后路由中间件，按注册序；回卷反向，与 HTTP 链完全相同。
+- **拒绝** —— 任何中间件写 `ctx.res`、返回 `Response` 或抛错都会拒绝升级；客户端收到该 HTTP 响应（抛出的 `HttpError` 映射为它的状态码与 `{ error }` 信封，其他错误走应用的 `onError`/`logError` 策略 —— 自定义 `onError` 保持沉默时回落默认映射，因为升级没有可用的 fallback body）。ctx 上挂起的 `setHeader`/`setHeaders` 条目会附在拒绝响应上。
+- **批准** —— 链正常结束且 `ctx.res` 仍为 `undefined` 时升级继续：socket 即响应。中间件在回卷侧看到 `res: undefined`，且所有 `ctx.state` 修改都随 handler 的 ctx 一并传递（同一个 ctx 对象 —— `resolveUpgrade` 把它交还给适配器）。既不作答也不调 `next()` 的中间件隐式批准 —— 要么调 `next()` 要么作答，没有第三条分支。
+- **handler 本身在批准之后运行**，位于链外：它抛出的错误不再经过中间件（走 `socket.onError` + 以 1011 关闭的既有行为）。
+
+`resolveUpgrade(app, route, request, url, params)` 是两个适配器共用的判定帮助函数 —— `WsUpgradeDecision` 为 `{ ok: true; ctx: Ctx }` 或 `{ ok: false; response: Response }`。它面向适配器作者；应用通过 `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` 获得相同行为。
+
 ## Node（`s200/websocket/node`）
 
 零依赖 RFC 6455 服务器：握手、带分片的文本/二进制消息、ping/pong、关闭握手与负载预算。可选子协议协商与 permessage-deflate 在此实现。
@@ -55,7 +103,7 @@ const server = await serve(app, { port: 3000, upgrade: createUpgradeHandler(app)
 
 | 函数 | 含义 |
 | --- | --- |
-| `createUpgradeHandler(app, options?)` | 构建 http 服务器的 `'upgrade'` 回调：把路径与应用的 WebSocket 路由匹配、应答握手、每连接运行匹配 handler。未知道路销毁 socket；非法握手得 400 |
+| `createUpgradeHandler(app, options?)` | 构建 http 服务器的 `'upgrade'` 回调：把路径与应用的 WebSocket 路由匹配、运行应用 + 路由中间件链（拒绝以普通 HTTP 应答替代 `101`）、应答握手、每连接运行匹配 handler。未知道路销毁 socket；非法握手得 400 |
 
 `NodeUpgradeOptions`：`{ maxPayload?: number }` —— 累计消息上限，默认 64 MiB；超限消息在缓冲更多之前以 `1009` 关闭。`NodeUpgradeHandler`：`(req: IncomingMessage, socket: Duplex, head: Buffer) => void` —— 也是 `s200/node` 的 `serve` 的 `upgrade` 选项类型。
 
@@ -70,7 +118,7 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });
 
 | 函数 / 类型 | 含义 |
 | --- | --- |
-| `createBunWebSocketBridge(app)` | `{ upgrade, websocket }` —— `upgrade(req, server)` 在 fetch handler 内决定请求是否升级；`websocket` 携带每连接回调 |
-| `BunWebSocketBridge` | `{ upgrade: (req, server: BunUpgrader) => boolean; websocket: BunWsHandlers }` |
+| `createBunWebSocketBridge(app)` | `{ upgrade, websocket }` —— `upgrade(req, server)` 在 fetch handler 内决定请求是否升级（先运行应用 + 路由中间件链；拒绝中间件的 `Response` 以普通 HTTP 应答）；`websocket` 携带每连接回调 |
+| `BunWebSocketBridge` | `{ upgrade: (req, server: BunUpgrader) => Promise<boolean \| Response>; websocket: BunWsHandlers }` —— `true` = 已升级，`Response` = 拒绝，`false` = 非 ws 路由 |
 | `BunUpgrader` | Bun 交给 fetch handler 的 `server`：`upgrade(request, options?) => boolean` |
 | `BunWs` / `BunWsHandlers` | Bun 的每连接 socket 与 `open`/`message`/`close`/`pong` 回调集，收窄到用到的成员 |

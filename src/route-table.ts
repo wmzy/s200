@@ -48,3 +48,21 @@ export function createRouteTable(app: App): RouteTable {
     })),
   };
 }
+
+/**
+ * Renders a route table as aligned ASCII — `METHOD  PATTERN`, one line per
+ * registration, the method column padded to the longest method present.
+ * The `s200 routes` command and the dev runner's startup report print
+ * this; an empty table renders as an empty string.
+ */
+export function formatRouteTable(table: RouteTable): string {
+  let width = 0;
+  for (const route of table.routes) {
+    if (route.method.length > width) {
+      width = route.method.length;
+    }
+  }
+  return table.routes
+    .map((route) => `${route.method.padEnd(width)}  ${route.pattern}`)
+    .join('\n');
+}

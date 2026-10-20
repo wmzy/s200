@@ -20,7 +20,9 @@ import type { Ctx, Middleware, Next, Route, Segment, State } from './types';
 import { watch, type FSWatcher } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import { newResponse } from './respond';
+import { newResponse, utf8Length } from './respond';
+import { createRoute } from './router';
+import { streamSSE } from './streaming';
 
 /** A stable app identity whose table can be swapped via `reload`. */
 export type HotApp<S extends State = State> = {
@@ -383,5 +385,217 @@ export function routeHints(app: App, options: RouteHintsOptions = {}): Middlewar
         headers: res.headers,
       });
     }
+  };
+}
+
+// --- Dev runner extras ------------------------------------------------------
+//
+// What `s200 dev` layers on top of the hot reload core: an event bus the
+// runner publishes reload/load-failure events to, and derived-app wrappers
+// that install `routeHints` and the error overlay WITHOUT touching the
+// user's app data — every load produces a shallow derived copy, and the
+// live hot-app identity is the only object ever mutated (by `reload`, as
+// always).
+
+/** One dev-lifecycle event for the browser overlay: a successful reload, or
+ * a failed load with its error (`stack` as captured on the thrown value). */
+export type DevEvent =
+  | { readonly type: 'reload' }
+  | { readonly type: 'error'; readonly message: string; readonly stack?: string };
+
+/** The bus the dev runner publishes to and the overlay's SSE route reads. */
+export type DevEventBus = {
+  /** Delivers `event` to every current subscriber, synchronously. */
+  readonly publish: (event: DevEvent) => void;
+  /** Adds a listener; the returned function removes it again. */
+  readonly subscribe: (listener: (event: DevEvent) => void) => () => void;
+};
+
+/** A synchronous fan-out for {@link DevEvent}s — reloads and load errors. */
+export function createDevEventBus(): DevEventBus {
+  const listeners = new Set<(event: DevEvent) => void>();
+  return {
+    publish(event: DevEvent): void {
+      for (const listener of listeners) {
+        listener(event);
+      }
+    },
+    subscribe(listener: (event: DevEvent) => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+
+/** Where the overlay's SSE events are served (only routed while the overlay
+ * is enabled). */
+export const DEV_EVENTS_PATH = '/__s200/dev-events';
+
+/** Milliseconds between overlay SSE keep-alive comments. */
+const DEV_EVENTS_HEARTBEAT_MS = 15_000;
+
+/**
+ * The overlay's SSE route: subscribes to the bus, frames one event per
+ * `reload`/`error` as `event:`-named SSE, keeps the connection warm with
+ * heartbeats, and cleans up on client disconnect (`ctx.signal` aborts —
+ * writes after that resolve silently, see `streamSSE`).
+ */
+function devEventsRoute(bus: DevEventBus): Route {
+  return createRoute('GET', DEV_EVENTS_PATH, (ctx: Ctx) =>
+    streamSSE(
+      ctx,
+      (writer) =>
+        new Promise<void>((resolve) => {
+          let unsubscribe: (() => void) | undefined;
+          let beat: ReturnType<typeof setInterval> | undefined;
+          const stop = (): void => {
+            unsubscribe?.();
+            unsubscribe = undefined;
+            if (beat !== undefined) {
+              clearInterval(beat);
+              beat = undefined;
+            }
+            resolve();
+          };
+          unsubscribe = bus.subscribe((event) => {
+            if (event.type === 'reload') {
+              void writer.writeSSE({ event: 'reload', data: {} });
+            } else {
+              void writer.writeSSE({
+                event: 'error',
+                data: { message: event.message, stack: event.stack },
+              });
+            }
+          });
+          beat = setInterval(() => void writer.heartbeat(), DEV_EVENTS_HEARTBEAT_MS);
+          // A keep-alive timer must not pin the dev process open.
+          (beat as { unref?: () => void }).unref?.();
+          ctx.signal.addEventListener('abort', stop);
+          // Opens the stream and asks EventSource to reconnect after 1 s.
+          void writer.writeSSE({ event: 'ready', data: {}, retry: 1000 });
+        })
+    )
+  );
+}
+
+/** The inline overlay script — zero dependencies, injected before the
+ * closing `</body>`. Listens on the SSE route: `reload` events reload the
+ * page, `error` events surface a fixed-position, dismissible error box.
+ * Bare `error` events (no data) are EventSource's own connection noise. */
+const OVERLAY_SCRIPT = `<script>(function () {
+  'use strict';
+  var box = null;
+  var dismiss = function () {
+    if (box !== null) {
+      box.parentNode.removeChild(box);
+      box = null;
+    }
+  };
+  var show = function (message, stack) {
+    dismiss();
+    box = document.createElement('div');
+    box.setAttribute('style', 'position:fixed;left:16px;right:16px;bottom:16px;z-index:2147483647;max-height:60vh;overflow:auto;background:#450a0a;color:#fecaca;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:12px 14px;border-radius:8px;border:1px solid #b91c1c');
+    var bar = document.createElement('div');
+    bar.setAttribute('style', 'display:flex;align-items:center;justify-content:space-between;gap:12px');
+    var label = document.createElement('strong');
+    label.textContent = String(message);
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'close';
+    button.setAttribute('style', 'flex:none;background:transparent;color:#fecaca;border:1px solid #b91c1c;border-radius:4px;padding:1px 10px;cursor:pointer');
+    button.addEventListener('click', dismiss);
+    bar.appendChild(label);
+    bar.appendChild(button);
+    box.appendChild(bar);
+    if (stack) {
+      var pre = document.createElement('pre');
+      pre.setAttribute('style', 'margin:8px 0 0;white-space:pre-wrap;word-break:break-word');
+      pre.textContent = String(stack);
+      box.appendChild(pre);
+    }
+    (document.body || document.documentElement).appendChild(box);
+  };
+  var source = new EventSource('/__s200/dev-events');
+  source.addEventListener('reload', function () { location.reload(); });
+  source.addEventListener('error', function (event) {
+    if (!event.data) { return; }
+    var payload = null;
+    try { payload = JSON.parse(event.data); } catch (error) { return; }
+    show(payload.message, payload.stack);
+  });
+})();</script>`;
+
+/**
+ * The overlay's script-injection middleware: after `next()`, rewrites
+ * byte-backed `text/html` responses with {@link OVERLAY_SCRIPT} inserted
+ * before the last `</body>`. Byte-backed means the response carries a
+ * `content-length` — the signal every respond helper that knows its size
+ * stamps (`json`/`text`/`html`/`send`, the same contract `etag` and
+ * `compress` rely on). Streamed HTML (`stream()`/`streamSSE()`) has none
+ * and passes through as-is: buffering it to inject would defeat the
+ * streaming. `HEAD` requests skip injection (their body is rebuilt away by
+ * the core afterwards anyway); so does anything without a closing body
+ * tag. The rebuilt response keeps the status and headers, with an honest
+ * new `content-length`.
+ */
+function overlayMiddleware(): Middleware {
+  return async (ctx: Ctx, next: Next): Promise<void> => {
+    await next();
+    const res = ctx.res;
+    if (res === undefined || ctx.req.method === 'HEAD') {
+      return;
+    }
+    const type = res.headers.get('content-type') ?? '';
+    if (!/^text\/html\b/i.test(type) || res.headers.get('content-length') === null) {
+      return;
+    }
+    let body: string;
+    try {
+      body = await res.clone().text();
+    } catch {
+      return; // Uncloneable body: leave the response as-is.
+    }
+    const at = body.toLowerCase().lastIndexOf('</body>');
+    if (at === -1) {
+      return;
+    }
+    const injected = `${body.slice(0, at)}${OVERLAY_SCRIPT}${body.slice(at)}`;
+    const rebuilt = newResponse(ctx, injected, { status: res.status, headers: res.headers });
+    rebuilt.headers.set('content-length', String(utf8Length(injected)));
+    ctx.res = rebuilt;
+  };
+}
+
+/**
+ * Derived-app seam for the dev runner's route hints (on by default,
+ * `--no-hints` to disable): a shallow copy of `userApp` with
+ * `routeHints(live)` prepended to the middleware chain — the user's app
+ * object is never touched, so a reload stays a pure table swap. The hints
+ * middleware closes over `live` (the hot identity) and re-reads its routes
+ * per request, so reloads need no re-registration; re-wrapping each load
+ * only moves the derived table.
+ */
+export function withRouteHints(userApp: App, live: App): App {
+  return {
+    ...userApp,
+    middlewares: Object.freeze([routeHints(live), ...userApp.middlewares]),
+  };
+}
+
+/**
+ * Derived-app seam for the dev runner's error overlay (`--overlay`, off by
+ * default): a shallow copy of `userApp` plus the script-injection
+ * middleware prepended and the internal SSE route {@link DEV_EVENTS_PATH}
+ * appended AFTER the user's routes — first registration wins, so a user
+ * route on the same path takes precedence. The route exists only while
+ * the overlay is enabled; events fan out from `bus`.
+ */
+export function withDevOverlay(userApp: App, bus: DevEventBus): App {
+  return {
+    ...userApp,
+    middlewares: Object.freeze([overlayMiddleware(), ...userApp.middlewares]),
+    routes: Object.freeze([...userApp.routes, devEventsRoute(bus)]),
   };
 }

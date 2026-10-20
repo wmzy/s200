@@ -28,6 +28,9 @@ describe('etag', () => {
     res.status.should.equal(304);
     (await res.text()).should.equal('');
     res.headers.get('etag')!.should.equal(tag);
+    // RFC 9110 §15.4.5: the 304 drops the copied content-length — omission,
+    // not the would-be size of the 200 the client already has.
+    (res.headers.get('content-length') === null).should.be.true;
   });
 
   it('matches a tag inside an If-None-Match list, weakly', async () => {

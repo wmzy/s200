@@ -12,6 +12,7 @@
 import type { App } from './app';
 
 import { handle } from './app';
+import { hasFinishers, trackFinish } from './finish';
 import { signalInit } from './signal';
 
 /** The default export shape of a Cloudflare module worker. */
@@ -28,6 +29,12 @@ export function createHandler(app: App): WorkerHandler {
   return {
     // Workers abort the fetch-handler request's signal on client
     // disconnect — feature-detect it for runtimes whose Request lacks it.
-    fetch: (request) => handle(app, request, signalInit(request)),
+    // There is no write-completion event either, so onFinish rides the
+    // response body: trackFinish wraps it when callbacks exist — cancel
+    // (client gone) or completion runs them exactly once.
+    fetch: (request) =>
+      handle(app, request, signalInit(request)).then((response) =>
+        hasFinishers(request) ? trackFinish(request, response, app.logError) : response
+      ),
   };
 }

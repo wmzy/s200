@@ -66,6 +66,8 @@ type Ctx = { req, url, params, query, state, signal, res };
   回退，**或映射后的错误响应**：链内的错误边界会在回卷之前映射抛出的错误，
   因此即使是 500，中间件也能观察（并可以覆盖）真实的响应。在任何内容写入
   之前，`res` 为 `undefined`。
+- **`onFinish(ctx, fn)`** —— 注册每请求一次的回调（收 `{ aborted }`）：响应
+  完整写完为 `false`，连接先行结束为 `true`（各运行时的触发点见适配器页）。
 
 ### 响应
 
@@ -82,7 +84,9 @@ type Ctx = { req, url, params, query, state, signal, res };
 - **`content-length` 契约**：只要大小已知，这些辅助函数就会显式设置
   `content-length`（平台惰性序列化，裸的 `new Response('…')` 不带该头）。
   HEAD 响应保留本应具有的大小，而感知大小的中间件（`compress` 的
-  `minBytes`、`s200/etag` 的字节背书检测）依赖它。
+  `minBytes`、`s200/etag` 的字节背书检测）依赖它。唯一的例外是 `304`：
+  该头被省略 —— 既非本应具有的大小，也非 `0`（RFC 9110 §15.4.5），
+  `send` 与两个条件层（静态文件、`s200/etag`）皆然。
 - `html` **不做**转义——转义请用 `escapeHtml`，“不转义”的语义是契约的一
   部分。
 
@@ -137,6 +141,7 @@ s200/session  s200/swagger  s200/upload  s200/dev
 s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
 s200/shard  s200/shard-dev  s200/executor  s200/gateway  s200/unit-metrics
 s200/events
+s200/als
 ```
 
 ## semver 策略 {#semver-policy}

@@ -33,6 +33,7 @@ budgets (`pnpm size`).
 | `s200/rate-limit`     | `rateLimit` — sliding-window limiter with an injectable store |
 | `s200/trust-proxy`    | `trustProxy` — honest client IPs behind a proxy               |
 | `s200/version`        | `apiVersion` — header/Accept API versioning gate, `ctx.state.version` |
+| `s200/als`            | `als`, `currentCtx` — ambient `ctx` over `node:async_hooks` (node/bun/deno; not edge) |
 
 ### Auth & sessions
 

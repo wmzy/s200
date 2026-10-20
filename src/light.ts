@@ -114,6 +114,43 @@ function normalizeBody(
  * value appended under it, in arrival order. */
 type HeaderSlot = { readonly name: string; values: string[] };
 
+/** RFC 9110 token characters (the header-name grammar) as a 128-slot
+ * bitmap — one indexed read per character, the cheapest single pass. */
+const TOKEN_CHAR = (() => {
+  const table = new Array<boolean>(128).fill(false);
+  for (let code = 0x30; code <= 0x39; code += 1) table[code] = true;
+  for (let code = 0x41; code <= 0x5a; code += 1) table[code] = true;
+  for (let code = 0x61; code <= 0x7a; code += 1) table[code] = true;
+  for (const special of "!#$%&'*+-.^_`|~") {
+    table[special.charCodeAt(0)] = true;
+  }
+  return table;
+})();
+
+/**
+ * Eager header validation for the mutating methods — `set`/`append` throw
+ * a `TypeError` on a CR/LF in the value (response splitting) or a non-token
+ * name, matching undici's `Headers` behavior instead of letting the
+ * malformed pair explode later inside node's `writeHead`. One pass per
+ * string, no allocation.
+ */
+function validateHeader(name: string, value: string): void {
+  if (name.length === 0) {
+    throw new TypeError(`Invalid header name "${name}"`);
+  }
+  for (let i = 0; i < name.length; i += 1) {
+    if (TOKEN_CHAR[name.charCodeAt(i)] !== true) {
+      throw new TypeError(`Invalid header name "${name}"`);
+    }
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code === 13 || code === 10) {
+      throw new TypeError(`Invalid header value "${value}"`);
+    }
+  }
+}
+
 /** True when the value iterates `[name, value]` pairs — the platform
  * `Headers` and {@link LightHeaders} both qualify, so the fill paths branch
  * iterator-vs-record without `instanceof` chains. */
@@ -140,8 +177,10 @@ function isHeadersLike(
  * copy (`new Headers(res.headers)` in compress/etag) consume it unchanged.
  *
  * Semantics follow the fetch spec's observable contract: iteration yields
- * lowercase names, combines repeated non-cookie values with `", "`, and
- * keeps each `set-cookie` value a separate pair.
+ * lowercase names, combines repeated non-cookie values with `", "`, keeps
+ * each `set-cookie` value a separate pair, and the mutating methods reject
+ * an invalid name/value pair with a `TypeError` at call time, exactly like
+ * the platform `Headers` (undici) instead of failing later at the socket.
  *
  * Construction is lazy when it can be: a {@link LightHeaders.fromRaw} wrap
  * only stores the flat array reference — the slot/index store is built on
@@ -229,6 +268,7 @@ export class LightHeaders {
   }
 
   set(name: string, value: string): void {
+    validateHeader(name, value);
     const { slots, index } = this.ensure();
     const key = name.toLowerCase();
     const slot = index.get(key);
@@ -242,6 +282,7 @@ export class LightHeaders {
   }
 
   append(name: string, value: string): void {
+    validateHeader(name, value);
     const { slots, index } = this.ensure();
     const key = name.toLowerCase();
     const slot = index.get(key);

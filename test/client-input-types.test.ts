@@ -10,7 +10,7 @@ import {
 import { serve, type NodeServer } from '../src/node';
 import { queryParams } from '../src/query';
 import { json } from '../src/respond';
-import { jsonBody, type StandardSchemaV1 } from '../src/validate';
+import { jsonBody, requiresHeaders, bodyShape, type StandardSchemaV1 } from '../src/validate';
 
 describe('client input types', () => {
   it('types and demands init.body on jsonBody routes', () => {
@@ -145,6 +145,83 @@ describe('client input types', () => {
     void client.post('/dates', { body: { epoch: 42 } });
   });
 
+  it('types and demands init.headers on requiresHeaders routes', () => {
+    const app = createApp();
+    const full = get(
+      app,
+      '/me',
+      requiresHeaders('authorization', 'x-trace-id'),
+      (ctx) => json(ctx, { authed: ctx.req.headers.get('authorization') !== null })
+    );
+    const client = createClient(full, { fetch: async () => new Response('ok') });
+
+    expectTypeOf<typeof client.get>().toExtend<
+      (
+        path: '/me',
+        init: Omit<ClientInit, 'headers'> & {
+          headers: Record<string, string> & Record<'authorization' | 'x-trace-id', string>;
+        }
+      ) => Promise<ClientResponse<{ authed: boolean }>>
+    >();
+    // The declared keys are required; extra keys ride along (the record's
+    // index signature absorbs them — auth/tracing headers still fit).
+    void client.get('/me', {
+      headers: { authorization: 'Bearer t', 'x-trace-id': 'a1', 'x-extra': 'e' },
+    });
+    // @ts-expect-error -- the route declares authorization; omitting it is a client bug
+    void client.get('/me', { headers: { 'x-trace-id': 'a1' } });
+    // @ts-expect-error -- a headers-branded route demands its init (no init, no headers)
+    void client.get('/me');
+  });
+
+  it('types init.body as the declared structured type on bodyShape routes', () => {
+    const app = createApp();
+    const full = post(
+      app,
+      '/avatar',
+      bodyShape<FormData>(),
+      async (ctx) => json(ctx, { size: [...(await ctx.req.formData()).keys()].length })
+    );
+    const client = createClient(full, { fetch: async () => new Response('ok') });
+
+    expectTypeOf<typeof client.post>().toExtend<
+      (
+        path: '/avatar',
+        init: Omit<ClientInit, 'body'> & { body: FormData }
+      ) => Promise<ClientResponse<{ size: number }>>
+    >();
+    void client.post('/avatar', { body: new FormData() });
+    // @ts-expect-error -- the route reads FormData, not a JSON shape
+    void client.post('/avatar', { body: { file: 'x' } });
+    // @ts-expect-error -- a bodyShape route demands its body
+    void client.post('/avatar');
+  });
+
+  it('merges headers and query brands on one route', () => {
+    const app = createApp();
+    const full = get(
+      app,
+      '/stats',
+      requiresHeaders('x-trace-id'),
+      queryParams((q: { page?: string }) => q),
+      () => new Response('ok')
+    );
+    const client = createClient(full, { fetch: async () => new Response('ok') });
+
+    expectTypeOf<typeof client.get>().toExtend<
+      (
+        path: '/stats',
+        init: Omit<ClientInit, 'headers' | 'query'> & {
+          headers: Record<string, string> & Record<'x-trace-id', string>;
+          query: { page?: string };
+        }
+      ) => Promise<ClientResponse<unknown>>
+    >();
+    void client.get('/stats', { headers: { 'x-trace-id': 't1' }, query: { page: '2' } });
+    // @ts-expect-error -- the headers brand survives the merge
+    void client.get('/stats', { query: { page: '2' } });
+  });
+
   it('surfaces throws-declared statuses and bodies on the client', async () => {
     const app = createApp();
     const full = get(app, '/maybe', throws(401, 404), (ctx) => json(ctx, { ok: true }));
@@ -193,6 +270,7 @@ describe('client input types', () => {
 const gated: { contentType: string | null; echoed: unknown }[] = [];
 const probes: { contentType: string | null; text: string }[] = [];
 const tags: string[][] = [];
+const uploads: { auth: string | null; contentType: string | null; field: string }[] = [];
 
 /** The app the runtime tests serve and drive a client against. */
 function buildApp() {
@@ -214,10 +292,28 @@ function buildApp() {
     probes.push({ contentType: ctx.req.headers.get('content-type'), text: await ctx.req.text() });
     return json(ctx, { ok: true });
   });
-  return get(withProbe, '/tags', (ctx) => {
+  const withTags = get(withProbe, '/tags', (ctx) => {
     tags.push(ctx.query.getAll('tag'));
     return json(ctx, { ok: true });
   });
+  // Declaration gates (`requiresHeaders`/`bodyShape`) + a handler that
+  // really reads the form — the runtime tests prove the gates are pure
+  // pass-throughs: the request rides untouched and the handler answers.
+  return post(
+    withTags,
+    '/upload',
+    requiresHeaders('authorization'),
+    bodyShape<FormData>(),
+    async (ctx) => {
+      const form = await ctx.req.formData();
+      uploads.push({
+        auth: ctx.req.headers.get('authorization'),
+        contentType: ctx.req.headers.get('content-type'),
+        field: String(form.get('file') ?? ''),
+      });
+      return json(ctx, { ok: true });
+    }
+  );
 }
 
 const app = buildApp();
@@ -272,5 +368,23 @@ describe('client input types (runtime)', () => {
 
     res.status.should.equal(200);
     tags[tags.length - 1]?.should.deep.equal(['a', 'b']);
+  });
+
+  it('rides declaration gates as pure pass-throughs (FormData body, record headers)', async () => {
+    const client = createClient(app, { baseUrl: server.url });
+    const form = new FormData();
+    form.append('file', 'avatar-bytes');
+    const res = await client.post('/upload', {
+      headers: { authorization: 'Bearer t' },
+      body: form,
+    });
+
+    res.status.should.equal(200);
+    const seen = uploads[uploads.length - 1];
+    (seen?.auth ?? '').should.equal('Bearer t');
+    seen?.field.should.equal('avatar-bytes');
+    // The FormData rode to fetch untouched — fetch stamped the multipart
+    // content-type with its own boundary, the client nothing.
+    (seen?.contentType ?? '').should.match(/^multipart\/form-data; boundary=/);
   });
 });

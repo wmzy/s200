@@ -13,6 +13,8 @@ createRouteTable(app);
 
 `createRouteTable(app)` → `RouteTable`：`{ routes: readonly RouteTableEntry[] }`。
 
+`formatRouteTable(table)` 把这张表渲染成对齐 ASCII —— `METHOD  PATTERN`，每行一条注册记录，方法列按现存最长方法名补齐（空表渲染为空字符串）。`s200 routes` 命令与开发运行器的启动报告打印的正是它。
+
 `RouteTableEntry`：`{ method: string; pattern: string; params: readonly string[]; middlewareCount: number }` —— 参数名按捕获顺序（`:id`，然后 `*rest`）；函数本身不可序列化，因此只有中间件计数随行。便于路由清单或跨语言翻译 —— `s200/openapi` 基于同一张表构建。
 
 ## 元数据（`s200/meta`）
@@ -94,21 +96,21 @@ await writeFile('src/api/client.ts', generateClient(app, { name: 'createUsersCli
 import { createClient } from 's200/client';
 const client = createClient(app, { baseUrl: 'https://api.example' });
 const res = await client.get('/users/:id', { id: '1' });   // 带类型的参数与响应联合
-const user = (await client.get('/users/:id', { id: '1' })).json();
+const user = await (await client.get('/users/:id', { id: '1' })).json();
 ```
 
 客户端发普通 `fetch` 请求（任意 base URL、任意 `fetch` 实现）并返回 Web Standard `Response` —— 不增加任何线上协议：s200 客户端可与任何讲相同模式的服务器对话，不限于 s200 应用。
 
 | 函数 / 类型 | 含义 |
 | --- | --- |
-| `createClient(app, options?)` | `Client<R>` —— 每路由一个方法（`getApiV1Users` 风格命名），限制于已注册模式字面量 |
+| `createClient(app, options?)` | `Client<R>` —— 覆盖应用路由日志的八个方法命名空间；每次调用点名一个带类型参数的已注册模式字面量 |
 | `Client<R>` | 八个方法命名空间 —— `get`、`post`、`put`、`patch`、`delete`（别名 `del`）、`head`、`options` —— 各自持有该方法路由的调用签名；其他方法注册的模式类型为 `never` |
 | `ClientInit` | `RequestInit & { query?: Record<string, string \| number \| boolean \| readonly (…)[] \| undefined> }` —— 数组值重复键、`undefined` 跳过、数字/布尔字符串化 |
 | `ClientOptions` | `{ baseUrl?, fetch? }` —— 拼到每个路径前的 base URL；可注入 fetch 用于测试与 edge 运行时 |
 | `ClientResponse<S, T>` | 状态判别响应联合：`res.status` 收窄 `res.json()` 的类型 |
 | `BranchResponse<S, T>` | 一个分支：`{ status: S } & Response`，体类型 `T` |
 
-路由调用签名：参数在模式捕获时（`:id`）**必填**、在模式声明时（`:id?`）**可选**、纯模式则无（`init` 前移一位）。输入幻影走同一签名：`jsonBody` 闸门类型化（并要求）`init.body`，`queryParams` 闸门收窄 `init.query`；`throws` 闸门与返回的 `httpError` 值的错误分支在响应联合中点名错误状态。
+路由调用签名：参数在模式捕获时（`:id`）**必填**、在模式声明时（`:id?`）**可选**、纯模式则无（`init` 前移一位）。输入幻影走同一签名：`jsonBody` 闸门类型化（并要求）`init.body`，`bodyShape<T>()` 闸门把 `init.body` 要求为声明的结构化类型（`FormData` 上传原样传给 fetch —— 不做 JSON 字符串化），`queryParams` 闸门收窄 `init.query`，`requiresHeaders` 闸门把 `init.headers` 要求为声明键必填的 `Record<string, string>`（额外键仍允许）；`throws` 闸门与返回的 `httpError` 值的错误分支在响应联合中点名错误状态。
 
 ## 测试（`s200/test`）
 

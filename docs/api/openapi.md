@@ -13,6 +13,8 @@ createRouteTable(app);
 
 `createRouteTable(app)` → `RouteTable`: `{ routes: readonly RouteTableEntry[] }`.
 
+`formatRouteTable(table)` renders that table as aligned ASCII — `METHOD  PATTERN`, one line per registration, the method column padded to the longest method present (an empty table renders as an empty string). The `s200 routes` command and the dev runner's startup report print exactly this.
+
 `RouteTableEntry`: `{ method: string; pattern: string; params: readonly string[]; middlewareCount: number }` — param names in capture order (`:id`, then `*rest`); the functions themselves are not serializable, so only the middleware count travels. Handy for route listing or cross-language translation — and `s200/openapi` builds on the same table.
 
 ## Metadata (`s200/meta`)
@@ -94,21 +96,21 @@ Type-safe fetch client derived from an app's route table — the `data + functio
 import { createClient } from 's200/client';
 const client = createClient(app, { baseUrl: 'https://api.example' });
 const res = await client.get('/users/:id', { id: '1' });   // typed params, typed response union
-const user = (await client.get('/users/:id', { id: '1' })).json();
+const user = await (await client.get('/users/:id', { id: '1' })).json();
 ```
 
 The client sends plain `fetch` requests (any base URL, any `fetch` implementation) and returns Web Standard `Response`s — it adds nothing to the wire protocol: an s200 client talks to any server that speaks the same patterns.
 
 | Function / Type | Meaning |
 | --- | --- |
-| `createClient(app, options?)` | `Client<R>` — one method per route (`getApiV1Users`-style names), restricted to registered pattern literals |
+| `createClient(app, options?)` | `Client<R>` — eight method namespaces over the app's route log; each call names a registered pattern literal with typed params |
 | `Client<R>` | Eight method namespaces — `get`, `post`, `put`, `patch`, `delete` (with the `del` alias), `head`, `options` — each holding the call signatures of that method's routes; patterns registered under other methods type as `never` |
 | `ClientInit` | `RequestInit & { query?: Record<string, string \| number \| boolean \| readonly (…)[] \| undefined> }` — array values repeat the key, `undefined` is skipped, numbers/booleans stringify |
 | `ClientOptions` | `{ baseUrl?, fetch? }` — base URL prepended to every path; injectable fetch for tests and edge runtimes |
 | `ClientResponse<S, T>` | The status-discriminated response union: `res.status` narrows `res.json()`'s type |
 | `BranchResponse<S, T>` | One branch: `{ status: S } & Response` with the body type `T` |
 
-Route call signatures: params are **required** exactly when the pattern captures them (`:id`), **optional** when declared (`:id?`), absent for plain patterns (the `init` moves up one position). Input phantoms ride the same signature: a `jsonBody` gate types (and demands) `init.body`, a `queryParams` gate narrows `init.query`; error branches from `throws` gates and returned `httpError` values name the error statuses in the response union.
+Route call signatures: params are **required** exactly when the pattern captures them (`:id`), **optional** when declared (`:id?`), absent for plain patterns (the `init` moves up one position). Input phantoms ride the same signature: a `jsonBody` gate types (and demands) `init.body`, a `bodyShape<T>()` gate demands `init.body` as its declared structured type (a `FormData` upload rides to fetch untouched — no JSON stringifying), a `queryParams` gate narrows `init.query`, a `requiresHeaders` gate demands `init.headers` as a `Record<string, string>` with the declared keys required (extra keys still allowed); error branches from `throws` gates and returned `httpError` values name the error statuses in the response union.
 
 ## Test (`s200/test`)
 

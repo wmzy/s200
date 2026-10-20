@@ -17,7 +17,7 @@ await server.close();
 | --- | --- | --- |
 | `port` | `0` | Port to listen on |
 | `hostname` | — | Hostname |
-| `websocket` | — | The bridge from `s200/websocket/bun`: `{ upgrade, websocket }` — `upgrade` decides inside the fetch handler whether the request becomes a WebSocket; the `websocket` half carries the per-connection callbacks |
+| `websocket` | — | The bridge from `s200/websocket/bun`: `{ upgrade, websocket }` — `upgrade` decides inside the fetch handler whether the request becomes a WebSocket (the app + route middleware chain runs first; a rejecting middleware's `Response` is answered as plain HTTP); the `websocket` half carries the per-connection callbacks |
 
 `BunServer`:
 
@@ -27,7 +27,7 @@ await server.close();
 | `server` | The raw `Bun.serve` handle (`BunServedServer`): `stop(closeActiveConnections?)` — `stop(false)` waits for in-flight requests, `stop()`/`stop(true)` force-closes. This is the graceful-drain surface `s200/lifecycle` duck-types onto |
 | `close()` | `stop(true)` — also drops in-flight connections, so `close()` resolves immediately |
 
-Note: Bun does not reliably abort `request.signal` on client disconnect, so the adapter does no disconnect wiring (unlike the Node adapter's `abortOnDisconnect`).
+Note: Bun does not reliably abort `request.signal` on client disconnect, so the adapter does no socket-level disconnect wiring (unlike the Node adapter's `abortOnDisconnect`) — whatever signal this Bun version hands the request is still threaded into `ctx.signal`. [`onFinish`](/api/node#onfinish) callbacks therefore ride the response body instead: when any are registered, the adapter wraps the body so its cancel (client gone → `{ aborted: true }`) or completion (`{ aborted: false }`) runs them exactly once; responses without callbacks are not wrapped.
 
 ## Filesystem injectors for `serveStatic`
 

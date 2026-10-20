@@ -32,6 +32,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | `s200/rate-limit`     | `rateLimit` —— 滑动窗口限流器，存储可注入                      |
 | `s200/trust-proxy`    | `trustProxy` —— 代理之后如实还原客户端 IP                      |
 | `s200/version`        | `apiVersion` —— header/Accept API 版本门，`ctx.state.version`  |
+| `s200/als`            | `als`、`currentCtx` —— 经 `node:async_hooks` 的环境 `ctx`（node/bun/deno；非 edge） |
 
 ### 认证与会话
 

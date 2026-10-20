@@ -27,7 +27,7 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | WebSocket | ✅ zero-dep RFC 6455 node + bun (subprotocols, permessage-deflate, heartbeat) | ✅ | 3rd-party | 3rd-party | 3rd-party | ✅ built-in `.ws()` (Bun API; crossws on node) |
 | Batteries | 45 opt-in (cors, cookies, csrf, jwt, cache, etag, compress, rate-limit, session, upload, …) | ~20 (incl. csrf/jwt/cache) | ecosystem | plugin ecosystem | ecosystem | ~15 official plugins (openapi, jwt, cors, rate-limit, …) |
 | Throughput class (see benchmarks) | Web Standard object class; opt-in light mode ~1.3–1.4× | same (patched: 1.5×) | ~0.6× | patched class | below | patched class; top of it on Bun |
-| Core size (min+gz) | size-limit-gated: ~4 kB minimal core / ~8 kB full barrel | ~10 kB+ | — | — | tiny, no batteries | 1.1 MB unpacked; 141 kB min hello-world (v2 beta) |
+| Core size (min+gz) | size-limit-gated: ~4 kB minimal core / ~8 kB full barrel | ~10 kB+ | — | — | tiny, no batteries | 1.1 MB unpacked; 141 kB min hello-world (v2 rc) |
 | Validation integration | generic gate over any parser | zod/valibot/typebox built-in | ecosystem | JSON Schema native | ecosystem | TypeBox built-in (`t`) + standard schema |
 | OpenAPI | ✅ native 3.1 from the route table | zod-openapi (dep) | ❌ | swagger plugin | ❌ | ✅ plugin (Scalar/Swagger UI) |
 | JSX / SSG / dev server | ❌ (route-table hot reload via `s200/dev`) | ✅ | ❌ | ❌ | ❌ | ❌ (html plugin) |
@@ -137,12 +137,21 @@ below come from their own release docs.
   Node ≥ 20.3, and adapters as first-party subpath entries (`s200/node`,
   `s200/bun`) that already exist without a major.
 - **Elysia** ([releases](https://github.com/elysiajs/elysia/releases),
-  [v2 beta announcement](https://elysiajs.com/blog/elysia-20)): the 1.4.x
-  line is security-fix-only, and v2 — a complete rewrite, still beta —
-  headlines tree-shakable modules and AOT compilation. That is the
+  [v2 RC announcement](https://next.elysiajs.com/blog/elysia-20-rc/)): the
+  1.4.x line is security-fix-only, and v2 — a complete rewrite, now at
+  release candidate (2.0.0-rc.0, 2026-10-19) — headlines lower memory,
+  faster startup, tree-shakable modules, and AOT compilation. That is the
   rewrite cost upstream pays to get what s200 ships day one:
   `sideEffects: false`, 50 tree-shaken package entries, and size-limit
   budgets gating every release.
+- **Fastify** ([releases](https://github.com/fastify/fastify/releases)):
+  the stable line stays v5.12.x under the
+  [LTS policy](https://fastify.dev/docs/latest/Reference/LTS/), while
+  v6.0.0-alpha.5 (2026-10-16) headlines per-request cost work — optimized
+  header handling, string bodies decoded once, a parsed-content-type
+  cache. Per-request cost is the axis where s200's opt-in light mode
+  earns its ~1.4× (fastify plumbs raw `IncomingMessage`s and never pays
+  undici's constructor tax in the first place).
 
 ## Migration guides
 

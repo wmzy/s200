@@ -33,6 +33,36 @@ await server.close();
 
 `NodeUpgradeHandler`: the `node:http` `'upgrade'` event signature `(req, socket, head) => void`.
 
+## Host header hardening
+
+The adapter builds each request URL from the `Host` header (`:authority` on HTTP/2). A Host outside the authority grammar — anything but alphanumerics, `.`, `-`, `:` (port), and `[`/`]` (IPv6 literals), including `/ \ ? # @`, whitespace, percent-escapes, and the empty value — falls back to `localhost` instead of flowing into the URL: a crafted `Host: evil.com/a` can neither pollute the parsed pathname nor make the URL unparseable. Legal hosts pass through unchanged — `example.com`, `example.com:8080`, `[::1]:3000`.
+
+## `onFinish(ctx, fn)` (core barrel) {#onfinish}
+
+```ts
+import { onFinish } from 's200';
+
+get(app, '/report', (ctx) => {
+  onFinish(ctx, ({ aborted }) => {
+    console.log('report response finished', aborted ? 'early' : 'cleanly');
+  });
+  return json(ctx, buildReport());
+});
+```
+
+Registers a callback that runs **exactly once** per request — first trigger wins, later triggers are no-ops:
+
+- `{ aborted: false }` — the response was fully written.
+- `{ aborted: true }` — the connection ended first: client disconnect, a cancelled response body, or a mid-write failure.
+
+Callbacks are fire-and-forget: a synchronous throw (or a returned promise's rejection) is logged through the app's `logError` and never interrupts the response or the other callbacks. Register before the finish — registrations after it are dropped silently.
+
+On the node adapter the triggers are the completed socket write and the premature `'close'`; they fire with and without `light`, and `abortOnDisconnect: false` only skips the `ctx.signal` abort — the finish callbacks still run.
+
+## Disconnect propagation for streamed responses
+
+While a streamed response body is being pulled, a client disconnect (the per-request signal of `abortOnDisconnect`, on by default) cancels the body reader: a handler-side generator receives its `finally`, a pending backpressure wait rejects instead of hanging on a dead socket, and the response is destroyed. With `abortOnDisconnect: false` the loop rides plain drain backpressure and no cancel is propagated.
+
 ## Filesystem injectors for `serveStatic`
 
 The adapter implements the [`serveStatic`](/api/respond#static-files) injection surface so the core stays filesystem-free:

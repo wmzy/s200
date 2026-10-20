@@ -15,6 +15,7 @@ import { rateLimit } from 's200/rate-limit';
 import { compress } from 's200/compress';
 import { stream, streamSSE } from 's200/streaming';
 import { requestId } from 's200/request-id';
+import { als, currentCtx } from 's200/als';
 import { timeout } from 's200/timeout';
 import { upgradeWebSocket } from 's200/websocket';
 import { createUpgradeHandler } from 's200/websocket/node';
@@ -169,7 +170,7 @@ get(app, '/list', queryParams((q) => ({
 
 ## WebSocket
 
-`upgradeWebSocket(app, pattern, handler)` registers a ws route (router pattern syntax, first registration wins); the handler gets a `send`/`close`/`onMessage`/`onClose`/`onError` socket plus a request-shaped `ctx` (params/query/url). Node wires a zero-dependency RFC 6455 server through the adapter's `upgrade` option — plain `ws://`, or `wss://` by pairing `upgrade` with `https` (only `http2: true` excludes it); Bun plugs into `Bun.serve` through the bridge:
+`upgradeWebSocket(app, pattern, ...middlewares, handler)` registers a ws route (router pattern syntax, first registration wins) — the same variadic `...middlewares, handler` shape as the HTTP registrars, for route-scoped gates; the handler gets a `send`/`close`/`onMessage`/`onClose`/`onError` socket plus a request-shaped `ctx` (params/query/url). Upgrades run the app's `use(app, …)` middleware chain and the route's middlewares before the handshake completes: a middleware that writes `ctx.res`, returns a `Response`, or throws (mapped like HTTP — `HttpError` → status + envelope) rejects the upgrade, and that HTTP response is answered instead of `101`; on approval `ctx.state` mutations ride into the handler and unwinding middlewares see `res: undefined` — the socket is the response (details in the [WebSocket API](../api/websocket.md#middleware--auth-on-upgrades)). Node wires a zero-dependency RFC 6455 server through the adapter's `upgrade` option — plain `ws://`, or `wss://` by pairing `upgrade` with `https` (only `http2: true` excludes it); Bun plugs into `Bun.serve` through the bridge:
 
 ```ts
 import { upgradeWebSocket } from 's200/websocket';
@@ -326,6 +327,17 @@ Canonical correlation id per request (`ctx.state.requestId`), honoring incoming 
 ```ts
 use(app, requestId());          // x-request-id
 use(app, requestId({ header: 'x-trace', generator: () => nanoid() }));
+```
+
+## ALS
+
+Ambient ctx access — the opt-in supplement to explicit ctx passing, for call stacks that cannot thread it (logging sinks, deep legacy helpers). `als()` wraps the chain below it in `node:async_hooks`' `AsyncLocalStorage`, and `currentCtx()` resolves the executing request's ctx from anywhere inside that extent — deep awaits, `setTimeout` callbacks, code that never saw a parameter. Interleaved requests stay isolated; outside a request `currentCtx()` is `undefined`. Node/Bun/Deno only — Cloudflare Workers has no async_hooks, so importing the entry fails there (keep it out of edge bundles):
+
+```ts
+import { als, currentCtx } from 's200/als';
+
+use(app, als());
+const ctx = currentCtx();   // the executing request's Ctx, or undefined
 ```
 
 ## Timeout

@@ -17,6 +17,8 @@ The barrel also re-exports the [response helpers, body readers, and `serveStatic
 | `Ctx<P, S>` | `{ req, url, params, query, state, signal, res? }` — the per-request unit of mutation |
 | `Segment` | `{ _tag: 'static'; value } \| { _tag: 'param'; name; optional } \| { _tag: 'wildcard'; name }` |
 | `RouteDef` | `{ method, pattern, … }` — one registration's compile-time signature |
+| `Registrar<M>` | The shared signature of every method registrar (`get`, `post`, …): literal-pattern and dynamic-pattern overloads appending one `RouteDef` |
+| `AddRoute` | The dynamic-method registrar's signature — `addRoute(app, method, pattern, chain)` with the def's method branded `Uppercase<M>` |
 | `Route` | Immutable registration entry produced by `createRoute` |
 | `MatchResult` | `{ route, params } \| { allowedMethods }` — the latter feeds the 405 `Allow` list |
 | `MatchFn` | `(routes, method, pathname) => MatchResult \| undefined` — pluggable router |
@@ -30,7 +32,7 @@ The barrel also re-exports the [response helpers, body readers, and `serveStatic
 Handler/gate return types carry compile-time brands (never runtime data):
 
 - `ResolveOut<O>` / `ResolveStatus<O>` — the body/status a handler's return declares (from `JsonResponse`'s `_out` / `_status`)
-- `ChainIn<Ms>` — the merged input shape a route's gates declare (`_in` phantom, e.g. `jsonBody`'s parse type)
+- `ChainIn<Ms>` — the merged input shape a route's gates declare (`_in` phantom — `jsonBody`'s parse type, `queryParams`' read, `requiresHeaders`' keys, `bodyShape`'s structured type)
 - `ChainErrors<Ms>` / `OutErrors<O>` / `RouteErrors<Ms, O>` — the error branches a route may answer with (`throws` gates + returned `httpError` values)
 - `BranchesOf<O>` — the status → body pairs a handler's return union declares; consumed by `s200/client`
 - `UnionToIntersection<T>` — turns a union of function types into an overload set
@@ -62,7 +64,7 @@ use(app, mw);                                   // global middleware
 use(app, '/admin', adminMw, auditMw);         // prefix-scoped middlewares
 usePlugin(app, plugin);                       // (app) => void extension hook
 mount(app, '/v1', v1App);                     // mount a sub-app's routes under a prefix
-addRoute(app, route);                         // raw Route registration
+addRoute(app, 'GET', '/raw', handler);        // dynamic-method registrar (method first)
 get / post / put / patch / del / head / options / all (app, pattern, handler, middlewares?)
 removeRoute(app, method, pattern);            // runtime filter (typed twin: RouteFilter)
 ```

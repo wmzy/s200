@@ -14,6 +14,7 @@
 import type { App } from './app';
 
 import { handle } from './app';
+import { hasFinishers, trackFinish } from './finish';
 import { signalInit } from './signal';
 
 // Module-scoped ambient surface of the global Deno runtime — exactly the
@@ -54,7 +55,13 @@ export function serve(app: App, options: DenoServeOptions = {}): DenoServer {
     { port, hostname, onListen: options.onListen },
     // Deno aborts the fetch-handler request's signal on client disconnect —
     // feature-detect it, since older builds hand out signal-less requests.
-    (request) => handle(app, request, signalInit(request))
+    // Deno.serve exposes no write-completion event, so onFinish rides the
+    // response body instead: trackFinish wraps it when callbacks exist —
+    // cancel (client gone) or completion runs them exactly once.
+    (request) =>
+      handle(app, request, signalInit(request)).then((response) =>
+        hasFinishers(request) ? trackFinish(request, response, app.logError) : response
+      )
   );
   return {
     server,

@@ -27,7 +27,7 @@ drainPendingHeaders(ctx, res)                       // 低层钩子：见下
 
 注意：
 
-- 四个写字节的助手都显式设置 `content-length` —— 这是 `s200/etag` 与 `s200/compress` 依赖的契约（平台惰性序列化 content-length；裸 `new Response('…')` 不设置）。
+- 四个写字节的助手都显式设置 `content-length` —— 这是 `s200/etag` 与 `s200/compress` 依赖的契约（平台惰性序列化 content-length；裸 `new Response('…')` 不设置）。无主体状态豁免：`send` 在 1xx/204 上绝不宣告，304 则省略该头（RFC 9110 §15.4.5）——既不回显本应具有的大小，也不宣告 `0`。
 - `json`/`text`/`html` 接受 `init.status` 并刻进品牌；`redirect` 的第三参数即状态。
 - `html` **不**转义 —— 用户输入先过 `escapeHtml`（对齐 `hono/html` 的显式转义契约）。
 
@@ -84,5 +84,7 @@ serveStatic(options): Middleware
 | `realPath` | 否 | 符号链接逃逸守卫 —— 注入适配器的 `createRealPathGuard(root)` |
 
 `StaticFileInfo`：`{ size: number; mtimeMs: number }`。
+
+**条件请求与范围。** 注入 `stat` 后，响应携带 `ETag`/`Last-Modified`；`If-None-Match`/`If-Modified-Since` 命中以 `304` 应答 —— 无主体且不带 `content-length`（RFC 9110 §15.4.5：s200 选择省略该头，而非回显本应具有的大小）。单个 `Range: bytes=…` 以 `206` 服务（不可满足时 `416`），并按 RFC 9110 §13.1.5 受 `If-Range` 门控：只有与 `Last-Modified` 精确匹配的 HTTP-date 才放行范围；其余情形（弱实体标签、日期不匹配、无法解析的值、或无验证器的响应）回退到完整 `200` 主体。本层自己的标签是弱标签（`W/"size-mtime"`），而 If-Range 要求强比较 —— 因此实体标签形式的 `If-Range` 在这里永不放行范围，即便是文件自己的标签。
 
 Node 与 Bun 适配器带现成的注入器 —— `createFileReader(root, { stream? })`、`createFileStat(root)`、`createFileRangeReader(root)`、`createRealPathGuard(root)`（见 [`s200/node`](/zh/api/node)、[`s200/bun`](/zh/api/bun)）。

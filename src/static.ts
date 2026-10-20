@@ -210,6 +210,31 @@ function stripWeakPrefix(tag: string): string {
 }
 
 /**
+ * RFC 9110 §13.1.5: `If-Range` gates whether a `Range` header may be
+ * honored. Only a strong entity-tag matching the current validator exactly,
+ * or an HTTP-date matching `Last-Modified` exactly, lets the range through;
+ * anything else (weak tag, mismatch, no known validator) means the client's
+ * copy may be stale — the range is ignored and the full body is served.
+ * The static layer's own tag is weak (`W/"size-mtime"`), and strong
+ * comparison requires strength on both sides, so an entity-tag `If-Range`
+ * can never authorize a range here — the date form is the one that matches.
+ */
+function ifRangeAllows(
+  req: Request,
+  info: StaticFileInfo | undefined
+): boolean {
+  const ifRange = req.headers.get('if-range');
+  if (ifRange === null) return true;
+  if (info === undefined) return false;
+  const validator = ifRange.trim();
+  if (validator.startsWith('"') || validator.startsWith('W/')) return false;
+  const when = Date.parse(validator);
+  return (
+    !Number.isNaN(when) && when === Math.floor(info.mtimeMs / 1000) * 1000
+  );
+}
+
+/**
  * RFC 9110 §13.2.2: a validator match answers 304. `If-None-Match` takes
  * precedence over `If-Modified-Since`; the comparison is weak; `*` matches
  * any current representation. `If-Modified-Since` compares at the second
@@ -291,7 +316,9 @@ function serveBytes(
     send(ctx, bytes, { headers });
     return;
   }
-  const range = parseByteRange(ctx.req.headers.get('range'), bytes.byteLength);
+  const range = ifRangeAllows(ctx.req, info)
+    ? parseByteRange(ctx.req.headers.get('range'), bytes.byteLength)
+    : undefined;
   if (range === undefined) {
     send(ctx, bytes, { headers });
     return;
@@ -428,7 +455,9 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
         return;
       }
       if (method === 'GET' && readRange !== undefined) {
-        const range = parseByteRange(ctx.req.headers.get('range'), info.size);
+        const range = ifRangeAllows(ctx.req, info)
+          ? parseByteRange(ctx.req.headers.get('range'), info.size)
+          : undefined;
         if (range === null) {
           send(ctx, null, {
             status: 416,

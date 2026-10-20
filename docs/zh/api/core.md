@@ -17,6 +17,8 @@ barrel 还再导出[响应助手、请求体读取与 `serveStatic`](/zh/api/res
 | `Ctx<P, S>` | `{ req, url, params, query, state, signal, res? }` —— 每请求的可变单元 |
 | `Segment` | `{ _tag: 'static'; value } \| { _tag: 'param'; name; optional } \| { _tag: 'wildcard'; name }` |
 | `RouteDef` | `{ method, pattern, … }` —— 一次注册的编译期签名 |
+| `Registrar<M>` | 每个方法注册器（`get`、`post`、…）共享的签名：字面量模式与动态模式两个重载，追加一个 `RouteDef` |
+| `AddRoute` | 动态方法注册器的签名 —— `addRoute(app, method, pattern, chain)`，def 的方法标记为 `Uppercase<M>` |
 | `Route` | `createRoute` 产出的不可变注册项 |
 | `MatchResult` | `{ route, params } \| { allowedMethods }` —— 后者供给 405 的 `Allow` 列表 |
 | `MatchFn` | `(routes, method, pathname) => MatchResult \| undefined` —— 可替换路由器 |
@@ -30,7 +32,7 @@ barrel 还再导出[响应助手、请求体读取与 `serveStatic`](/zh/api/res
 handler/闸门的返回类型携带编译期品牌（绝非运行时数据）：
 
 - `ResolveOut<O>` / `ResolveStatus<O>` —— handler 返回声明体/状态（来自 `JsonResponse` 的 `_out` / `_status`）
-- `ChainIn<Ms>` —— 路由闸门合并声明的输入形状（`_in` 幻影，如 `jsonBody` 的解析类型）
+- `ChainIn<Ms>` —— 路由闸门合并声明的输入形状（`_in` 幻影 —— `jsonBody` 的解析类型、`queryParams` 的读取、`requiresHeaders` 的键、`bodyShape` 的结构化类型）
 - `ChainErrors<Ms>` / `OutErrors<O>` / `RouteErrors<Ms, O>` —— 路由可能返回的错误分支（`throws` 闸门 + 返回的 `httpError` 值）
 - `BranchesOf<O>` —— handler 返回联合声明的状态 → 体对；供 `s200/client` 消费
 - `UnionToIntersection<T>` —— 把函数类型联合转为重载集
@@ -62,7 +64,7 @@ use(app, mw);                                   // 全局中间件
 use(app, '/admin', adminMw, auditMw);         // 前缀作用域中间件
 usePlugin(app, plugin);                       // `(app) => void` 扩展钩子
 mount(app, '/v1', v1App');                    // 把子应用路由挂到前缀下
-addRoute(app, route);                         // 原始 Route 注册
+addRoute(app, 'GET', '/raw', handler);        // 动态方法注册器（方法在前）
 get / post / put / patch / del / head / options / all (app, pattern, handler, middlewares?)
 removeRoute(app, method, pattern);            // 运行时过滤（类型层对应：RouteFilter）
 ```

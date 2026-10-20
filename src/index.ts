@@ -7,3 +7,4 @@ export * from './middleware';
 export * from './respond';
 export * from './body';
 export * from './static';
+export { onFinish, type FinishFn, type FinishInfo } from './finish';

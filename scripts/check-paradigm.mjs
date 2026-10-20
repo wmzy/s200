@@ -66,6 +66,10 @@ const PLATFORM_CTORS = new Set([
   // spawns isolation units with it — a platform facility, same class as
   // Request/Response above, not an OOP pattern in our data surface.
   'Worker',
+  // node:async_hooks builtin (src/als.ts): the ambient-context battery
+  // wraps the middleware chain in the platform's AsyncLocalStorage — a
+  // platform facility like Worker above, not an OOP pattern in our data.
+  'AsyncLocalStorage',
   // Light-mode platform stand-ins (src/light.ts): class mimics of the
   // platform Request/Response, constructed exactly where the platform
   // constructors would be — the opt-in fast path, not an OOP pattern.

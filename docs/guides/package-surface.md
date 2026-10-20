@@ -19,6 +19,7 @@ Each below is a separate package entry — importing one pulls exactly it. Every
 - **Realtime**: [`s200/websocket`](/api/websocket#registration-s200-websocket), [`s200/websocket/node`](/api/websocket#node-s200-websocket-node), [`s200/websocket/bun`](/api/websocket#bun-s200-websocket-bun)
 - **OpenAPI & tooling**: [`s200/route-table`](/api/openapi#route-table-s200-route-table), [`s200/meta`](/api/openapi#metadata-s200-meta), [`s200/openapi`](/api/openapi#openapi-s200-openapi), [`s200/swagger`](/api/openapi#swagger-ui-s200-swagger), [`s200/codegen`](/api/openapi#codegen-s200-codegen), [`s200/client`](/api/openapi#client-s200-client), [`s200/test`](/api/openapi#test-s200-test)
 - **Lifecycle**: [`s200/lifecycle`](/api/lifecycle#lifecycle-s200-lifecycle), [`s200/health`](/api/lifecycle#health-s200-health), [`s200/timeout`](/api/lifecycle#timeout-s200-timeout), [`s200/dev`](/api/lifecycle#hot-reload-s200-dev)
+- **Ambient context**: [`s200/als`](/api/als#ambient-ctx-s200-als) — `als`, `currentCtx` (node/bun/deno only; no async_hooks on edge)
 - **Sharding & execution**: [`s200/shard`](/api/sharding#shard-s200-shard), [`s200/gateway`](/api/sharding#gateway-s200-gateway), [`s200/shard-dev`](/api/sharding#dev-dispatcher-s200-shard-dev), [`s200/executor`](/api/sharding#executor-s200-executor), [`s200/unit-metrics`](/api/sharding#unit-metrics-s200-unit-metrics)
 
 ## Dependencies

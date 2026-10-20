@@ -12,7 +12,7 @@ import { createApp, get, post, use } from '../src/app';
 import { readForm, readJson, readStream, readText } from '../src/body';
 import { compress } from '../src/compress';
 import { etag } from '../src/etag';
-import { isLightRequest } from '../src/light';
+import { isLightRequest, LightHeaders } from '../src/light';
 import { createFileRangeReader, createFileReader, createFileStat, serve } from '../src/node';
 import { json, setHeader, setHeaders, text } from '../src/respond';
 import { serveStatic } from '../src/static';
@@ -102,6 +102,7 @@ describe('etag battery over real http (both modes)', () => {
       return {
         status: res.status,
         etag: res.headers.get('etag'),
+        contentLength: res.headers.get('content-length'),
         body: await res.text(),
       };
     });
@@ -111,6 +112,10 @@ describe('etag battery over real http (both modes)', () => {
     seen.light.body.should.equal('');
     seen.normal.etag?.should.match(/^W\/"[0-9a-f]{40}"$/);
     seen.light.etag?.should.equal(seen.normal.etag);
+    // No content-length on the wire in either mode — the light writeHead
+    // path writes exactly the response's headers (RFC 9110 §15.4.5).
+    (seen.normal.contentLength === null).should.be.true;
+    (seen.light.contentLength === null).should.be.true;
   });
 });
 
@@ -609,12 +614,20 @@ describe('serveStatic byte bodies over real http (both modes)', () => {
       const res = await fetch(`${url}/ok.txt`, {
         headers: { 'if-none-match': tag ?? '' },
       });
-      return { status: res.status, body: await res.text() };
+      return {
+        status: res.status,
+        contentLength: res.headers.get('content-length'),
+        body: await res.text(),
+      };
     });
     seen.normal.status.should.equal(304);
     seen.light.status.should.equal(304);
     seen.normal.body.should.equal('');
     seen.light.body.should.equal('');
+    // 304 without content-length in both modes — the light writeHead path
+    // and the platform serializer write the same header set.
+    (seen.normal.contentLength === null).should.be.true;
+    (seen.light.contentLength === null).should.be.true;
   });
 
   it('slices a single byte-range out of the buffered bytes (206)', async () => {
@@ -634,6 +647,39 @@ describe('serveStatic byte bodies over real http (both modes)', () => {
       seen[mode].contentRange?.should.equal('bytes 4-7/256');
       seen[mode].contentLength?.should.equal('4');
       seen[mode].bytes.should.deep.equal([4, 5, 6, 7]);
+    }
+  });
+
+  it('gates a Range with If-Range identically in both modes', async () => {
+    const seen = await inBoth(urls, async (url) => {
+      const first = await fetch(`${url}/big.bin`);
+      const lastModified = first.headers.get('last-modified');
+      const etag = first.headers.get('etag');
+      await first.arrayBuffer(); // release the keep-alive socket
+      const honored = await fetch(`${url}/big.bin`, {
+        headers: { range: 'bytes=4-7', 'if-range': lastModified ?? '' },
+      });
+      const ignored = await fetch(`${url}/big.bin`, {
+        headers: { range: 'bytes=4-7', 'if-range': etag ?? '' },
+      });
+      return {
+        honoredStatus: honored.status,
+        honoredRange: honored.headers.get('content-range'),
+        ignoredStatus: ignored.status,
+        ignoredRange: ignored.headers.get('content-range'),
+        ignoredLength: ignored.headers.get('content-length'),
+        ignoredBodyLength: (await ignored.arrayBuffer()).byteLength,
+      };
+    });
+    // Exact Last-Modified match → 206; the file's own weak etag → full 200
+    // (RFC 9110 §13.1.5: If-Range needs a strong validator).
+    for (const mode of ['normal', 'light'] as const) {
+      seen[mode].honoredStatus.should.equal(206);
+      seen[mode].honoredRange?.should.equal('bytes 4-7/256');
+      seen[mode].ignoredStatus.should.equal(200);
+      (seen[mode].ignoredRange === null).should.be.true;
+      seen[mode].ignoredLength?.should.equal('256');
+      seen[mode].ignoredBodyLength.should.equal(256);
     }
   });
 
@@ -924,5 +970,55 @@ describe('request body readers over real http (both modes)', () => {
       seen[mode].status.should.equal(413);
       (seen[mode].body.error ?? '').should.contain('too large');
     }
+  });
+});
+
+describe('LightHeaders.set validation (direct)', () => {
+  it('throws a TypeError on CR or LF in a value', () => {
+    for (const bad of ['a\rb', 'a\nb', 'a\r\nb', 'evil\r\nset-cookie: x=1']) {
+      const headers = new LightHeaders();
+      let thrown: unknown;
+      try {
+        headers.set('x-safe', bad);
+      } catch (error) {
+        thrown = error;
+      }
+      (thrown instanceof TypeError).should.be.true;
+      ((thrown as Error).message.includes('value')).should.be.true;
+      // The rejected pair must not have landed in the store.
+      (headers.get('x-safe') === null).should.be.true;
+    }
+  });
+
+  it('throws a TypeError on a non-token name', () => {
+    for (const bad of ['', 'bad name', 'a:b', 'a/b', 'näme', 'a\tb']) {
+      const headers = new LightHeaders();
+      let thrown: unknown;
+      try {
+        headers.set(bad, 'v');
+      } catch (error) {
+        thrown = error;
+      }
+      (thrown instanceof TypeError).should.be.true;
+      ((thrown as Error).message.includes('name')).should.be.true;
+    }
+  });
+
+  it('validates append like the platform Headers, and accepts the whole token alphabet', () => {
+    const headers = new LightHeaders();
+    let thrown: unknown;
+    try {
+      headers.append('x-safe', 'a\r\nb');
+    } catch (error) {
+      thrown = error;
+    }
+    (thrown instanceof TypeError).should.be.true;
+    // Every RFC 9110 token character is a legal name.
+    const name =
+      "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    headers.set(name, 'ok');
+    headers.get(name)!.should.equal('ok');
+    headers.append(name, 'twice');
+    headers.get(name)!.should.equal('ok, twice');
   });
 });

@@ -71,7 +71,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `signJwt(payload, key, options?)` | Compact JWT `header.payload.signature`; claims from options override same-named payload keys |
 | `verifyJwt<T>(token, key, options?)` | Verifies structure, algorithm, signature, `exp`/`nbf`, requested `aud`/`iss` → `T & RegisteredClaims`; throws `JwtError` on any failure |
 | `jwtAuth(options)` | Gate middleware: extracts the token (header `Authorization: Bearer …`, or a cookie), verifies, stores the payload on `ctx.state.jwt`; missing/invalid → `401` |
-| `createJwksResolver(url, options?)` | Builds a `KeyResolver` over a JWKS endpoint — fetches, caches (`ttlMs`, default 5 min), picks by `kid`; cached per URL module-wide |
+| `createJwksResolver(url, options?)` | Builds a `KeyResolver` over a JWKS endpoint — fetches, caches (`ttlMs`, default 5 min), picks by `kid`; cached per URL module-wide in an LRU bounded at 50 endpoints |
 | `isJwtError(error)` | `JwtError` predicate |
 
 | Type | Meaning |
@@ -79,12 +79,15 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `JwtAlgorithm` | `'HS256' \| … \| 'ES512'` |
 | `JwtKey` | `string \| Uint8Array \| CryptoKey \| JsonWebKey` |
 | `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId? }` — `alg` required when signing with a `CryptoKey`/JWK |
-| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance? }` — `alg:none` is rejected unconditionally |
+| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, keyStore? }` — `alg:none` is rejected unconditionally |
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` — what a `KeyResolver` sees |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
-| `JwksOptions` | `{ ttlMs?, fetchFn? }` |
-| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, algorithms?, header?, prefix?, cookie?, verify? }` — the `jwtAuth` gate's options (table below) |
+| `JwtKeyStore` | `{ get(key), set(key, promise) }` — key-import cache; default in-process LRU, bounded at 100 entries |
+| `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
+| `JwksStore` | `{ get(url), set(url, entry) }` — JWKS document cache; default in-process LRU, bounded at 50 URLs |
+| `JwksEntry` | `{ exp, keys }` — one cached document; `exp` is the ms-epoch refresh deadline |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, header?, prefix?, cookie?, verify? }` — the `jwtAuth` gate's options (table below) |
 
 `JwtAuthOptions` (the `jwtAuth` gate):
 
@@ -93,20 +96,24 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `secret` | — | HMAC secret (`string` or bytes) — one of `secret`/`key`/`keyResolver`/`jwks` is required unless `verify` is given |
 | `key` | — | Static key material (`CryptoKey`/JWK for RS/PS/ES, a secret for HS) |
 | `keyResolver` | — | Per-token key resolution (rotation, multi-issuer) |
-| `jwks` | — | JWKS endpoint — `string` or `{ url, ttlMs? }`; shorthand for `createJwksResolver` |
+| `jwks` | — | JWKS endpoint — `string` or `{ url, ttlMs?, store? }`; shorthand for `createJwksResolver` |
 | `algorithms` | every supported one | Algorithms the gate accepts |
 | `header` | `'authorization'` | Header carrying the token |
 | `prefix` | `'Bearer '` | Scheme prefix stripped from the header value |
 | `cookie` | — | Cookie name to fall back to when the header is absent |
 | `verify` | — | Custom verification (another library, exotic tokens) — the returned value lands on `ctx.state.jwt` |
+| `keyStore` | — | Key-import store forwarded to `verifyJwt`; bypasses the default cache |
 
-Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key — the confusion attack is structurally closed). `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
+Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key — the confusion attack is structurally closed). `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs?, store? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
+
+Both module-wide caches are bounded LRUs — **100 imported keys** and **50 JWKS endpoints**. Crossing a bound drops the least recently used entry (an evicted key is re-imported, an evicted document refetched, on demand), so attacker-shaped key material or issuer URL sets cannot grow memory without bound. Multi-tenant deployments with more than 50 trusted issuers — or fleets that should share one cache — should inject their own stores: `verifyJwt`'s `keyStore` (and `jwtAuth`'s, which forwards it) takes a `JwtKeyStore` over imported-key promises, while `createJwksResolver` and the `jwks` shorthand take a `JwksStore` over `{ exp, keys }` entries (TTL refresh still applies on read). An injected store bypasses the in-process default entirely and owns its own bounds — back it with Redis the same way as the rate-limit/session stores.
 
 ```ts
 const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });
 use(app, jwtAuth({ secret: JWT_SECRET }));
 get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
 // Key rotation: use(app, jwtAuth({ jwks: 'https://idp.example/.well-known/jwks.json' }));
+// Shared/bounded externally: use(app, jwtAuth({ jwks: { url, store: redisJwksStore } }));
 ```
 
 ## Secure headers (`s200/secure-headers`)

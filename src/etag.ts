@@ -72,6 +72,9 @@ export function etag(options: EtagOptions = {}): Middleware {
     headers.set('etag', tag);
     const ifNoneMatch = ctx.req.headers.get('if-none-match');
     if (ifNoneMatch !== null && tagMatches(ifNoneMatch, tag)) {
+      // RFC 9110 §15.4.5: the 304 omits content-length — the copied header
+      // carries the would-be size, and s200's contract is omission.
+      headers.delete('content-length');
       ctx.res = newResponse(ctx, null, {
         status: 304,
         statusText: 'Not Modified',

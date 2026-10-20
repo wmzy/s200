@@ -159,3 +159,49 @@ export function jsonBody(
     : schemaOrParse;
   return validate(async (ctx) => parse(await readJson(ctx)), options);
 }
+
+/**
+ * Declares the request headers a route reads — a type-level gate in the
+ * `throws` mold (`s200/errors`): the middleware is a pure pass-through,
+ * no header is checked. The declaration exists so the route log's `in`
+ * channel can carry the keys to `s200/client`, which types (and demands)
+ * them as `init.headers` — a `Record<string, string>` with every named
+ * key required. Enforcement stays with middleware: `validate(parse)`
+ * reading `ctx.req.headers` (or any auth battery) is the runtime twin.
+ *
+ * ```ts
+ * get(app, '/me', requiresHeaders('authorization'), (ctx) => {
+ *   const auth = ctx.req.headers.get('authorization');   // enforcement is yours
+ *   …
+ * });
+ * ```
+ *
+ * Several `requiresHeaders` gates on one route intersect their key sets
+ * (via `ChainIn`), like every other input brand.
+ */
+export function requiresHeaders<K extends string>(
+  ...keys: K[]
+): Middleware & { readonly _in?: { readonly headers: Record<K, string> } };
+export function requiresHeaders(): Middleware {
+  // Deliberately takes no runtime input and checks nothing (a zero-arg
+  // implementation satisfies the variadic overload): the keys are a
+  // declaration for the type checker, not a validation.
+  return (_ctx, next) => next();
+}
+
+/**
+ * Declares the structured request-body type a route reads — `bodyShape<
+ * FormData>()` on an upload route, `bodyShape<Blob>()`/`bodyShape<
+ * ArrayBuffer>()`/`bodyShape<ReadableStream>()` on binary routes. The
+ * `throws`-mold type-level gate: pure pass-through, nothing parsed. The
+ * declaration brands the route log's `in` channel with `{ body: T }` so
+ * `s200/client` types (and demands) `init.body` as exactly `T` instead
+ * of the loose `BodyInit` — the client passes the value to fetch
+ * untouched (no JSON stringifying). Runtime reading stays with the
+ * handler (`s200/multipart`'s `streamForm`, `s200/upload`'s
+ * `uploadForm`, or a raw `ctx.req.body` stream).
+ */
+export function bodyShape<T>(): Middleware & { readonly _in?: { readonly body: T } } {
+  // The type parameter is the whole gate — no runtime input exists.
+  return (_ctx, next) => next();
+}

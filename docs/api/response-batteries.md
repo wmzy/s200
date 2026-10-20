@@ -41,7 +41,7 @@ type SerializeSchema =
 
 ## ETag (`s200/etag`)
 
-Stamps a SHA-1 entity tag (weak by default) on byte-backed responses and answers `If-None-Match` hits with `304`. Byte-backed means an explicit `content-length` — s200's respond helpers set it, a bare `new Response('…')` does not. Chunked/streamed responses (SSE, `s200/streaming`) and range responses (206) are skipped, not buffered. Only `2xx` responses are stamped, and a response that already carries an `etag` passes through untouched — set your own and it wins.
+Stamps a SHA-1 entity tag (weak by default) on byte-backed responses and answers `If-None-Match` hits with `304`. Byte-backed means an explicit `content-length` — s200's respond helpers set it, a bare `new Response('…')` does not. Chunked/streamed responses (SSE, `s200/streaming`) and range responses (206) are skipped, not buffered. Only `2xx` responses are stamped, and a response that already carries an `etag` passes through untouched — set your own and it wins. The `304` drops the copied `content-length` (RFC 9110 §15.4.5: omitted, not the would-be size) and keeps the tagged headers.
 
 ```ts
 use(app, etag());                    // W/"…" by default

@@ -71,7 +71,7 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `signJwt(payload, key, options?)` | 紧凑 JWT `header.payload.signature`；options 中的声明覆盖同名 payload 键 |
 | `verifyJwt<T>(token, key, options?)` | 校验结构、算法、签名、`exp`/`nbf`、要求的 `aud`/`iss` → `T & RegisteredClaims`；任何失败抛 `JwtError` |
 | `jwtAuth(options)` | 闸门中间件：提取令牌（头 `Authorization: Bearer …` 或 cookie）、校验、把载荷存入 `ctx.state.jwt`；缺失/无效 → `401` |
-| `createJwksResolver(url, options?)` | 基于 JWKS 端点构建 `KeyResolver` —— 拉取、缓存（`ttlMs`，默认 5 分钟）、按 `kid` 选取；按 URL 模块级缓存 |
+| `createJwksResolver(url, options?)` | 基于 JWKS 端点构建 `KeyResolver` —— 拉取、缓存（`ttlMs`，默认 5 分钟）、按 `kid` 选取；按 URL 模块级缓存，LRU 上限 50 个端点 |
 | `isJwtError(error)` | `JwtError` 谓词 |
 
 | 类型 | 含义 |
@@ -79,12 +79,15 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `JwtAlgorithm` | `'HS256' \| … \| 'ES512'` |
 | `JwtKey` | `string \| Uint8Array \| CryptoKey \| JsonWebKey` |
 | `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId? }` —— 用 `CryptoKey`/JWK 签名时 `alg` 必填 |
-| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance? }` —— `alg:none` 无条件拒绝 |
+| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, keyStore? }` —— `alg:none` 无条件拒绝 |
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` —— `KeyResolver` 所见 |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
-| `JwksOptions` | `{ ttlMs?, fetchFn? }` |
-| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, algorithms?, header?, prefix?, cookie?, verify? }` —— `jwtAuth` 闸门的选项（见下表） |
+| `JwtKeyStore` | `{ get(key), set(key, promise) }` —— 密钥导入缓存；默认进程内 LRU，上限 100 条 |
+| `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
+| `JwksStore` | `{ get(url), set(url, entry) }` —— JWKS 文档缓存；默认进程内 LRU，上限 50 个 URL |
+| `JwksEntry` | `{ exp, keys }` —— 一份缓存文档；`exp` 为 ms 纪元的刷新截止时间 |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, header?, prefix?, cookie?, verify? }` —— `jwtAuth` 闸门的选项（见下表） |
 
 `JwtAuthOptions`（`jwtAuth` 闸门）：
 
@@ -93,20 +96,24 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `secret` | — | HMAC 密钥（`string` 或字节）—— 未提供 `verify` 时，`secret`/`key`/`keyResolver`/`jwks` 之一必填 |
 | `key` | — | 静态密钥材料（RS/PS/ES 用 `CryptoKey`/JWK，HS 用密钥） |
 | `keyResolver` | — | 逐令牌密钥解析（轮换、多发行方） |
-| `jwks` | — | JWKS 端点 —— `string` 或 `{ url, ttlMs? }`；`createJwksResolver` 的简写 |
+| `jwks` | — | JWKS 端点 —— `string` 或 `{ url, ttlMs?, store? }`；`createJwksResolver` 的简写 |
 | `algorithms` | 全部支持 | 闸门接受的算法 |
 | `header` | `'authorization'` | 承载令牌的头 |
 | `prefix` | `'Bearer '` | 从头值中剥离的方案前缀 |
 | `cookie` | — | 头缺失时回退的 cookie 名 |
 | `verify` | — | 自定义校验（另一个库、奇异令牌）—— 返回值存入 `ctx.state.jwt` |
+| `keyStore` | — | 转发给 `verifyJwt` 的密钥导入 store；绕过默认缓存 |
 
-密钥族必须与头部算法匹配（HS 需要密钥，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥 —— 混淆攻击在结构上被封死）。`jwtAuth` 的密钥来源：`secret`、`key`、`keyResolver`、`jwks`（`string` 或 `{ url, ttlMs? }`），或自定义 `verify`（另一个库、奇异令牌 —— 返回值落到 `ctx.state.jwt`）。
+密钥族必须与头部算法匹配（HS 需要密钥，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥 —— 混淆攻击在结构上被封死）。`jwtAuth` 的密钥来源：`secret`、`key`、`keyResolver`、`jwks`（`string` 或 `{ url, ttlMs?, store? }`），或自定义 `verify`（另一个库、奇异令牌 —— 返回值落到 `ctx.state.jwt`）。
+
+两个模块级缓存都是有界 LRU —— **导入密钥 100 条**、**JWKS 端点 50 个**。越过上限即淘汰最久未用的条目（被淘汰的密钥按需重新导入、文档按需重新拉取），攻击者可控的密钥材料或 issuer URL 集合无法让内存无限增长。可信 issuer 超过 50 个的多租户部署 —— 或希望跨实例共享缓存的集群 —— 应注入自己的 store：`verifyJwt` 的 `keyStore`（`jwtAuth` 的同名选项会转发）接收密钥导入 Promise 的 `JwtKeyStore`；`createJwksResolver` 与 `jwks` 简写接收按 `{ exp, keys }` 条目存取的 `JwksStore`（读取时 TTL 刷新语义不变）。注入的 store 完全绕过进程内默认缓存并自管上限 —— 与 rate-limit/session 的 store 一样可以用 Redis 支撑。
 
 ```ts
 const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });
 use(app, jwtAuth({ secret: JWT_SECRET }));
 get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
 // 密钥轮换：use(app, jwtAuth({ jwks: 'https://idp.example/.well-known/jwks.json' }));
+// 外部共享/外部设限：use(app, jwtAuth({ jwks: { url, store: redisJwksStore } }));
 ```
 
 ## 安全头（`s200/secure-headers`）

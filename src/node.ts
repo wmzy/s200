@@ -22,6 +22,7 @@ import { LightHeaders, LightRequest, LightResponse, setCachedUrl } from './light
 
 import { handle } from './app';
 import { createRealPathGuardWith } from './fs-containment';
+import { runFinish } from './finish';
 
 
 /** Any server the adapter can return: HTTP/1.1, HTTPS, or HTTP/2-over-TLS. */
@@ -172,41 +173,59 @@ async function dispatch(
   light: boolean,
   abortOnDisconnect: boolean
 ): Promise<void> {
+  // The disconnect signal is also the write-side cancellation channel of
+  // writeResponse — omitted only under abortOnDisconnect: false.
+  const controller = abortOnDisconnect ? new AbortController() : undefined;
+  const signal = controller?.signal;
   try {
+    const request = toRequest(req, light, signal);
+    // 'close' also fires after a normally finished response (keep-alive
+    // socket teardown included) — only a premature close aborts and
+    // finishes as aborted. The listener stays registered even under
+    // abortOnDisconnect: false: onFinish is its own feature, only the
+    // signal abort is optional.
+    res.on('close', () => {
+      if (res.writableEnded) {
+        return;
+      }
+      controller?.abort(new DOMException('client disconnected', 'AbortError'));
+      runFinish(request, { aborted: true }, app.logError);
+    });
     // handle() maps every error to a Response, so only the socket write can
-    // throw here (client gone mid-response) — nothing left to answer.
-    let signal: AbortSignal | undefined;
-    if (abortOnDisconnect) {
-      const controller = new AbortController();
-      signal = controller.signal;
-      // 'close' also fires after a normally finished response (keep-alive
-      // socket teardown included) — only a premature close aborts.
-      res.on('close', () => {
-        if (!res.writableEnded) {
-          controller.abort(
-            new DOMException('client disconnected', 'AbortError')
-          );
-        }
-      });
-    }
+    // throw below (client gone mid-response) — nothing left to answer.
     const response = await handle(
       app,
-      toRequest(req, light, signal),
+      request,
       signal === undefined ? undefined : { signal }
     );
-    await writeResponse(res, response);
+    await writeResponse(res, response, signal);
+    runFinish(request, { aborted: false }, app.logError);
   } catch {
+    // The write failed mid-flight (or the request never parsed): nothing
+    // left to answer. destroy() emits 'close' with writableEnded false, so
+    // the listener above finishes as aborted — first trigger wins when a
+    // premature 'close' already ran the callbacks.
     res.destroy();
   }
 }
+
+/** Host(-like) header characters that are legal inside an `http://`
+ * authority: alphanumerics, `.`, `-`, `:` (port), `[`/`]` (IPv6 literals).
+ * A crafted Host — `evil.com/a`, `a b`, `u@h`, `x#y`, percent-escapes, or
+ * an empty value — must not flow into the request URL: it could pollute
+ * the parsed pathname or make the URL unparseable. Anything outside the
+ * set falls back to `localhost`. */
+const SAFE_HOST = /^[A-Za-z0-9.[\]:-]+$/;
 
 function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Request {
   // http2 compat requests expose `:authority` where http1 exposes `host`.
   const authority = (req.headers as Record<string, string | string[] | undefined>)[
     ':authority'
   ];
+  const candidate =
+    req.headers.host ?? (typeof authority === 'string' ? authority : undefined);
   const host =
-    req.headers.host ?? (typeof authority === 'string' ? authority : undefined) ?? 'localhost';
+    candidate !== undefined && SAFE_HOST.test(candidate) ? candidate : 'localhost';
   const url = `http://${host}${req.url ?? '/'}`;
   const method = req.method ?? 'GET';
   if (light) {
@@ -267,7 +286,11 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
   return request;
 }
 
-async function writeResponse(res: ResponseLike, response: Response): Promise<void> {
+async function writeResponse(
+  res: ResponseLike,
+  response: Response,
+  signal: AbortSignal | undefined
+): Promise<void> {
   const headers: Record<string, string | string[]> = {};
   if (
     response instanceof LightResponse &&
@@ -294,7 +317,8 @@ async function writeResponse(res: ResponseLike, response: Response): Promise<voi
       if (!res.write(bytes)) {
         await once(
           res as unknown as import('node:events').EventEmitter,
-          'drain'
+          'drain',
+          signal === undefined ? undefined : { signal }
         );
       }
       res.end();
@@ -318,15 +342,37 @@ async function writeResponse(res: ResponseLike, response: Response): Promise<voi
   // honored through the drain event; a socket death mid-write rejects and
   // dispatch() destroys the response.
   const reader = response.body.getReader();
+  // Disconnect propagation (signal = abortOnDisconnect's per-request
+  // signal): cancel the reader when the client vanishes — a pending read
+  // then resolves {done: true} and the source's cancel runs, so a
+  // handler-side generator receives its finally and a stalled body cannot
+  // outlive the socket. The drain waits below take the same signal: an
+  // abort rejects them instead of hanging on a dead socket. Without a
+  // signal (abortOnDisconnect: false) the loop rides plain backpressure.
+  const cancelOnAbort = (): void => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal !== undefined) {
+    signal.addEventListener('abort', cancelOnAbort, { once: true });
+  }
   res.writeHead(response.status, response.statusText, headers);
   for (;;) {
     const { done, value } = await reader.read();
     if (done) {
+      // done also follows an abort-driven cancel — res.end() on a closed
+      // socket is a tolerated no-op (OutgoingMessage drops writes after
+      // destroy), and dispatch's 'close' trigger already finished as
+      // aborted.
       res.end();
+      signal?.removeEventListener('abort', cancelOnAbort);
       return;
     }
     if (!res.write(value)) {
-      await once(res as unknown as import('node:events').EventEmitter, 'drain');
+      await once(
+        res as unknown as import('node:events').EventEmitter,
+        'drain',
+        signal === undefined ? undefined : { signal }
+      );
     }
   }
 }

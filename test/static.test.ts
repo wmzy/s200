@@ -462,6 +462,9 @@ describe('serveStatic conditional requests', () => {
     second.status.should.equal(304);
     (second.body === null).should.be.true;
     second.headers.get('etag')!.should.equal(etag);
+    // RFC 9110 §15.4.5: s200 omits content-length on 304 rather than
+    // echoing the would-be size or advertising 0.
+    (second.headers.get('content-length') === null).should.be.true;
   });
 
   it('weak-compares etags and honors If-Modified-Since', async () => {
@@ -500,6 +503,130 @@ describe('serveStatic conditional requests', () => {
       },
     }));
     res.status.should.equal(200);
+  });
+});
+
+describe('serveStatic If-Range', () => {
+  const files: Record<string, string> = { 'media.bin': '0123456789' };
+  const mtimeMs = 1_700_000_000_000;
+  const lastModified = new Date(mtimeMs).toUTCString();
+
+  /** Byte reader + fixed-mtime stat: validators are stable per test. */
+  const makeIfRangeApp = () =>
+    makeApp(files, {
+      stat: (path) =>
+        Promise.resolve(
+          files[path] === undefined
+            ? null
+            : { size: files[path]!.length, mtimeMs },
+        ),
+    });
+
+  it('honors Range when no If-Range header is present', async () => {
+    const { app } = makeIfRangeApp();
+    const res = await handle(
+      app,
+      new Request('http://localhost/media.bin', { headers: { range: 'bytes=2-5' } }),
+    );
+    res.status.should.equal(206);
+    res.headers.get('content-range')!.should.equal('bytes 2-5/10');
+    (await res.text()).should.equal('2345');
+  });
+
+  it('honors Range when If-Range exactly matches Last-Modified', async () => {
+    const { app } = makeIfRangeApp();
+    const res = await handle(
+      app,
+      new Request('http://localhost/media.bin', {
+        headers: { range: 'bytes=2-5', 'if-range': lastModified },
+      }),
+    );
+    res.status.should.equal(206);
+    res.headers.get('content-range')!.should.equal('bytes 2-5/10');
+    (await res.text()).should.equal('2345');
+  });
+
+  it('serves the full 200 body when the If-Range date differs by a second', async () => {
+    const { app } = makeIfRangeApp();
+    const stale = new Date(mtimeMs - 1000).toUTCString();
+    const res = await handle(
+      app,
+      new Request('http://localhost/media.bin', {
+        headers: { range: 'bytes=2-5', 'if-range': stale },
+      }),
+    );
+    res.status.should.equal(200);
+    (res.headers.get('content-range') === null).should.be.true;
+    res.headers.get('content-length')!.should.equal('10');
+    (await res.text()).should.equal('0123456789');
+  });
+
+  it('never honors Range for the file\'s own (weak) etag in If-Range', async () => {
+    const { app } = makeIfRangeApp();
+    const first = await handle(app, new Request('http://localhost/media.bin'));
+    const etag = first.headers.get('etag')!; // W/"a-18bcf3e6080" shape
+    const res = await handle(
+      app,
+      new Request('http://localhost/media.bin', {
+        headers: { range: 'bytes=2-5', 'if-range': etag },
+      }),
+    );
+    // RFC 9110 §13.1.5: If-Range requires a strong comparison — a weak tag
+    // (all this layer emits) can never authorize a partial response.
+    res.status.should.equal(200);
+    (res.headers.get('content-range') === null).should.be.true;
+    (await res.text()).should.equal('0123456789');
+  });
+
+  it('never honors Range for a strong If-Range tag — the current validator is weak', async () => {
+    const { app } = makeIfRangeApp();
+    const first = await handle(app, new Request('http://localhost/media.bin'));
+    const strong = first.headers.get('etag')!.slice(2); // strong form of the same opaque tag
+    const res = await handle(
+      app,
+      new Request('http://localhost/media.bin', {
+        headers: { range: 'bytes=2-5', 'if-range': strong },
+      }),
+    );
+    // Strong comparison needs strength on both sides; ours is weak, so the
+    // client's partial view cannot be trusted — full body.
+    res.status.should.equal(200);
+    (res.headers.get('content-range') === null).should.be.true;
+    (await res.text()).should.equal('0123456789');
+  });
+
+  it('gates the streamed readRange path the same way', async () => {
+    const rangeReads: [number, number][] = [];
+    const app = createApp();
+    use(app, serveStatic({
+      read: () => Promise.resolve(new TextEncoder().encode('0123456789')),
+      stat: (p) =>
+        Promise.resolve(p === 'media.bin' ? { size: 10, mtimeMs } : null),
+      readRange: (path, start, end) => {
+        rangeReads.push([start, end]);
+        const bytes = new TextEncoder().encode('0123456789');
+        return Promise.resolve(new Blob([bytes.slice(start, end + 1)]).stream());
+      },
+    }));
+    const honored = await handle(
+      app,
+      new Request('http://localhost/media.bin', {
+        headers: { range: 'bytes=2-5', 'if-range': lastModified },
+      }),
+    );
+    honored.status.should.equal(206);
+    honored.headers.get('content-range')!.should.equal('bytes 2-5/10');
+    (await honored.text()).should.equal('2345');
+    const ignored = await handle(
+      app,
+      new Request('http://localhost/media.bin', {
+        headers: { range: 'bytes=2-5', 'if-range': 'not-a-date' },
+      }),
+    );
+    ignored.status.should.equal(200);
+    (ignored.headers.get('content-range') === null).should.be.true;
+    (await ignored.text()).should.equal('0123456789');
+    rangeReads.should.deep.equal([[2, 5]]);
   });
 });
 

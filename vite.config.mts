@@ -28,6 +28,7 @@ export default defineConfig({
         compress: resolve(dirname, 'src/compress.ts'),
         streaming: resolve(dirname, 'src/streaming.ts'),
         'request-id': resolve(dirname, 'src/request-id.ts'),
+        als: resolve(dirname, 'src/als.ts'),
         timeout: resolve(dirname, 'src/timeout.ts'),
         query: resolve(dirname, 'src/query.ts'),
         websocket: resolve(dirname, 'src/websocket.ts'),

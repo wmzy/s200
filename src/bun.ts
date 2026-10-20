@@ -6,6 +6,8 @@ import { join } from 'node:path';
 
 import { handle } from './app';
 import { createRealPathGuardWith } from './fs-containment';
+import { hasFinishers, trackFinish } from './finish';
+import { signalInit } from './signal';
 
 // Module-scoped ambient surface of the global Bun runtime — exactly the
 // members used, so tsc needs no @types/bun dependency (the real Bun global
@@ -17,7 +19,7 @@ declare const Bun: {
     fetch: (
       request: Request,
       server: BunUpgrader
-    ) => Response | Promise<Response> | void;
+    ) => Response | Promise<Response | undefined> | undefined;
     websocket?: BunWebSocketHandlers;
   }): { port: number; stop: (closeActiveConnections?: boolean) => void | Promise<void> };
   file(path: string): {
@@ -69,11 +71,16 @@ export type BunServeOptions = {
   /**
    * WebSocket bridge: `createBunWebSocketBridge(app)` from
    * `s200/websocket/bun`. `upgrade` is consulted inside the fetch handler —
-   * matching requests upgrade instead of hitting the HTTP chain; the
-   * `websocket` half carries the per-connection callbacks for Bun.serve.
+   * matching requests upgrade once the middleware chain approves (a
+   * rejecting middleware's `Response` is answered as plain HTTP) instead
+   * of hitting the HTTP chain; the `websocket` half carries the
+   * per-connection callbacks for Bun.serve.
    */
   websocket?: {
-    readonly upgrade: (req: Request, server: BunUpgrader) => boolean;
+    readonly upgrade: (
+      req: Request,
+      server: BunUpgrader
+    ) => boolean | Response | Promise<boolean | Response>;
     readonly websocket: BunWebSocketHandlers;
   };
 };
@@ -83,14 +90,31 @@ export function serve(app: App, options: BunServeOptions = {}): BunServer {
   const server = Bun.serve({
     port: options.port ?? 0,
     hostname: options.hostname,
-    fetch: (request: Request, upgrader: BunUpgrader) => {
-      // A matched WebSocket route upgrades in place — the HTTP chain never
-      // runs for it. Otherwise fall through to the normal handler.
-      if (bridge !== undefined && bridge.upgrade(request, upgrader)) {
-        return;
+    fetch: async (request: Request, upgrader: BunUpgrader) => {
+      // A matched WebSocket route upgrades in place once the middleware
+      // chain approves — the HTTP chain never runs for it. A rejecting
+      // middleware's Response is answered as plain HTTP instead; anything
+      // else falls through to the normal handler.
+      if (bridge !== undefined) {
+        const decided = await bridge.upgrade(request, upgrader);
+        if (decided === true) {
+          // `undefined` (not a bare `return;`) keeps the handler's inferred
+          // return inside Bun.serve's Response | Promise<Response | undefined>.
+          return undefined;
+        }
+        if (decided !== false) {
+          return decided;
+        }
       }
-      // No disconnect wiring: Bun.serve does not reliably abort request.signal on client disconnect.
-      return handle(app, request);
+      // Bun.serve does not reliably abort request.signal on client
+      // disconnect, so the adapter leans on the body stream instead: with
+      // onFinish callbacks registered, trackFinish wraps the response body
+      // — its cancel (client gone) or completion runs them exactly once.
+      // The request's own signal, when this Bun version provides one,
+      // still threads into ctx.signal.
+      return handle(app, request, signalInit(request)).then((response) =>
+        hasFinishers(request) ? trackFinish(request, response, app.logError) : response
+      );
     },
     websocket: bridge?.websocket,
   });

@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
 
-import { createApp, get } from '../src/app';
+import { createApp, get, use } from '../src/app';
+import { httpError } from '../src/errors';
 import { serve, type NodeServer } from '../src/node';
 import { upgradeWebSocket } from '../src/websocket';
 import { createUpgradeHandler } from '../src/websocket-node';
@@ -147,6 +148,34 @@ function closePayload(code: number): Buffer {
   const payload = Buffer.alloc(2);
   payload.writeUInt16BE(code, 0);
   return payload;
+}
+
+/** Reads ONE full HTTP response (head + content-length-delimited body)
+ * off a raw socket — what a rejected upgrade answers with instead of 101. */
+function readResponse(socket: Socket): Promise<{ head: string; body: string }> {
+  return new Promise((resolve, reject) => {
+    let acc: Buffer = Buffer.alloc(0);
+    const timer = setTimeout(
+      () => reject(new Error('timeout waiting for HTTP response')),
+      2000
+    );
+    const onData = (chunk: Buffer): void => {
+      acc = acc.length === 0 ? chunk : Buffer.concat([acc, chunk]);
+      const text = acc.toString('latin1');
+      const end = text.indexOf('\r\n\r\n');
+      if (end < 0) return;
+      const headText = text.slice(0, end);
+      const lengthMatch = /content-length: (\d+)/i.exec(headText);
+      const length =
+        lengthMatch === null ? -1 : Number(lengthMatch[1]);
+      if (length >= 0 && acc.length >= end + 4 + length) {
+        clearTimeout(timer);
+        socket.off('data', onData);
+        resolve({ head: headText, body: text.slice(end + 4, end + 4 + length) });
+      }
+    };
+    socket.on('data', onData);
+  });
 }
 
 describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
@@ -374,6 +403,149 @@ describe('websocket node maxPayload', () => {
     const frame = await read();
     frame.opcode.should.equal(0x8);
     frame.payload.readUInt16BE(0).should.equal(1009);
+    socket.destroy();
+  });
+});
+
+describe('websocket middleware chain on upgrades (node adapter)', () => {
+  let server: NodeServer;
+  let seenOnUnwind: Response | undefined | 'unset' = 'unset';
+
+  beforeAll(async () => {
+    const app = createApp();
+    // App-level auth gate: applies to every upgrade on this app.
+    use(app, async (ctx, next) => {
+      if (ctx.url.pathname.startsWith('/gated') && ctx.req.headers.get('authorization') === null) {
+        ctx.res = new Response('missing token', { status: 401 });
+        return;
+      }
+      await next();
+      seenOnUnwind = ctx.res;
+    });
+    upgradeWebSocket(app, '/gated/app', (socket) => {
+      socket.onMessage((data) => socket.send(`app:${String(data)}`));
+    });
+    // Route-level middlewares, HTTP-registrar shape: stamp state first,
+    // gate second, handler last.
+    upgradeWebSocket(
+      app,
+      '/gated/route/:id',
+      async (ctx, next) => {
+        ctx.state.user = ctx.req.headers.get('x-role') ?? 'anon';
+        await next();
+      },
+      (ctx) => {
+        if (ctx.req.headers.get('x-role') !== 'admin') {
+          ctx.res = new Response('forbidden', { status: 403 });
+        }
+      },
+      (socket, ctx) => {
+        socket.onMessage((data) =>
+          socket.send(`${String(ctx.state.user)}:${ctx.params.id}:${String(data)}`)
+        );
+      }
+    );
+    upgradeWebSocket(
+      app,
+      '/gated/throw',
+      () => {
+        throw httpError(429, 'slow down');
+      },
+      () => undefined
+    );
+    upgradeWebSocket(app, '/open', (socket) => {
+      socket.onMessage((data) => socket.send(`open:${String(data)}`));
+    });
+    server = await serve(app, { port: 0, upgrade: createUpgradeHandler(app) });
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it('answers an app-level middleware rejection as plain HTTP, not 101', async () => {
+    const socket = openSocket(server.port, '/gated/app');
+    const { head, body } = await readResponse(socket);
+    head.should.contain('HTTP/1.1 401');
+    head.should.not.contain('101');
+    head.should.contain('Connection: close');
+    head.should.contain(`Content-Length: ${String(body.length)}`);
+    body.should.equal('missing token');
+    await once(socket, 'end');
+    socket.destroy();
+  });
+
+  it('lets an authorized upgrade pass the app-level gate', async () => {
+    const socket = openSocket(
+      server.port,
+      '/gated/app',
+      'Authorization: Bearer yes\r\n'
+    );
+    const { head, rest } = await readHead(socket);
+    head.should.contain('101 Switching Protocols');
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'hi'));
+    (await read()).payload.toString().should.equal('app:hi');
+    socket.destroy();
+  });
+
+  it('answers a route-level middleware rejection with 403', async () => {
+    const socket = openSocket(
+      server.port,
+      '/gated/route/7',
+      'Authorization: Bearer yes\r\n'
+    );
+    const { head, body } = await readResponse(socket);
+    head.should.contain('HTTP/1.1 403');
+    body.should.equal('forbidden');
+    socket.destroy();
+  });
+
+  it('runs route middlewares after the app chain and hands state + params through', async () => {
+    const socket = openSocket(
+      server.port,
+      '/gated/route/7',
+      'Authorization: Bearer yes\r\nX-Role: admin\r\n'
+    );
+    const { head, rest } = await readHead(socket);
+    head.should.contain('101 Switching Protocols');
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'go'));
+    (await read()).payload.toString().should.equal('admin:7:go');
+    socket.destroy();
+  });
+
+  it('maps a middleware-thrown HttpError to its status and envelope', async () => {
+    // Authorized, so the app gate passes and the ROUTE middleware throws.
+    const socket = openSocket(
+      server.port,
+      '/gated/throw',
+      'Authorization: Bearer yes\r\n'
+    );
+    const { head, body } = await readResponse(socket);
+    head.should.contain('HTTP/1.1 429');
+    head.should.contain('content-type: application/json');
+    JSON.parse(body).should.deep.equal({ error: 'slow down' });
+    socket.destroy();
+  });
+
+  it('keeps ctx.res undefined for unwinding middlewares on a successful upgrade', async () => {
+    const socket = openSocket(server.port, '/open');
+    const { head } = await readHead(socket);
+    head.should.contain('101 Switching Protocols');
+    // The chain unwound before the 101 went out: the app middleware above
+    // recorded what it saw after next() settled.
+    (seenOnUnwind === undefined).should.be.true;
+    socket.destroy();
+  });
+
+  it('keeps the old four-argument registration shape upgrading (no middlewares)', async () => {
+    const socket = openSocket(server.port, '/open');
+    const { head, rest } = await readHead(socket);
+    head.should.contain('101 Switching Protocols');
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'x'));
+    (await read()).payload.toString().should.equal('open:x');
     socket.destroy();
   });
 });

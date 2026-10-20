@@ -27,12 +27,13 @@ import type { Ctx } from './types';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 
+import { STATUS_CODES } from 'node:http';
 import { createHash } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 import {
-  createWsCtx,
   matchWebSocket,
+  resolveUpgrade,
   type WebSocketHandler,
   type WsCloseCb,
   type WsData,
@@ -64,9 +65,13 @@ export type NodeUpgradeHandler = (
 
 /**
  * Builds the `'upgrade'` callback for `s200/node`'s `serve` option:
- * matches the request path against the app's WebSocket routes, answers
- * the RFC 6455 handshake, and runs the matched handler per connection.
- * Unknown paths destroy the socket; invalid handshakes get a 400.
+ * matches the request path against the app's WebSocket routes, runs the
+ * app + route middleware chain, and on approval answers the RFC 6455
+ * handshake and runs the matched handler per connection. A middleware
+ * that answers (writes or returns a `Response`, or throws — mapped like
+ * HTTP) rejects the upgrade: its response is written to the socket as
+ * plain HTTP instead of `101`. Unknown paths destroy the socket; invalid
+ * handshakes get a 400.
  */
 export function createUpgradeHandler(
   app: App,
@@ -153,18 +158,9 @@ function acceptUpgrade(
     }
   }
 
-  socket.write(
-    'HTTP/1.1 101 Switching Protocols\r\n' +
-      'Upgrade: websocket\r\n' +
-      'Connection: Upgrade\r\n' +
-      `Sec-WebSocket-Accept: ${accept}\r\n` +
-      (protocol === undefined ? '' : `Sec-WebSocket-Protocol: ${protocol}\r\n`) +
-      extensionHeader +
-      '\r\n'
-  );
-
-  // Request-shaped context: params/query/url as an HTTP handler would see
-  // them. rawHeaders keeps duplicate headers instead of node's merged view.
+  // Request-shaped context source: params/query/url as an HTTP handler
+  // would see them. rawHeaders keeps duplicate headers instead of node's
+  // merged view.
   const headers = new Headers();
   for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
     const name = req.rawHeaders[i];
@@ -174,15 +170,85 @@ function acceptUpgrade(
     }
   }
   const request = new Request(url, { method: req.method ?? 'GET', headers });
-  runConnection(
-    socket,
-    head,
-    maxPayload,
-    deflate,
-    protocol,
-    matched.route.handler,
-    createWsCtx(request, url, matched.params)
+
+  // The middleware chain (app's own, then the route's) decides BEFORE the
+  // 101 goes out — any rejection Response is answered as plain HTTP on
+  // this socket instead. While the chain runs, the socket may die: watch
+  // it, never write to a dead socket, and keep an 'error' listener so the
+  // gap before runConnection attaches its own cannot crash the process.
+  let dead = false;
+  const onDead = (): void => {
+    dead = true;
+  };
+  socket.once('close', onDead);
+  socket.once('error', onDead);
+  void resolveUpgrade(app, matched.route, request, url, matched.params).then(
+    async (decision): Promise<void> => {
+      // Hands the socket back from the guard listeners; a dead socket is
+      // destroyed and reported as unreleasable.
+      const release = (): boolean => {
+        socket.removeListener('close', onDead);
+        socket.removeListener('error', onDead);
+        if (dead) {
+          socket.destroy();
+          return false;
+        }
+        return true;
+      };
+      if (!decision.ok) {
+        // Buffer the rejection body while the guard listeners still own
+        // the socket — after release, an erroring socket is nobody's
+        // business here.
+        const rejection = await responseBytes(decision.response);
+        if (!release()) return;
+        socket.end(rejection);
+        return;
+      }
+      if (!release()) return;
+      socket.write(
+        'HTTP/1.1 101 Switching Protocols\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          `Sec-WebSocket-Accept: ${accept}\r\n` +
+          (protocol === undefined ? '' : `Sec-WebSocket-Protocol: ${protocol}\r\n`) +
+          extensionHeader +
+          '\r\n'
+      );
+      runConnection(
+        socket,
+        head,
+        maxPayload,
+        deflate,
+        protocol,
+        matched.route.handler,
+        decision.ctx
+      );
+    }
   );
+}
+
+/** Serializes a rejection Response as raw HTTP/1.1 bytes to answer the
+ * upgrade request with: status line (node's reason phrase when the
+ * Response carries none), its headers, a content-length recomputed from
+ * the buffered body, and `Connection: close` — the socket ends with it. */
+async function responseBytes(res: Response): Promise<Buffer> {
+  const body = Buffer.from(await res.arrayBuffer());
+  const reason =
+    res.statusText !== ''
+      ? res.statusText
+      : (STATUS_CODES[res.status] ?? 'Unknown');
+  const lines = [`HTTP/1.1 ${String(res.status)} ${reason}`];
+  for (const [name, value] of res.headers) {
+    if (name === 'content-length' || name === 'connection' || name === 'transfer-encoding') {
+      continue; // recomputed below; close semantics and body framing are decided here
+    }
+    lines.push(`${name}: ${value}`);
+  }
+  lines.push(`Content-Length: ${String(body.byteLength)}`, 'Connection: close');
+  return Buffer.concat([
+    Buffer.from(`${lines.join('\r\n')}\r\n\r\n`, 'latin1'),
+    body,
+  ]);
 }
 
 /** One server-side frame: FIN+RSV+opcode byte, length, payload. */

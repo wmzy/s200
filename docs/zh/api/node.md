@@ -33,6 +33,36 @@ await server.close();
 
 `NodeUpgradeHandler`：`node:http` `'upgrade'` 事件签名 `(req, socket, head) => void`。
 
+## Host 头加固
+
+适配器用 `Host` 头（HTTP/2 上是 `:authority`）拼出每个请求的 URL。超出 authority 语法的 Host —— 除字母数字、`.`、`-`、`:`（端口）、`[`/`]`（IPv6 字面量）之外的任何字符，包括 `/ \ ? # @`、空白、percent 转义与空值 —— 一律回退为 `localhost`，不进入 URL：伪造的 `Host: evil.com/a` 既污染不了解析出的 pathname，也不会让 URL 无法解析。合法 Host 原样通过 —— `example.com`、`example.com:8080`、`[::1]:3000`。
+
+## `onFinish(ctx, fn)`（core barrel） {#onfinish}
+
+```ts
+import { onFinish } from 's200';
+
+get(app, '/report', (ctx) => {
+  onFinish(ctx, ({ aborted }) => {
+    console.log('report response finished', aborted ? 'early' : 'cleanly');
+  });
+  return json(ctx, buildReport());
+});
+```
+
+注册一个每请求**恰好运行一次**的回调 —— 先到先触发，后续触发是 no-op：
+
+- `{ aborted: false }` —— 响应已完整写完。
+- `{ aborted: true }` —— 连接先行结束：客户端断开、响应体被 cancel，或写中途失败。
+
+回调是 fire-and-forget：同步抛错（或返回的 promise 拒绝）会经 app 的 `logError` 记录，绝不打断响应或其他回调。请在 finish 之前注册 —— 之后的注册会被静默丢弃。
+
+node 适配器上的触发点是 socket 写完成与提前 `'close'`；有无 `light` 都会触发，`abortOnDisconnect: false` 只跳过 `ctx.signal` 的中止 —— finish 回调照常运行。
+
+## 流式响应的断连传播
+
+拉取流式响应体期间，客户端断开（`abortOnDisconnect` 的每请求 signal，默认开启）会 cancel body reader：handler 侧的生成器收到 `finally`，等待中的背压等待立即拒绝而不是挂在死掉的 socket 上，响应随后被销毁。`abortOnDisconnect: false` 时循环只走普通 drain 背压，不传播 cancel。
+
 ## 供 `serveStatic` 注入的文件系统函数
 
 适配器实现 [`serveStatic`](/zh/api/respond#静态文件) 的注入面，核心因此不碰文件系统：

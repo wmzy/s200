@@ -23,8 +23,9 @@ import type {
 
 import type { ParamsOf } from './router';
 
-import { isHttpError, toErrorResponse } from './errors';
+import { isHttpError } from './errors';
 import { compose } from './compose';
+import { mapError } from './error-map';
 import { cachedUrl, isLightRequest, isLightResponse, setCachedUrl } from './light';
 import { neverSignal } from './signal';
 import { drainPendingHeaders, newResponse } from './respond';
@@ -287,371 +288,125 @@ function register<
   return app;
 }
 
-export function addRoute<
+/**
+ * One route def as a registrar appends it to the phantom log — the shared
+ * record under every registrar's return type: the method literal, the
+ * pattern, and the five channels (`in`, `errors`, `out`, `status`,
+ * `branches`).
+ */
+type RouteDefEntry<
+  M extends string,
   P extends string,
-  S extends State = State,
-  M extends string = string,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  method: M,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function addRoute<
-  S extends State = State,
-  M extends string = string,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  method: M,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function addRoute<
-  S extends State = State,
-  M extends string = string,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  method: M,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, method, pattern, chain) as App<
-    S,
-    [...R, { readonly method: Uppercase<M>; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
+  Ms extends readonly unknown[],
+  O
+> = {
+  readonly method: M;
+  readonly pattern: P;
+  readonly in: ChainIn<Ms>;
+  readonly errors: RouteErrors<Ms, O>;
+  readonly out: ResolveOut<O>;
+  readonly status: ResolveStatus<O>;
+  readonly branches: BranchesOf<O>;
+};
+
+/**
+ * The signature every method registrar shares (`get`, `post`, …): two
+ * overloads — a literal pattern gives the terminal handler
+ * `ParamsOf<P>`-typed params; a plain `string` pattern (a dynamic route)
+ * falls back to the loose `Params`. One shared implementation backs them
+ * all (see `methodRegistrar`); every call lands in `register`.
+ */
+export type Registrar<M extends string> = {
+  <
+    P extends string,
+    S extends State = State,
+    R extends readonly RouteDef[] = readonly RouteDef[]
+  ,
+    O = unknown,
+    Ms extends Middleware<S>[] = Middleware<S>[]
+  >(
+    app: App<S, R>,
+    pattern: P,
+    ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+  ): App<S, [...R, RouteDefEntry<M, P, Ms, O>]>;
+  <
+    S extends State = State,
+    R extends readonly RouteDef[] = readonly RouteDef[]
+  ,
+    O = unknown,
+    Ms extends Middleware<S>[] = Middleware<S>[]
+  >(
+    app: App<S, R>,
+    pattern: string,
+    ...chain: [...Ms, Handler<Params, S, O>]
+  ): App<S, [...R, RouteDefEntry<M, string, Ms, O>]>;
+};
+
+/**
+ * Builds one method registrar — the single implementation behind every
+ * {@link Registrar} export. The body is type-erased on purpose: the
+ * phantom route log comes from the signature, never from the runtime
+ * value (`register` stores the erased route).
+ */
+function methodRegistrar<M extends string>(method: M): Registrar<M> {
+  return ((
+    app: App,
+    pattern: string,
+    ...chain: unknown[]
+  ): App =>
+    register(app, method, pattern, chain as [...Middleware[], Handler])) as Registrar<M>;
 }
 
-export function get<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'GET'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function get<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'GET'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function get<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'GET'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'GET', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'GET'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
+export const get: Registrar<'GET'> = methodRegistrar('GET');
+export const post: Registrar<'POST'> = methodRegistrar('POST');
+export const put: Registrar<'PUT'> = methodRegistrar('PUT');
+export const patch: Registrar<'PATCH'> = methodRegistrar('PATCH');
+export const del: Registrar<'DELETE'> = methodRegistrar('DELETE');
+export const head: Registrar<'HEAD'> = methodRegistrar('HEAD');
+export const options: Registrar<'OPTIONS'> = methodRegistrar('OPTIONS');
+export const all: Registrar<'ALL'> = methodRegistrar('ALL');
 
-export function post<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'POST'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function post<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'POST'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function post<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'POST'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'POST', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'POST'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
+/**
+ * The dynamic-method registrar's signature — the {@link Registrar} shape
+ * with the method as a first argument, the def's method branded
+ * `Uppercase<M>`.
+ */
+export type AddRoute = {
+  <
+    P extends string,
+    S extends State = State,
+    M extends string = string,
+    R extends readonly RouteDef[] = readonly RouteDef[]
+  ,
+    O = unknown,
+    Ms extends Middleware<S>[] = Middleware<S>[]
+  >(
+    app: App<S, R>,
+    method: M,
+    pattern: P,
+    ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+  ): App<S, [...R, RouteDefEntry<Uppercase<M>, P, Ms, O>]>;
+  <
+    S extends State = State,
+    M extends string = string,
+    R extends readonly RouteDef[] = readonly RouteDef[]
+  ,
+    O = unknown,
+    Ms extends Middleware<S>[] = Middleware<S>[]
+  >(
+    app: App<S, R>,
+    method: M,
+    pattern: string,
+    ...chain: [...Ms, Handler<Params, S, O>]
+  ): App<S, [...R, RouteDefEntry<Uppercase<M>, string, Ms, O>]>;
+};
 
-export function put<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'PUT'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function put<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
+export const addRoute: AddRoute = ((
+  app: App,
+  method: string,
   pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function put<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'PUT'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'PUT', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'PUT'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
-
-export function patch<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function patch<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function patch<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'PATCH', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'PATCH'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
-
-export function del<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function del<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function del<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'DELETE', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'DELETE'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
-
-export function head<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function head<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function head<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'HEAD', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'HEAD'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
-
-export function options<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function options<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function options<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'OPTIONS', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'OPTIONS'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
-
-export function all<
-  P extends string,
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: P,
-  ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-): App<S, [...R, { readonly method: 'ALL'; readonly pattern: P; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function all<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<Params, S, O>]
-): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]>;
-export function all<
-  S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
-,
-  O = unknown,
-  Ms extends Middleware<S>[] = Middleware<S>[]
->(
-  app: App<S, R>,
-  pattern: string,
-  ...chain: [...Ms, Handler<never, S, O>]
-): App<S, [...R, { readonly method: 'ALL'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]> {
-  return register(app, 'ALL', pattern, chain) as App<
-    S,
-    [...R, { readonly method: 'ALL'; readonly pattern: string; readonly in: ChainIn<Ms>; readonly errors: RouteErrors<Ms, O>; readonly out: ResolveOut<O>; readonly status: ResolveStatus<O>; readonly branches: BranchesOf<O> }]
-  >;
-}
+  ...chain: unknown[]
+): App => register(app, method, pattern, chain as [...Middleware[], Handler])) as AddRoute;
 
 // Composed-chain caches. `compose`'s double-next `index` is created per
 // invocation, so one composed function is safe to reuse across requests;
@@ -718,61 +473,6 @@ function getRouteChain(route: Route): ReturnType<typeof compose> {
   const chain = compose([...route.middlewares, terminator]);
   routeChainCache.set(route, chain);
   return chain;
-}
-
-/**
- * Default {@link AppOptions.logError}: one leading context line — method,
- * pathname, and the request id when one is known — then the error itself,
- * via `console.error`. The id prefers the request-id battery's
- * `state.requestId` (set whatever header name the battery was configured
- * with) and falls back to a literal `x-request-id` header for apps that
- * set it without the battery. Runs only on the unhandled-500 path, never
- * on the hot path, so the template literal costs nothing per request.
- */
-function defaultLogError(error: unknown, ctx: Ctx): void {
-  const stamped = ctx.state.requestId;
-  const requestId =
-    typeof stamped === 'string' && stamped !== '' ? stamped : ctx.req.headers.get('x-request-id');
-  console.error(
-    `[s500] ${ctx.req.method} ${ctx.url.pathname}${requestId ? ' ' + requestId : ''}`,
-    error
-  );
-}
-
-/**
- * Maps a thrown value to a response through the app's error policy: custom
- * `onError` (its own failures degrade to the default mapping), or the
- * default — `HttpError` keeps its status/message, anything else is logged
- * with request context (`logError`, default {@link defaultLogError}) and
- * becomes an anonymous 500. Shared by the in-chain boundary (route/fallback
- * errors) and the outer catch (middleware errors).
- */
-async function mapError<S extends State = State>(
-  app: App<S>,
-  ctx: Ctx<Params, S>,
-  error: unknown
-): Promise<void> {
-  if (app.onError === undefined) {
-    // HttpErrors are intentional client errors mapped to responses; only
-    // unexpected failures need surfacing — a silently swallowed 500 is
-    // undebuggable in production. The sink is injectable per app.
-    if (!isHttpError(error)) {
-      (app.logError ?? defaultLogError)(error, ctx);
-    }
-    ctx.res = toErrorResponse(error);
-  } else {
-    try {
-      await app.onError(ctx, error);
-    } catch (handlerError) {
-      // A crashing error handler is itself a failure — default mapping.
-      ctx.res = toErrorResponse(handlerError);
-    }
-  }
-  // The error response bypassed newResponse (or onError wrote one raw) —
-  // headers deferred onto this ctx still ride it.
-  if (ctx.res !== undefined) {
-    drainPendingHeaders(ctx, ctx.res);
-  }
 }
 
 /**
