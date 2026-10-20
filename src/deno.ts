@@ -44,8 +44,9 @@ export type DenoServeOptions = {
   onListen?: (addr: { readonly port: number; readonly hostname: string }) => void;
 };
 
-/** Serves the app on Deno. The port is fixed at construction — pass `0`?
- * Deno does not report an ephemeral port, so pick one explicitly. */
+/** Serves the app on Deno. Pass `0` for an ephemeral port — the bound
+ * port still reaches `onListen`, but `server.port`/`server.url` keep the
+ * requested value, so prefer an explicit port when reading them. */
 export function serve(app: App, options: DenoServeOptions = {}): DenoServer {
   const port = options.port ?? 8000;
   const hostname = options.hostname ?? '0.0.0.0';

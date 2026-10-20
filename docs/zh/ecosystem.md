@@ -75,7 +75,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | `s200/client`     | `createClient` —— 类型化 fetch 客户端                           |
 | `s200/test`       | `request`、`testClient`、`probeApp` —— 进程内驱动应用           |
 | `s200/otel`       | `trace` —— 每请求的 OTel span                                   |
-| `s200/dev`        | `createHotApp`、`importFresh`、`watchAndReload` —— 热路由表     |
+| `s200/dev`        | `createHotApp`、`importFresh`、`watchAndReload`、`routeHints` —— 热路由表与开发期 404 提示 |
 
 ### 运维
 
@@ -125,6 +125,31 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | ---------------------- | ---------------------------------------------------------------- |
 | [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | 经 Redis 共享的 `rateLimit`/`createSession` 存储——完整指南：[分布式存储](./guides/distributed-stores.md) |
 
+## battery 创意 —— 好的上手贡献
+
+官方 battery 刻意保持精简。下面的清单是注册表乐于看到第三方发布的
+东西——没有一项在官方路线图上；每个创意都经由既有入口的公开接缝
+（选项对象、可注入存储、`Middleware` 组合）扩展它，标准的
+[提交模板](#submission-template)对每一项都适用。
+
+- cron 别名与“日/星期”扩展（`@daily`、`L`、`W`），扩展
+  `s200/schedule` —— 已发布的解析器是严格的 5 字段 cron。
+- OpenTelemetry **logs** 信号 + OTLP exporter，扩展 `s200/otel` ——
+  已发布的入口零依赖、tracer/meter 可注入；线上协议 exporter 正是
+  “带依赖也可收录”的教科书案例。
+- 更多 Scalar 文档旋钮（布局、暗色模式默认值、自定义 CSS），扩展
+  `s200/swagger` —— 超出已发布的 `url`/`title`/`theme`/`cdn` 选项。
+- OAuth 提供方（GitHub、Google、通用 OIDC），构建于 `s200/jwt` +
+  `s200/session` 之上 —— 已发布的 `s200/auth` 只覆盖带质询的基础
+  认证。
+- 更多面向 `s200/session` 与 `s200/rate-limit` 的共享存储 ——
+  Postgres、SQLite 等，沿
+  [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts)
+  配方确立的可注入存储接缝（Redis 已在其中覆盖）。
+- `s200/accepts` 之上的 locale 回退链 —— 已发布的
+  `accepts().language()` 在给定标签中选最优；BCP 47 区域回退与
+  `Intl` 感知的匹配是自然的延伸。
+
 ## 提交你的 battery
 
 下面的注册表面向第三方 battery——任何遵循 battery 契约、可被导入的
@@ -146,7 +171,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
   字节成本（如 `size-limit`，或
   `gzip -9 < dist/entry.mjs | wc -c`），是测出来的，不是估出来的。
 
-### 提交模板
+### 提交模板 {#submission-template}
 
 向本页开一个 PR，按此模板向注册表添加一行：
 

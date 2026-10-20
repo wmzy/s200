@@ -64,7 +64,9 @@ resolve），不是 s200 与 Koa 共享的洋葱模型。如果你的目标是 B
   hono-node-server 桥接，没有 ws，没有 path-to-regexp。
 - **链内错误边界**：抛错的路由处理器在中间件 unwind *之前*就被映射为
   响应，因此 logger/cors/request-id 盖章的是真实的 404/405/500。
-  Express 需要一个最后注册的错误中间件；Hono 的 `onError` 位于链外。
+  Express 需要一个最后注册的错误中间件；Hono 的 `onError` 位于链外
+  （Hono v5，2026-10 时处于 rc，把 `onError`/`notFound` 变成了可路由、
+  可组合的链内中间件——上游正在向 s200 的模型收敛）。
 - **每个静态段都有索引**：`/:tenant/resourceN` 表不会退化为线性扫描
   （见 `docs/benchmarks.md` 的路由器数字）。
 - **应用即数据**：把路由表导出为 JSON、从中生成 OpenAPI 3.1 文档、
@@ -97,6 +99,10 @@ resolve），不是 s200 与 Koa 共享的洋葱模型。如果你的目标是 B
   Elysia Eden 仍缺的是：处理器体内 `throw httpError(...)` 的调用点对
   类型层不可见（TypeScript 无法检视函数体——请返回该错误或声明它），
   且 `throws` 是一个检查器不做校验的透传声明。
+- **没有路径中段通配符** —— `*name` 必须是最后一段（`/files/*path` 可以；
+  `/a/*rest/b` 在注册时抛错）。仅限末段让捕获语义无歧义、静态段索引
+  完好无损；它是匹配契约的一部分，只在 major 中才会重新考虑
+  （见[路由](./guides/routing.md)）。
 - **吞吐量落后于 patched 类别** —— s200 始终使用平台真实的
   `Request`/`Response`；fastify/elysia/hono-patched 用更轻的对象避开
   undici 的构造器成本。差距在每请求构造成本，不在分发
@@ -107,6 +113,25 @@ resolve），不是 s200 与 Koa 共享的洋葱模型。如果你的目标是 B
 - **年轻的生态** —— 第三方 battery 注册表刚刚开放
   （[docs/ecosystem.md](./ecosystem.md)）；官方 battery 覆盖常见面，
   `use` 模式覆盖其余。
+
+## 2026-10 上游动态
+
+两个最接近的对比对象都处在迈向新 major 的过渡期；以下事实均来自
+它们自己的发布文档。
+
+- **Hono v5.0.0-rc**（[迁移指南](https://hono.dev/docs/guides/migrating-to-v5)）：
+  `hono` 转为 ESM-only——CommonJS 构建被移除——并要求 Node ≥ 22.12；
+  运行时适配器移出主包，成为独立的 `@hono/*` 包；通配符匹配增加了
+  路径中段的段后缀形式（`/x*/y`），且在各路由器间行为一致。s200 在
+  同几个维度上的对照：双格式 ESM+CJS 发布（CI 中以 attw 档案校验）、
+  Node ≥ 20.3、适配器作为第一方子路径入口（`s200/node`、`s200/bun`），
+  无需一次 major 就已经存在。
+- **Elysia**（[releases](https://github.com/elysiajs/elysia/releases)、
+  [v2 beta 公告](https://elysiajs.com/blog/elysia-20)）：1.4.x 线只修
+  安全问题；v2——一次彻底重写，仍是 beta——主打可 tree-shaking 的
+  模块与 AOT 编译。这正是上游为得到 s200 上市即有的东西而付出的重写
+  成本：`sideEffects: false`、50 个可 tree-shaking 的包入口、以及为
+  每次发布把关的 size-limit 预算。
 
 ## 迁移指南
 

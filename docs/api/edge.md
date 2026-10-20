@@ -19,7 +19,7 @@ await server.finished;          // resolves when the server stops
 | `port` | Bound port |
 | `close()` | `server.shutdown()` |
 
-`DenoServeOptions`: `{ port?, hostname?, onListen? }` — `port` defaults to `8000`. Deno does not report an ephemeral port back, so pick one explicitly when it matters. Deno aborts the fetch-handler request's signal on client disconnect; the adapter feature-detects it and passes that signal into `handle` (`init.signal`) for cooperative cancellation.
+`DenoServeOptions`: `{ port?, hostname?, onListen? }` — `port` defaults to `8000`. Pass `port: 0` for an ephemeral port — the bound port still reaches `onListen`, but `server.port`/`server.url` keep the requested value, so pick one explicitly when reading them. Deno aborts the fetch-handler request's signal on client disconnect; the adapter feature-detects it and passes that signal into `handle` (`init.signal`) for cooperative cancellation.
 
 ## Cloudflare Workers (`s200/cloudflare`)
 

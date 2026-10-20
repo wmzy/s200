@@ -19,7 +19,7 @@ await server.finished;          // 服务器停止时 resolve
 | `port` | 已绑定端口 |
 | `close()` | `server.shutdown()` |
 
-`DenoServeOptions`：`{ port?, hostname?, onListen? }` —— `port` 默认 `8000`。Deno 不回传临时端口，重要时请显式指定。Deno 在客户端断开时中止 fetch handler 请求的信号；适配器做特性检测并把该信号作为 `init.signal` 传入 `handle`，实现协作取消。
+`DenoServeOptions`：`{ port?, hostname?, onListen? }` —— `port` 默认 `8000`。传 `port: 0` 用临时端口 —— 实际绑定端口仍会传给 `onListen`，但 `server.port`/`server.url` 保留传入值；读取它们时请显式指定端口。Deno 在客户端断开时中止 fetch handler 请求的信号；适配器做特性检测并把该信号作为 `init.signal` 传入 `handle`，实现协作取消。
 
 ## Cloudflare Workers（`s200/cloudflare`）
 

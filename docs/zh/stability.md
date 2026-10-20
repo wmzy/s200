@@ -23,7 +23,7 @@ const app = createApp(options?);
 | `strict` | 默认匹配器的尾斜杠策略。默认 `true`（严格：`/a/` 不匹配 `/a`）；`false` 容忍一个尾斜杠。 |
 | `onError` | 负责错误 → 响应的映射。未设置时，未处理的 `HttpError` 渲染为 `{ status, body: { "error": message } }`，其余错误则记录日志（`logError`，默认 `console.error`）并渲染成绝不泄露内部细节的通用 500。 |
 | `onNotFound` | 负责未匹配路径的响应。默认：`404 {"error":"Not Found"}`。 |
-| `logError` | 在保留默认映射的同时，替换错误日志的输出端。 |
+| `logError` | 在保留默认映射的同时，替换错误日志的输出端。接收 `(error, ctx)` —— 第二个参数是增量式的，`(error) => void` 形态的输出端继续可用。默认：先输出一行上下文 `[s500] <method> <pathname>[ <request id>]`，再输出错误本身，走 `console.error` —— id 取 request-id 电池写入的 `state.requestId`（无论配置了什么 header 名），否则回退到字面 `x-request-id` 头。 |
 
 `createApp` 还接受按应用定制的 `State` 接口（`createApp<AdminState>()`）
 ——这个泛型形态是契约的一部分。
@@ -109,6 +109,8 @@ body 形状）合并进 `s200/client` 按状态码判别的 `res.status` /
 
 - 模式：`:name` 参数、`:name?` 可选段、末端的 `*name` 通配符。重复的捕获名
   会在注册时被拒绝。
+- **通配符捕获仅限最后一段** —— `*name` 必须是模式的最后一段（否则注册时
+  抛错）；路径中段的通配符不在匹配契约之内。
 - 多个模式都匹配时，**先注册者胜出**。
 - **`HEAD` 回退到 `GET` 路由。**
 - 路径匹配但方法不匹配时，应答**带 `Allow` 头的 `405`**，其中列出本可匹配

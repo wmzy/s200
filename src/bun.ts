@@ -2,9 +2,10 @@ import type { App } from './app';
 import type { StaticFileInfo } from './static';
 
 import { realpathSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { join } from 'node:path';
 
 import { handle } from './app';
+import { createRealPathGuardWith } from './fs-containment';
 
 // Module-scoped ambient surface of the global Bun runtime — exactly the
 // members used, so tsc needs no @types/bun dependency (the real Bun global
@@ -178,16 +179,5 @@ function bunRealpath(path: string): string | null {
 export function createRealPathGuard(
   root: string
 ): (path: string) => Promise<string | null> {
-  const resolvedRoot = resolve(root);
-  let rootReal: string | null | undefined;
-  return async (path: string): Promise<string | null> => {
-    rootReal ??= bunRealpath(resolvedRoot);
-    if (rootReal === null) return null;
-    const real = bunRealpath(join(resolvedRoot, path));
-    if (real === null) return null;
-    const rel = relative(rootReal, real);
-    const within =
-      rel === '' || (rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel));
-    return within ? real : null;
-  };
+  return createRealPathGuardWith(root, async (path) => bunRealpath(path));
 }

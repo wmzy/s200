@@ -66,6 +66,9 @@ export default defineConfig({
         'shard-dev': resolve(dirname, 'src/shard-dev.ts'),
         executor: resolve(dirname, 'src/executor.ts'),
         'unit-metrics': resolve(dirname, 'src/unit-metrics.ts'),
+        // bin-only entry (`s200 dev`): ships as dist/cli.mjs referenced by
+        // package.json "bin", deliberately NOT in the exports map.
+        cli: resolve(dirname, 'src/cli.ts'),
       },
       name: 's200',
       formats: ['es', 'cjs'],

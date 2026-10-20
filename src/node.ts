@@ -15,12 +15,13 @@ import {
   type IncomingHttpHeaders,
 } from 'node:http2';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { join } from 'node:path';
 import { Readable, type Duplex } from 'node:stream';
 
 import { LightHeaders, LightRequest, LightResponse, setCachedUrl } from './light';
 
 import { handle } from './app';
+import { createRealPathGuardWith } from './fs-containment';
 
 
 /** Any server the adapter can return: HTTP/1.1, HTTPS, or HTTP/2-over-TLS. */
@@ -448,26 +449,7 @@ export function createFileRangeReader(
 export function createRealPathGuard(
   root: string
 ): (path: string) => Promise<string | null> {
-  const resolvedRoot = resolve(root);
-  let realRoot: Promise<string | null> | undefined;
-  const getRealRoot = (): Promise<string | null> => {
-    realRoot ??= realpath(resolvedRoot).catch(() => null);
-    return realRoot;
-  };
-  return async (path: string): Promise<string | null> => {
-    const rootReal = await getRealRoot();
-    if (rootReal === null) return null;
-    let real: string;
-    try {
-      real = await realpath(join(resolvedRoot, path));
-    } catch {
-      return null; // missing files fall through like an ordinary miss
-    }
-    // relative(rootReal, real) climbs with '..'/'../…' exactly; a sibling
-    // name like '..x' cannot climb and stays a legitimate in-root file.
-    const rel = relative(rootReal, real);
-    const within =
-      rel === '' || (rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel));
-    return within ? real : null;
-  };
+  return createRealPathGuardWith(root, (path) =>
+    realpath(path).catch(() => null)
+  );
 }

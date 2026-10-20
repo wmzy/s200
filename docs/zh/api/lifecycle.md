@@ -1,6 +1,6 @@
 # 生命周期、健康、超时与热重载（`s200/lifecycle`、`s200/health`、`s200/timeout`、`s200/dev`）
 
-优雅停机、存活/就绪探针、请求超时与路由表在线替换。
+优雅停机、存活/就绪探针、请求超时、路由表在线替换，以及开发期 404 提示。
 
 ## 生命周期（`s200/lifecycle`）
 
@@ -88,6 +88,28 @@ await handle.close();
 | --- | --- |
 | `createHotApp(initial)` | `{ app, reload(next) }` —— 稳定身份，`reload` 原子替换其表（路由、中间件、匹配器、error/404/logError 策略）；传相同引用的 reload 是 no-op |
 | `importFresh(specifier)` | 绕过 ESM 缓存导入模块（在文件 URL 上盖 `?t=` 查询） —— 热重载的加载半边 |
-| `watchAndReload(options)` | 监视 `dirs` 并在防抖窗口后通过 `load` 重载热应用；`load` 失败保留旧表并经 `onError` 报告；加载串行化 |
+| `watchAndReload(options)` | 监视 `dirs` 并在防抖窗口后通过 `load` 重载热应用；只有 `node_modules` 与点目录之外的源码文件（`.ts`/`.mts`/`.cts`/`.js`/`.mjs`/`.cjs`/`.json`）会触发重载，应用往被监视目录里写日志或数据文件不会自反馈触发重载；`load` 失败保留旧表并经 `onError` 报告；加载串行化 |
 
 `WatchAndReloadOptions`：`{ dirs: readonly string[]; load: () => Promise<App<S>>; hot: HotApp<S>; debounceMs?（默认 50）; onError?（默认 `console.error`） }`。`WatchAndReloadHandle`：`{ close(): Promise<void> }`。
+
+### 开发期 404 路由提示
+
+`routeHints(app, options?)` 返回一个中间件，用路由表已知的信息装饰框架默认的 404 响应体 —— 一次未命中即告诉开发者表里有什么。它把应用当作数据传入（中间件只拿到 `(ctx, next)`；消费应用的电池以 `createRouteTable` 与 `createClient` 为先例），闭包持有存活的 app 对象，并在每个请求里重读 `app.routes` —— 热重载换表后无需重新注册。选项类型为 `{ limit?: number }`：全方法 `routes` 列表的最大条数，默认 3。
+
+```ts
+import { routeHints } from 's200/dev';
+
+use(app, routeHints(app));
+```
+
+**永不覆盖规则**：只有响应体恰好解析为 `{"error":"Not Found"}`（`createApp` 回退的默认体）的 404 才会被装饰。自定义 `onNotFound`、抛出或返回的 `httpError(404)`（其信封为 `{"error":"HTTP 404 Not Found"}`）、或已被其他中间件改写的响应体都原样放行。装饰保持 404 状态与响应既有的响应头，并在默认形状 `{ error: 'Not Found', hint?: string, routes?: string[] }` 上至多新增一个字段（`hint` 或 `routes`，从不同时出现）。
+
+排序无聊且确定：按与请求路径的位置静态段重合度排名（字面量段只在相同下标计分；参数与通配符从不计分），平局按注册顺序。方法兼容性沿用路由器的规则 —— 精确匹配、`'ALL'` 路由、以及 `HEAD` 请求视 `GET` 路由为同方法。
+
+| 结果 | 响应体 |
+| --- | --- |
+| 某个同方法路由的重合度至少达到请求段数的一半 | `{ "error": "Not Found", "hint": "did you mean GET /users/:id?" }` |
+| 没有任何同方法路由重合，但存在重合路由 | `{ "error": "Not Found", "routes": ["POST /users/:id", "POST /users/:uid"] }` —— 跨全部方法取前 `limit` 条，同一排序 |
+| 两者皆否（仅有弱同方法候选，或毫无重合） | 原样不动 |
+
+开发电池而非热路径：每个默认 404 体都会被克隆解析，每次未命中都扫描路由表 —— 开发期很便宜，生产环境纯属无谓开销。

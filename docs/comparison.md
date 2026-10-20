@@ -66,7 +66,9 @@ betting on runtime-agnostic data + functions instead.
 - **In-chain error boundary**: a route handler that throws is mapped to a
   response *before* the middleware unwind, so logger/cors/request-id stamp
   the real 404/405/500. Express needs a last-registered error middleware;
-  Hono's `onError` sits outside the chain.
+  Hono's `onError` sits outside the chain (Hono v5, in rc as of 2026-10,
+  turns `onError`/`notFound` into routable, composable in-chain
+  middleware — upstream converging on s200's model).
 - **Every static segment indexed**: `/:tenant/resourceN` tables don't
   degrade to linear scans (see `docs/benchmarks.md` router numbers).
 - **The app is data**: export the route table as JSON, emit the OpenAPI 3.1
@@ -105,6 +107,11 @@ betting on runtime-agnostic data + functions instead.
   type layer (TypeScript cannot inspect function bodies — return the
   error or declare it), and `throws` is a pass-through declaration the
   checker does not verify.
+- **No mid-path wildcards** — `*name` must be the final segment
+  (`/files/*path` is fine; `/a/*rest/b` throws at registration).
+  Final-segment-only keeps capture semantics unambiguous and the
+  static-segment index intact; it is part of the matching contract,
+  revisited only in a major (see [routing](./guides/routing.md)).
 - **Throughput behind the patched class** — s200 always uses the
   platform's real `Request`/`Response`; fastify/elysia/hono-patched avoid
   undici's constructor cost with lighter objects. The gap is per-request
@@ -115,6 +122,27 @@ betting on runtime-agnostic data + functions instead.
 - **Young ecosystem** — the third-party battery registry just opened
   ([docs/ecosystem.md](./ecosystem.md)); the official batteries cover the
   common surface, the `use` pattern covers the rest.
+
+## 2026-10 upstream notes
+
+Both closest comparators are mid-transition into a new major; the facts
+below come from their own release docs.
+
+- **Hono v5.0.0-rc** ([migration guide](https://hono.dev/docs/guides/migrating-to-v5)):
+  `hono` goes ESM-only — the CommonJS build is removed — and requires
+  Node ≥ 22.12; runtime adapters move out of the package into separate
+  `@hono/*` packages; wildcard matching gains mid-path segment-suffix
+  forms (`/x*/y`), now consistent across every router. The s200 contrast
+  on the same axes: dual ESM+CJS publishing (attw-profiled in CI),
+  Node ≥ 20.3, and adapters as first-party subpath entries (`s200/node`,
+  `s200/bun`) that already exist without a major.
+- **Elysia** ([releases](https://github.com/elysiajs/elysia/releases),
+  [v2 beta announcement](https://elysiajs.com/blog/elysia-20)): the 1.4.x
+  line is security-fix-only, and v2 — a complete rewrite, still beta —
+  headlines tree-shakable modules and AOT compilation. That is the
+  rewrite cost upstream pays to get what s200 ships day one:
+  `sideEffects: false`, 50 tree-shaken package entries, and size-limit
+  budgets gating every release.
 
 ## Migration guides
 

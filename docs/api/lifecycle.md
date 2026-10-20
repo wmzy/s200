@@ -1,6 +1,6 @@
 # Lifecycle, Health, Timeout & Hot Reload (`s200/lifecycle`, `s200/health`, `s200/timeout`, `s200/dev`)
 
-Graceful shutdown, liveness/readiness probes, request timeouts, and live route-table swapping.
+Graceful shutdown, liveness/readiness probes, request timeouts, live route-table swapping, and dev-mode 404 hints.
 
 ## Lifecycle (`s200/lifecycle`)
 
@@ -88,6 +88,28 @@ await handle.close();
 | --- | --- |
 | `createHotApp(initial)` | `{ app, reload(next) }` — a stable identity whose table `reload` swaps atomically (routes, middlewares, matcher, error/404/logError policies); a reload passing identical references is a no-op |
 | `importFresh(specifier)` | Imports a module bypassing the ESM cache (stamps a `?t=` query onto its file URL) — the loader half of hot reload |
-| `watchAndReload(options)` | Watches `dirs` and reloads the hot app through `load` after a debounce window; a failing `load` keeps the previous table and reports through `onError`; loads are serialized |
+| `watchAndReload(options)` | Watches `dirs` and reloads the hot app through `load` after a debounce window; only source files (`.ts`/`.mts`/`.cts`/`.js`/`.mjs`/`.cjs`/`.json`) outside `node_modules` and dot-directories trigger reloads, so an app writing logs or data files into its watched directory cannot feed reload events back into itself; a failing `load` keeps the previous table and reports through `onError`; loads are serialized |
 
 `WatchAndReloadOptions`: `{ dirs: readonly string[]; load: () => Promise<App<S>>; hot: HotApp<S>; debounceMs? (default 50); onError? (default `console.error`) }`. `WatchAndReloadHandle`: `{ close(): Promise<void> }`.
+
+### Dev-mode 404 route hints
+
+`routeHints(app, options?)` returns a middleware that decorates the framework-default 404 body with what the route table knows — a miss tells the developer what exists. It takes the app as data (middlewares only receive `(ctx, next)`; `createRouteTable` and `createClient` are the precedent for app-consuming batteries), closes over the live app object, and reads `app.routes` per request — so hot-reload swaps are picked up without re-registration. The options type is `{ limit?: number }`: the maximum number of all-methods `routes` entries, default 3.
+
+```ts
+import { routeHints } from 's200/dev';
+
+use(app, routeHints(app));
+```
+
+**Never-clobber rule**: only a 404 whose body parses to exactly `{"error":"Not Found"}` — the `createApp` fallback's default — is decorated. A custom `onNotFound`, a thrown or returned `httpError(404)` (whose envelope reads `{"error":"HTTP 404 Not Found"}`), or a body another middleware already rewrote passes through untouched. The decoration keeps the 404 status and the response's existing headers, and adds at most one field (`hint` or `routes`, never both) to the default shape `{ error: 'Not Found', hint?: string, routes?: string[] }`.
+
+Ranking is boring and deterministic: routes by positional static-segment overlap with the request pathname (a literal segment counts only at the same index; params and wildcards never score), ties broken by registration order. Method compatibility mirrors the router — exact match, `'ALL'` routes, and `GET` routes for `HEAD` requests count as same-method.
+
+| Outcome | Body |
+| --- | --- |
+| A same-method route's overlap is at least half the request's segments | `{ "error": "Not Found", "hint": "did you mean GET /users/:id?" }` |
+| No same-method route overlaps at all, but some route does | `{ "error": "Not Found", "routes": ["POST /users/:id", "POST /users/:uid"] }` — top `limit` across ALL methods, same ranking |
+| Neither (weak same-method candidates only, or nothing overlaps) | untouched |
+
+Dev battery, not hot path: every default-404 body is cloned and parsed, and every miss scans the route table — cheap in development, pointless overhead in production.

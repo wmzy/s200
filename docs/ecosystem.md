@@ -76,7 +76,7 @@ budgets (`pnpm size`).
 | `s200/client`     | `createClient` — the typed fetch client                        |
 | `s200/test`       | `request`, `testClient`, `probeApp` — in-process app driving   |
 | `s200/otel`       | `trace` — OTel spans per request                               |
-| `s200/dev`        | `createHotApp`, `importFresh`, `watchAndReload` — hot table    |
+| `s200/dev`        | `createHotApp`, `importFresh`, `watchAndReload`, `routeHints` — hot table + dev 404 hints |
 
 ### Operations
 
@@ -126,6 +126,34 @@ the file, bring your own client, inject:
 | Recipe                   | For                                                             |
 | ------------------------ | --------------------------------------------------------------- |
 | [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | shared `rateLimit`/`createSession` stores over Redis — full guide: [Distributed Stores](./guides/distributed-stores.md) |
+
+## Battery ideas — good first contributions
+
+The official batteries stay lean on purpose. The list below is what the
+registry would love to see third parties ship — none of it is on an
+official roadmap; every idea extends an existing entry through its public
+seams (option objects, injected stores, `Middleware` composition), and the
+standard [submission template](#submission-template) applies to each.
+
+- Cron nicknames and day-of-month/day-of-week extensions (`@daily`, `L`,
+  `W`) for `s200/schedule` — the shipped parser is strict 5-field cron.
+- The OpenTelemetry **logs** signal plus an OTLP exporter for
+  `s200/otel` — the shipped entry is zero-dependency with an injectable
+  tracer/meter; a wire-protocol exporter is the canonical case for a
+  listed dependency.
+- More Scalar documentation knobs (layout, dark-mode default, custom CSS)
+  for `s200/swagger` — beyond the shipped `url`/`title`/`theme`/`cdn`
+  options.
+- OAuth providers (GitHub, Google, generic OIDC) on top of `s200/jwt` +
+  `s200/session` — the shipped `s200/auth` covers only the
+  challenge-carrying basics.
+- More shared stores for `s200/session` and `s200/rate-limit` — Postgres,
+  SQLite, … following the injectable-store seam the
+  [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts)
+  recipe sets (Redis is already covered there).
+- Locale fallback chains on `s200/accepts` — the shipped
+  `accepts().language()` picks the best of the provided tags; BCP 47
+  region fallback and `Intl`-aware matching are the natural extension.
 
 ## Submit your battery
 

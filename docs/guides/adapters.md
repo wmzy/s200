@@ -37,3 +37,5 @@ await serve(app, {
 });
 ```
 
+Once your adapter serves, the [deployment guide](/guides/deployment) covers the production wiring — health probes, graceful drain, Docker/systemd, and edge deploys.
+

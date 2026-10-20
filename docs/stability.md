@@ -24,7 +24,7 @@ const app = createApp(options?);
 | `strict` | Trailing-slash policy for the default matcher. Default `true` (strict: `/a/` does not match `/a`); `false` tolerates one trailing slash. |
 | `onError` | Owns the error → response mapping. When unset, unhandled `HttpError`s render as `{ status, body: { "error": message } }` and anything else is logged (`logError`, default `console.error`) and rendered as a generic 500 that never leaks internals. |
 | `onNotFound` | Owns the unmatched-path response. Default: `404 {"error":"Not Found"}`. |
-| `logError` | Swaps the error sink while keeping the default mapping. |
+| `logError` | Swaps the error sink while keeping the default mapping. Receives `(error, ctx)` — the second parameter is additive, so `(error) => void` sinks keep working. Default: one context line `[s500] <method> <pathname>[ <request id>]`, then the error, via `console.error` — the id is the request-id battery's `state.requestId` (whatever header name it uses), falling back to a literal `x-request-id` header. |
 
 `createApp` also takes the per-app `State` interface (`createApp<AdminState>()`)
 — that generic shape is part of the contract.
@@ -120,6 +120,9 @@ a pure pass-through at runtime.
 
 - Patterns: `:name` params, `:name?` optional segments, terminal `*name`
   wildcard. Duplicate capture names are rejected at registration.
+- **Wildcard capture is final-segment-only** — `*name` must be the last
+  segment of the pattern (registration throws otherwise); mid-path
+  wildcards are outside the matching contract.
 - **First registration wins** when several patterns match.
 - **`HEAD` falls back to `GET` routes.**
 - A path match with no method match answers **`405` with an `Allow` header**

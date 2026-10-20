@@ -21,6 +21,7 @@ const PKG_MAP = {
   's200/validate': 'validate.ts',
   's200/upload': 'upload.ts',
   's200/streaming': 'streaming.ts',
+  's200/serialize': 'serialize.ts',
   's200/websocket': 'websocket.ts',
   's200/websocket/node': 'websocket-node.ts',
   's200/websocket/bun': 'websocket-bun.ts',

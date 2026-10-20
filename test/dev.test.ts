@@ -1,6 +1,6 @@
 import type { App } from '../src/app';
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
@@ -186,7 +186,7 @@ describe('watchAndReload', () => {
         hot,
         debounceMs: 20,
       });
-      await writeFile(join(dir, 'trigger.txt'), 'x');
+      await writeFile(join(dir, 'trigger.ts'), 'x');
       await vi.waitFor(async () => {
         (await body(hot.app, '/v')).should.equal('two');
       });
@@ -215,8 +215,8 @@ describe('watchAndReload', () => {
         debounceMs: 50,
       });
       await Promise.all([
-        writeFile(join(dir, 'a.txt'), '1'),
-        writeFile(join(dir, 'b.txt'), '2'),
+        writeFile(join(dir, 'a.ts'), '1'),
+        writeFile(join(dir, 'b.ts'), '2'),
       ]);
       await vi.waitFor(async () => {
         (await body(hot.app, '/v')).should.equal('two');
@@ -275,7 +275,7 @@ describe('watchAndReload', () => {
         hot,
         debounceMs: 20,
       });
-      await writeFile(join(dir, 'first.txt'), '1');
+      await writeFile(join(dir, 'first.ts'), '1');
       await vi.waitFor(async () => {
         (await body(hot.app, '/v')).should.equal('two');
       });
@@ -283,7 +283,7 @@ describe('watchAndReload', () => {
 
       await w.close();
       current = v3;
-      await writeFile(join(dir, 'second.txt'), '2');
+      await writeFile(join(dir, 'second.ts'), '2');
       await sleep(200); // well past the debounce window
       loads.should.equal(1); // no further load ran
       (await body(hot.app, '/v')).should.equal('two'); // table unchanged
@@ -316,6 +316,46 @@ describe('hot reload over a real server', () => {
       gone.status.should.equal(404);
     } finally {
       await server.close();
+    }
+  });
+});
+
+describe('watchAndReload source-file filtering', () => {
+  it('ignores logs, databases and node_modules churn; source files still reload', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-dev-filter-'));
+    try {
+      const v1 = createApp();
+      get(v1, '/v', (ctx) => text(ctx, 'one'));
+      const v2 = createApp();
+      get(v2, '/v', (ctx) => text(ctx, 'two'));
+      const hot = createHotApp(v1);
+      let loads = 0;
+      const w = watchAndReload({
+        dirs: [dir],
+        load: () => {
+          loads += 1;
+          return Promise.resolve(v2);
+        },
+        hot,
+        debounceMs: 20,
+      });
+      // Everything an app might write into its own watched directory.
+      await writeFile(join(dir, 'dev.log'), 'line\n');
+      await writeFile(join(dir, 'app.db'), 'x');
+      await mkdir(join(dir, 'node_modules'));
+      await writeFile(join(dir, 'node_modules', 'pkg.js'), 'x');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      loads.should.equal(0);
+      (await body(hot.app, '/v')).should.equal('one');
+      // A source edit still reloads.
+      await writeFile(join(dir, 'route.ts'), 'export {};\n');
+      await vi.waitFor(async () => {
+        loads.should.equal(1);
+      });
+      (await body(hot.app, '/v')).should.equal('two');
+      await w.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

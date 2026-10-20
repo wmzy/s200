@@ -10,6 +10,26 @@ get(app, '/files/*path', (ctx) => text(ctx, ctx.params.path)); // captures the r
 get(app, '/users/:id?', (ctx) => json(ctx, { id: ctx.params.id ?? null })); // id is optional
 ```
 
+## Wildcards
+
+`*name` must be the **final** segment — `/files/*path` is valid, while
+`/a/*rest/b` throws at registration (`createSegments` in `src/router.ts`
+rejects it: `Invalid route pattern '…': wildcard '*rest' must be the last
+segment`). Two reasons, both deliberate:
+
+- **Capture ambiguity**: a mid-path wildcard has no unambiguous capture
+  rule. Greedy-to-the-end would swallow the `/b` that follows; lazy
+  matching makes `/a/x/y/b` capture either `x` or `x/y` depending on
+  backtracking policy — every consumer would have to know which.
+- **Index integrity**: the trie indexes every static segment
+  (see [Trie dispatch](#trie-dispatch)). A wildcard mid-pattern leaves the
+  segments after it reachable only by scanning, eroding the sub-µs
+  dispatch the design is built around.
+
+The rule is part of the matching contract — frozen with the rest of the
+routing semantics (see [stability](/stability)); revisited only in a
+major.
+
 ## Optional params and trailing slashes
 
 `/:id?` is an optional param — the segment may be absent, and `ParamsOf<'/users/:id?'>` types it as `{ id?: string }` (absent keys are omitted at runtime). Matching is greedy with backtracking, so `/x/:a?/y` matches both `/x/y` and `/x/1/y`, and chained optionals resolve left-to-right. Strict trailing slashes still hold: `/users/` keeps its empty segment and does not match `/users/:id?` (set `strict: false` to trim it).

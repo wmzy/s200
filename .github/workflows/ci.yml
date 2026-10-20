@@ -53,11 +53,14 @@ jobs:
       - run: pnpm --filter @s200-example/sse-dashboard smoke
       - run: pnpm --filter @s200-example/ws-chat smoke
       - run: pnpm --filter @s200-example/upload-app smoke
+      - run: pnpm --filter @s200-example/db-crud smoke
 
   # Deno runtime gate: the core is plain Web Standard code, so the same
   # built dist must also serve through Deno.serve — smoke-deno.mjs writes
-  # a tmp entry that imports dist/index.mjs by file URL, spawns
-  # `deno run --allow-net`, and asserts the core end to end with fetch.
+  # a tmp entry that serves dist/index.mjs through the real s200/deno
+  # adapter (dist/deno.mjs: serve + the deno signal feature-detect),
+  # spawns `deno run --allow-net`, and asserts the core end to end with
+  # fetch.
   deno:
     runs-on: ubuntu-latest
     steps:

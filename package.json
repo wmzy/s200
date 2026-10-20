@@ -5,6 +5,9 @@
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "dist/types/index.d.ts",
+  "bin": {
+    "s200": "dist/cli.mjs"
+  },
   "exports": {
     ".": {
       "import": {
@@ -514,7 +517,7 @@
   "scripts": {
     "commit": "lint-staged && git-cz -n",
     "prepare": "husky",
-    "build": "vite build && npm run build:types",
+    "build": "vite build && npm run build:types && node scripts/fix-cli-bin.mjs",
     "build:types": "tsc -p tsconfig.build.json && node scripts/gen-dmts.mjs",
     "dev": "vite",
     "preview": "vite preview",
@@ -533,7 +536,7 @@
     "publish:jsr": "pnpm build && pnpm prepublish:jsr && npx jsr publish",
     "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
     "check:paradigm": "node scripts/check-paradigm.mjs",
-    "smoke": "node scripts/smoke.mjs && bun scripts/smoke.mjs",
+    "smoke": "node scripts/smoke.mjs && node scripts/smoke-dev.mjs && bun scripts/smoke.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "start": "vitest watch"
@@ -571,14 +574,14 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "8.4 KB"
+      "limit": "8.5 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
       "path": "src/index.ts",
       "import": "{ createApp, use, get, handle }",
       "gzip": true,
-      "limit": "4.45 KB"
+      "limit": "4.55 KB"
     },
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
@@ -587,7 +590,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "4.4 KB"
+      "limit": "4.5 KB"
     },
     {
       "name": "compress battery (min+gz)",
@@ -633,7 +636,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "1 KB"
+      "limit": "2.8 KB"
     },
     {
       "name": "lifecycle battery (min+gz)",
@@ -690,7 +693,7 @@
       "name": "shard-dev battery (min+gz)",
       "path": "dist/shard-dev.mjs",
       "gzip": true,
-      "limit": "2.8 KB"
+      "limit": "2.85 KB"
     },
     {
       "name": "executor battery (min+gz)",
@@ -699,7 +702,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "8.3 KB"
+      "limit": "8.4 KB"
     },
     {
       "name": "unit-metrics battery (min+gz)",

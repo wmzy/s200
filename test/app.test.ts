@@ -219,7 +219,9 @@ describe('app dispatch', () => {
       const res = await handle(app, new Request('http://localhost/boom'));
       res.status.should.equal(500);
       spy.should.have.been.calledOnce;
-      const logged = spy.mock.calls[0]?.[0] as Error;
+      // Default sink: one leading context line, then the error itself.
+      spy.mock.calls[0]?.[0].should.equal('[s500] GET /boom');
+      const logged = spy.mock.calls[0]?.[1] as Error;
       logged.message.should.equal('kaboom');
     } finally {
       spy.mockRestore();
@@ -894,9 +896,15 @@ describe('prefix-scoped use', () => {
 });
 
 describe('logError option', () => {
-  it('routes unexpected errors to the injected sink', async () => {
+  it('routes unexpected errors and the request ctx to the injected sink', async () => {
     const errors: unknown[] = [];
-    const app = createApp({ logError: (error) => errors.push(error) });
+    const contexts: string[] = [];
+    const app = createApp({
+      logError: (error, ctx) => {
+        errors.push(error);
+        contexts.push(`${ctx.req.method} ${ctx.url.pathname}`);
+      },
+    });
     get(app, '/boom', () => {
       throw new Error('kaput');
     });
@@ -904,11 +912,14 @@ describe('logError option', () => {
     res.status.should.equal(500);
     errors.length.should.equal(1);
     (errors[0] as Error).message.should.equal('kaput');
+    contexts.should.deep.equal(['GET /boom']);
   });
 
   it('keeps HttpErrors out of the sink and lets onError own logging', async () => {
     const errors: unknown[] = [];
     const app = createApp({
+      // Single-parameter sink: the ctx parameter is additive, so this
+      // shape keeps typechecking.
       logError: (error) => errors.push(error),
       onError: (ctx, error) => {
         ctx.res = toErrorResponse(error);
@@ -921,5 +932,84 @@ describe('logError option', () => {
     res.status.should.equal(409);
     // onError is set: the default policy (and its sink) is bypassed.
     errors.length.should.equal(0);
+  });
+
+  it('logs one context line plus the error by default', async () => {
+    const calls: unknown[][] = [];
+    const spy = vi
+      .spyOn(console, 'error')
+      .mockImplementation((...args: unknown[]) => {
+        calls.push(args);
+      });
+    try {
+      const app = createApp();
+      get(app, '/boom', () => {
+        throw new Error('kaput');
+      });
+      const res = await handle(app, new Request('http://localhost/boom'));
+      res.status.should.equal(500);
+    } finally {
+      spy.mockRestore();
+    }
+    calls.length.should.equal(1);
+    calls[0]!.length.should.equal(2);
+    (calls[0]![0] as string).should.equal('[s500] GET /boom');
+    (calls[0]![1] as Error).message.should.equal('kaput');
+  });
+
+  it('appends the request id when the request-id battery stamped one', async () => {
+    const calls: unknown[][] = [];
+    const spy = vi
+      .spyOn(console, 'error')
+      .mockImplementation((...args: unknown[]) => {
+        calls.push(args);
+      });
+    try {
+      const app = createApp();
+      use(app, requestId());
+      get(app, '/boom', () => {
+        throw new Error('kaput');
+      });
+      const res = await handle(
+        app,
+        new Request('http://localhost/boom', {
+          headers: { 'x-request-id': 'req-42' },
+        })
+      );
+      res.status.should.equal(500);
+      // The stamped id rides the response too — log line and response
+      // header name the same request.
+      (res.headers.get('x-request-id') ?? '').should.equal('req-42');
+    } finally {
+      spy.mockRestore();
+    }
+    calls.length.should.equal(1);
+    (calls[0]![0] as string).should.equal('[s500] GET /boom req-42');
+  });
+
+  it('logs the battery id when the header name is customized', async () => {
+    const calls: unknown[][] = [];
+    const spy = vi
+      .spyOn(console, 'error')
+      .mockImplementation((...args: unknown[]) => {
+        calls.push(args);
+      });
+    try {
+      const app = createApp();
+      use(app, requestId({ header: 'x-trace-id' }));
+      get(app, '/boom', () => {
+        throw new Error('kaput');
+      });
+      const res = await handle(app, new Request('http://localhost/boom'));
+      res.status.should.equal(500);
+      // The stamped id is only on the customized header — the default log
+      // line must still name it (state.requestId, not a hardcoded header).
+      const id = res.headers.get('x-trace-id') ?? '';
+      id.should.not.equal('');
+      calls.length.should.equal(1);
+      (calls[0]![0] as string).should.equal(`[s500] GET /boom ${id}`);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

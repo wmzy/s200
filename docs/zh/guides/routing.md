@@ -10,6 +10,23 @@ get(app, '/files/*path', (ctx) => text(ctx, ctx.params.path)); // captures the r
 get(app, '/users/:id?', (ctx) => json(ctx, { id: ctx.params.id ?? null })); // id is optional
 ```
 
+## 通配符
+
+`*name` 必须是**最后**一段 —— `/files/*path` 合法，而 `/a/*rest/b` 会在
+注册时抛错（`src/router.ts` 的 `createSegments` 拒绝它：
+`Invalid route pattern '…': wildcard '*rest' must be the last segment`）。
+两个理由，都是刻意的：
+
+- **捕获歧义**：路径中段的通配符没有无歧义的捕获规则。贪婪到末尾会把
+  后面的 `/b` 也吞掉；懒惰匹配则让 `/a/x/y/b` 依回溯策略捕获 `x` 或
+  `x/y` 之一——每个消费方都得知道是哪种。
+- **索引完整性**：trie 按**每个**静态段建索引（见
+  [trie 分发](#trie-分发)）。模式中段的通配符使其后的段只能靠扫描到达，
+  侵蚀设计所依赖的亚微秒分发。
+
+该规则是匹配契约的一部分——与其余路由语义一同冻结（见
+[稳定性](/zh/stability)）；只在 major 中才会重新考虑。
+
 ## 可选参数与尾斜杠
 
 `/:id?` 是可选参数 —— 该段可以省略，`ParamsOf<'/users/:id?'>` 将其类型化为 `{ id?: string }`（运行时省略缺失的键）。匹配是带回溯的贪婪匹配，因此 `/x/:a?/y` 同时匹配 `/x/y` 和 `/x/1/y`，链式可选参数从左到右解析。严格尾斜杠仍然成立：`/users/` 保留其空段，不匹配 `/users/:id?`（设置 `strict: false` 可裁掉它）。

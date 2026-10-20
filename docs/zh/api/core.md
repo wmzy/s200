@@ -51,7 +51,7 @@ const app = createApp<MyState>({ strict: false });
 | `strict` | `true` | 默认匹配器的尾斜杠容忍（`false` = `/users/` 匹配 `/users`） |
 | `onError` | — | 自定义错误映射；在链内运行 |
 | `onNotFound` | 404 | 自定义未匹配应答 |
-| `logError` | `console.error` | 未设自定义 `onError` 时，意外（非 `HttpError`）错误的汇聚点；客户端始终看到匿名 500 |
+| `logError` | 上下文行 + 错误 | 未设自定义 `onError` 时，意外（非 `HttpError`）错误的汇聚点；接收 `(error, ctx)`（增量式 —— `(error) => void` 输出端继续可用）。默认先输出 `[s500] <method> <pathname>[ <request id>]` 再输出错误本身，走 `console.error` —— id 取 request-id 电池写入的 `state.requestId`（无论配置了什么 header 名），否则回退到字面 `x-request-id` 头；客户端始终看到匿名 500 |
 
 `R` 是幻影参数 —— 已注册 `method` + `pattern` 字面量的编译期日志，供 `s200/client` 消费，绝不出现于运行时形状。
 

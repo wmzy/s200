@@ -43,10 +43,16 @@ export type AppOptions<S extends State = State> = {
   /**
    * Sink for unexpected (non-{@link HttpError}) errors when no custom
    * `onError` is set — the default policy logs via `console.error` and
-   * answers an anonymous 500. Inject a structured logger here; the client
-   * still sees the anonymous 500 either way.
+   * answers an anonymous 500. Receives the error and the request's `Ctx`;
+   * the second parameter is additive, so `(error) => void` sinks keep
+   * working. The default prints one leading context line —
+   * `[s500] <method> <pathname>[ <request id>]` — then the error, so a
+   * 500 is correlatable back to its request (the id is the request-id
+   * battery's `state.requestId`, whatever header name it uses, falling
+   * back to a literal `x-request-id` header). Inject a structured logger
+   * here; the client still sees the anonymous 500 either way.
    */
-  logError?: (error: unknown) => void;
+  logError?: (error: unknown, ctx: Ctx) => void;
 };
 
 /**
@@ -77,7 +83,7 @@ export type App<
   match: MatchFn;
   onError: ErrorHandler<S> | undefined;
   onNotFound: NotFoundHandler<S> | undefined;
-  logError: ((error: unknown) => void) | undefined;
+  logError: ((error: unknown, ctx: Ctx) => void) | undefined;
 };
 
 export function createApp<S extends State = State>(
@@ -715,11 +721,31 @@ function getRouteChain(route: Route): ReturnType<typeof compose> {
 }
 
 /**
+ * Default {@link AppOptions.logError}: one leading context line — method,
+ * pathname, and the request id when one is known — then the error itself,
+ * via `console.error`. The id prefers the request-id battery's
+ * `state.requestId` (set whatever header name the battery was configured
+ * with) and falls back to a literal `x-request-id` header for apps that
+ * set it without the battery. Runs only on the unhandled-500 path, never
+ * on the hot path, so the template literal costs nothing per request.
+ */
+function defaultLogError(error: unknown, ctx: Ctx): void {
+  const stamped = ctx.state.requestId;
+  const requestId =
+    typeof stamped === 'string' && stamped !== '' ? stamped : ctx.req.headers.get('x-request-id');
+  console.error(
+    `[s500] ${ctx.req.method} ${ctx.url.pathname}${requestId ? ' ' + requestId : ''}`,
+    error
+  );
+}
+
+/**
  * Maps a thrown value to a response through the app's error policy: custom
  * `onError` (its own failures degrade to the default mapping), or the
- * default — `HttpError` keeps its status/message, anything else logs via
- * `console.error` and becomes an anonymous 500. Shared by the in-chain
- * boundary (route/fallback errors) and the outer catch (middleware errors).
+ * default — `HttpError` keeps its status/message, anything else is logged
+ * with request context (`logError`, default {@link defaultLogError}) and
+ * becomes an anonymous 500. Shared by the in-chain boundary (route/fallback
+ * errors) and the outer catch (middleware errors).
  */
 async function mapError<S extends State = State>(
   app: App<S>,
@@ -731,7 +757,7 @@ async function mapError<S extends State = State>(
     // unexpected failures need surfacing — a silently swallowed 500 is
     // undebuggable in production. The sink is injectable per app.
     if (!isHttpError(error)) {
-      (app.logError ?? console.error)(error);
+      (app.logError ?? defaultLogError)(error, ctx);
     }
     ctx.res = toErrorResponse(error);
   } else {

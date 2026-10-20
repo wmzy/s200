@@ -36,3 +36,5 @@ await serve(app, {
   upgrade: createUpgradeHandler(app),
 });
 ```
+
+适配器跑起来之后，[部署指南](/guides/deployment) 覆盖生产接线 —— 健康探针、优雅排水、Docker/systemd 与边缘部署。

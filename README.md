@@ -35,11 +35,21 @@ No `class`, no `new App()`, no `app.get(...)` method calls. The payoff is mechan
 
 ## Installation
 
+Scaffold a project — `npm create s200@latest` walks you through it (runtime
+picker: node / bun / deno / cloudflare):
+
+```sh
+npm create s200@latest
+```
+
+Or install the framework manually:
+
 ```sh
 npm install s200
 ```
 
 - Node.js ≥ 20.3 (adapter: `s200/node`), Bun (adapter: `s200/bun`). Deno/edge runtimes can consume the core directly — it only touches Web Standard `Request`/`Response`.
+- Running the TypeScript examples directly needs Node ≥ 23.6 (native type stripping), or ≥ 22.6 with `NODE_OPTIONS=--experimental-strip-types`.
 - `s200` — the runtime-agnostic core
 - `s200/node` — node:http adapter (`serve`, `createFileReader`, `createRealPathGuard`, …)
 - `s200/bun` — Bun.serve adapter (`serve`, `createFileReader`, `createRealPathGuard`, …)
@@ -76,6 +86,16 @@ pnpm bench:http            # whole-request throughput vs hono/express/fastify/el
 pnpm docs:dev / docs:build # vitepress documentation site (docs-site/)
 pnpm publish:jsr           # build + prepare declarations for JSR + npx jsr publish
 ```
+
+`s200 dev ./app.ts` — the dev runner. Reloads swap the route table atomically
+on one server: in-flight requests finish on the old chain, new requests hit
+the fresh table — no restart, no port churn. The entry must export the app
+as default or as a named export `app`. On Node ≥ 22.15 the whole module
+graph re-evaluates per reload (edit any imported module, not just the
+entry); watch events fire only for source files, so an app writing logs or
+data files into its own directory can't feed reload loops. TypeScript
+entries need Node ≥ 22.18 (or ≥ 22.6 with `--experimental-strip-types`)
+— the runner fails fast with that remedy on older Nodes.
 
 The docs site deploys automatically to GitHub Pages (`/s200/`) by
 [.github/workflows/docs.yml](.github/workflows/docs.yml) on pushes to `main`

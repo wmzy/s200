@@ -24,6 +24,16 @@ Routes:
 | `GET /files/:id` | the landed file (ETag/304, `Range` → 206)                    |
 | `GET /`          | `{ files }` — what has landed (`readdir` of `./uploads`)      |
 
+## Requirements
+
+`start`/`smoke` run the `.ts` sources directly through Node's native type
+stripping — the example itself has no build step. Node ≥ 23.6, or ≥ 22.18,
+does this with no flags (CI runs these examples on the latest Node 22,
+flag-free). On Node 22.15–22.17 prefix the command with
+`NODE_OPTIONS=--experimental-strip-types` (22.15 is also where the smoke
+hook's `registerHooks` landed); older Node cannot run `.ts` at all. Bun
+needs no flags.
+
 ## Run
 
 ```sh

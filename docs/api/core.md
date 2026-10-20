@@ -51,7 +51,7 @@ An `App` is plain data: `{ routes, middlewares, match, onError, onNotFound, logE
 | `strict` | `true` | Trailing-slash tolerance of the default matcher (`false` = `/users/` matches `/users`) |
 | `onError` | — | Custom error mapping; runs inside the chain |
 | `onNotFound` | 404 | Custom unmatched-request answer |
-| `logError` | `console.error` | Sink for unexpected (non-`HttpError`) errors when no custom `onError` is set; the client always sees the anonymous 500 |
+| `logError` | context line + error | Sink for unexpected (non-`HttpError`) errors when no custom `onError` is set; receives `(error, ctx)` (additive — `(error) => void` sinks keep working). Default prints `[s500] <method> <pathname>[ <request id>]` then the error via `console.error` — the id is the request-id battery's `state.requestId` (whatever header name it uses), falling back to a literal `x-request-id` header; the client always sees the anonymous 500 |
 
 `R` is a phantom parameter — a compile-time log of registered `method` + `pattern` literals, consumed by `s200/client`. It never appears in the runtime shape.
 
