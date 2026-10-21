@@ -130,21 +130,38 @@ export function serve(app: App, options: BunServeOptions = {}): BunServer {
   };
 }
 
+/** Buffered-whole-file ceiling (16 MiB): files strictly larger stream
+ * instead — mirrors the node adapter's default. */
+const STREAM_THRESHOLD = 16 * 1024 * 1024;
+
 /**
- * Buffered whole-file reader (the default). With `{ stream: true }`,
- * returns the file as a stream instead — memory-safe for large files, but
- * without `stat` the static layer cannot know sizes for HEAD/ranges.
+ * Whole-file reader with safe defaults. Containment first: the resolved
+ * real path must stay under `root` (the adapter's own
+ * `createRealPathGuard`, on by default — a symlink inside the root
+ * pointing elsewhere reads as a miss; `realPath: false` restores the raw
+ * filesystem trust). Then no unbounded buffering: files strictly larger
+ * than `streamThreshold` (default 16 MiB) stream instead of buffering —
+ * pair with `createFileStat`/`createFileRangeReader` so size, validators
+ * and ranges ride the injected metadata. With `{ stream: true }`
+ * everything streams regardless of size.
  */
 export function createFileReader(
   root: string,
-  options: { stream?: boolean } = {}
+  options: {
+    readonly stream?: boolean;
+    readonly realPath?: boolean;
+    readonly streamThreshold?: number;
+  } = {}
 ): (path: string) => Promise<Uint8Array | ReadableStream<Uint8Array> | null> {
+  const guard = options.realPath === false ? undefined : createRealPathGuard(root);
+  const streamThreshold = options.streamThreshold ?? STREAM_THRESHOLD;
   return async (
     path: string
   ): Promise<Uint8Array | ReadableStream<Uint8Array> | null> => {
+    if (guard !== undefined && (await guard(path)) === null) return null;
     const file = Bun.file(join(root, path));
     if (!(await file.exists())) return null;
-    if (options.stream === true) return file.stream();
+    if (options.stream === true || file.size > streamThreshold) return file.stream();
     return new Uint8Array(await file.arrayBuffer());
   };
 }
@@ -199,6 +216,7 @@ function bunRealpath(path: string): string | null {
  * flavor): identical contract to the node adapter's — `null` for missing
  * files or real paths outside `root`. Resolution is synchronous on this
  * runtime; the async wrapper keeps the injected surface uniform.
+ * {@link createFileReader} applies this guard by default.
  */
 export function createRealPathGuard(
   root: string

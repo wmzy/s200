@@ -403,6 +403,9 @@ export type JwtVerifyOptions = {
   readonly issuer?: string | readonly string[];
   /** Clock skew tolerance in seconds; default 0. */
   readonly clockTolerance?: number;
+  /** Reject tokens whose payload carries no numeric `exp` claim; default
+   * false — expiry stays optional, as before. */
+  readonly requireExpiry?: boolean;
   /**
    * Key-import cache. The default is an in-process LRU bounded at 100
    * entries; injecting a store (e.g. Redis) bypasses the default cache
@@ -499,6 +502,9 @@ export async function verifyJwt<T = Record<string, unknown>>(
   }
   const now = Math.floor(Date.now() / 1000);
   const tolerance = options.clockTolerance ?? 0;
+  if (options.requireExpiry === true && typeof payload.exp !== 'number') {
+    throw jwtError('token missing exp');
+  }
   if (typeof payload.exp === 'number' && payload.exp < now - tolerance) {
     throw jwtError('token expired');
   }
@@ -582,9 +588,12 @@ const defaultJwksStore: JwksStore = {
 /**
  * Builds a {@link KeyResolver} over a JWKS endpoint: fetches the key set,
  * caches it for `ttlMs`, and picks by `kid` (first key when the token
- * carries none). Documents are cached per URL module-wide in an LRU
- * bounded at 50 endpoints, so many app instances in one process share
- * the rotation; inject a `store` to share across processes instead.
+ * carries none). A `kid` miss against an unexpired cached document forces
+ * exactly one refetch before failing, so a key published after the cached
+ * document was fetched is visible mid-TTL (rotation races). Documents are
+ * cached per URL module-wide in an LRU bounded at 50 endpoints, so many
+ * app instances in one process share the rotation; inject a `store` to
+ * share across processes instead.
  */
 export function createJwksResolver(
   url: string,
@@ -593,26 +602,40 @@ export function createJwksResolver(
   const ttl = options.ttlMs ?? 300_000;
   const fetchFn = options.fetchFn ?? globalThis.fetch;
   const store = options.store ?? defaultJwksStore;
+  const fetchDocument = async (): Promise<JwksEntry> => {
+    const fetchedAt = Date.now();
+    const res = await fetchFn(url);
+    if (!res.ok) {
+      throw jwtError(`jwks fetch failed: HTTP ${res.status}`);
+    }
+    const body = (await res.json()) as { keys?: JwkWithKid[] };
+    if (!Array.isArray(body.keys) || body.keys.length === 0) {
+      throw jwtError('malformed jwks: missing keys');
+    }
+    const entry: JwksEntry = { exp: fetchedAt + ttl, keys: body.keys };
+    store.set(url, entry);
+    return entry;
+  };
+  const keyFor = (entry: JwksEntry, kid: string | undefined) => {
+    const candidates =
+      kid === undefined ? entry.keys : entry.keys.filter((key) => key.kid === kid);
+    return candidates[0];
+  };
   return async (header) => {
     const now = Date.now();
     let cached = store.get(url);
+    let fetchedThisCall = false;
     if (cached === undefined || cached.exp <= now) {
-      const res = await fetchFn(url);
-      if (!res.ok) {
-        throw jwtError(`jwks fetch failed: HTTP ${res.status}`);
-      }
-      const body = (await res.json()) as { keys?: JwkWithKid[] };
-      if (!Array.isArray(body.keys) || body.keys.length === 0) {
-        throw jwtError('malformed jwks: missing keys');
-      }
-      cached = { exp: now + ttl, keys: body.keys };
-      store.set(url, cached);
+      cached = await fetchDocument();
+      fetchedThisCall = true;
     }
-    const candidates =
-      header.kid === undefined
-        ? cached.keys
-        : cached.keys.filter((key) => key.kid === header.kid);
-    const key = candidates[0];
+    let key = keyFor(cached, header.kid);
+    if (key === undefined && header.kid !== undefined && !fetchedThisCall) {
+      // Rotation race: a key published after the cached document was
+      // fetched is invisible mid-TTL — force exactly one refetch
+      // (bypassing the TTL cache) before giving up on the kid.
+      key = keyFor(await fetchDocument(), header.kid);
+    }
     if (key === undefined) {
       throw jwtError(
         header.kid === undefined
@@ -646,6 +669,15 @@ export type JwtAuthOptions = {
   readonly keyStore?: JwtKeyStore;
   /** Algorithms the gate accepts; default every supported one. */
   readonly algorithms?: readonly JwtAlgorithm[];
+  /** Required audience(s) — the token's `aud` must intersect; forwarded
+   * to `verifyJwt`. */
+  readonly audience?: string | readonly string[];
+  /** Required issuer(s) — forwarded to `verifyJwt`. */
+  readonly issuer?: string | readonly string[];
+  /** Clock skew tolerance in seconds; default 0. */
+  readonly clockTolerance?: number;
+  /** Reject tokens with no numeric `exp` claim; default false. */
+  readonly requireExpiry?: boolean;
   /** Header carrying the token; default `authorization`. */
   readonly header?: string;
   /** Scheme prefix stripped from the header value; default `'Bearer '`. */
@@ -699,6 +731,14 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
   const cookieName = options.cookie;
   const verify = options.verify;
   const staticKey: JwtKey | undefined = options.key ?? options.secret;
+  const verifyOptions: JwtVerifyOptions = {
+    algorithms: options.algorithms,
+    audience: options.audience,
+    issuer: options.issuer,
+    clockTolerance: options.clockTolerance,
+    requireExpiry: options.requireExpiry,
+    keyStore: options.keyStore,
+  };
   const resolver: KeyResolver | undefined =
     options.keyResolver ??
     (options.jwks !== undefined
@@ -729,7 +769,7 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
               resolver !== undefined
                 ? await resolver(parseHeaderOf(token))
                 : (staticKey as JwtKey),
-              { algorithms: options.algorithms, keyStore: options.keyStore }
+              verifyOptions
             );
     } catch (error) {
       if (isJwtError(error)) {

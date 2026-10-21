@@ -1,5 +1,13 @@
 # Sharding & Scheduling
 
+> **Experimental.** The five modules this guide covers — `s200/shard`,
+> `s200/gateway`, `s200/shard-dev`, `s200/executor`, `s200/unit-metrics` —
+> are experimental: their APIs may change or be withdrawn in any minor,
+> they are not yet battle-tested in production, and the thread-executor
+> fast path depends on Node-internal listener-transfer behavior
+> (Node ≥26.6). Use them and report what breaks — do not build an
+> unversioned contract on them yet.
+
 One s200 app is one event loop: routes and middlewares share a single-threaded runtime, exactly the model every isolate-based platform (Cloudflare Workers, Vercel Fluid instances) runs *inside* each unit. This guide is about the layer above that: turning one route table into independently schedulable **units** — separate processes, pods, or lazily spawned threads — without writing a second route definition or baking a scheduler into the framework.
 
 The design stance, borrowed from how the platforms actually work:

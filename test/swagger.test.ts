@@ -87,4 +87,44 @@ describe('swaggerUi', () => {
       .get('content-length')!
       .should.equal(String(new TextEncoder().encode(body).byteLength));
   });
+
+  it('serves a string document override verbatim (no shell, no escaping)', async () => {
+    const doc =
+      '<!DOCTYPE html><html><head><title>Vendored</title></head><body>air-gapped</body></html>';
+    const app = get(
+      createApp(),
+      '/docs',
+      (ctx) => swaggerUi(ctx, { url: '/openapi.json', document: doc })
+    );
+    const res = await request(app, '/docs');
+    res.status.should.equal(200);
+    (res.headers.get('content-type') ?? '').should.equal('text/html; charset=utf-8');
+    (await res.text()).should.equal(doc); // byte-for-byte, CDN shell nowhere in sight
+  });
+
+  it('resolves a document factory per request — sync or async', async () => {
+    let calls = 0;
+    const app = get(
+      createApp(),
+      '/docs',
+      (ctx) =>
+        swaggerUi(ctx, {
+          url: '/openapi.json',
+          document: () => {
+            calls += 1;
+            return calls === 1 ? Promise.resolve('<html>async doc</html>') : '<html>sync doc</html>';
+          },
+        })
+    );
+    (await (await request(app, '/docs')).text()).should.equal('<html>async doc</html>');
+    (await (await request(app, '/docs')).text()).should.equal('<html>sync doc</html>');
+    calls.should.equal(2);
+  });
+
+  it('keeps the default CDN shell untouched when no document is set', async () => {
+    const app = get(createApp(), '/docs', (ctx) => swaggerUi(ctx, { url: '/openapi.json' }));
+    const body = await (await request(app, '/docs')).text();
+    body.should.contain('https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.72.1');
+    body.should.contain('<script id="api-reference" data-url="/openapi.json"');
+  });
 });

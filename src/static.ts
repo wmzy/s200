@@ -70,9 +70,12 @@ export type ServeStaticOptions = {
    * path before any read/stat. Returning `null` (missing file, or a real
    * path outside the served root — a symlink pointing elsewhere) falls
    * through to next() like a miss. Without it, `..` traversal is still
-   * blocked but a symlink inside the root can point outside it — inject the
-   * adapter's `createRealPathGuard(root)` to close that hole. Best-effort
-   * by nature: the check and the read are separate operations.
+   * blocked but a symlink inside the root can point outside it — inject
+   * the adapter's `createRealPathGuard(root)` to close that hole for a
+   * custom reader. The adapters' own `createFileReader`s apply that guard
+   * internally by default, so the standard filesystem setup needs no
+   * injection here. Best-effort by nature: the check and the read are
+   * separate operations.
    */
   realPath?: (path: string) => Promise<string | null>;
 };

@@ -66,3 +66,5 @@ get(api, '/users/:id', handler);
 const app = createApp();
 mount(app, '/v1', api);   // /v1/users/:id — api itself stays reusable
 ```
+
+子应用的 `onError` 会被携带：每个挂载路由包在一个路由级错误边界里应用它，因此子路由抛出的错误仍经子应用的策略映射（放弃处理则重新抛出，由父应用策略接管）。挂载带不走的会明说：定义了 `onNotFound` 或自定义 `match` 的子应用，每次 `mount` 调用触发一次 `console.warn` —— 挂载路由由父应用调度，运行的是父应用的 404 策略与路由器。挂载后再在 `sub` 上注册对此挂载不可见（快照语义）。

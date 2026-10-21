@@ -83,12 +83,96 @@ describe('compress', function () {
       app,
       new Request('http://localhost/', { headers: accept('gzip;q=0, *;q=1') }),
     );
-    noGzip.headers.get('content-encoding')!.should.equal('gzip');
+    // The explicit q=0 ban holds even though `*` is acceptable — the
+    // catch-all lifts the unlisted deflate, not the banned gzip.
+    noGzip.headers.get('content-encoding')!.should.equal('deflate');
     const noDe = await handle(
       app,
       new Request('http://localhost/', { headers: accept('gzip;q=0, deflate;q=1') }),
     );
     noDe.headers.get('content-encoding')!.should.equal('deflate');
+  });
+
+  it('picks the highest-q encoding regardless of list order', async function () {
+    const app = createApp();
+    use(app, compress());
+    get(app, '/', () => new Response('x'.repeat(4096)));
+    const res = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('br, gzip;q=0.1') }),
+    );
+    // No brotli encoder injected → br is not in the supported set, but
+    // gzip's explicit 0.1 is the only offer left standing.
+    res.headers.get('content-encoding')!.should.equal('gzip');
+    const deflateWins = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('gzip;q=0.1, deflate;q=0.9') }),
+    );
+    deflateWins.headers.get('content-encoding')!.should.equal('deflate');
+  });
+
+  it('lets an explicit q beat the * catch-all regardless of order', async function () {
+    const app = createApp();
+    use(app, compress({ minBytes: 0, brotli: { compress: async (b) => b } }));
+    get(app, '/', () => new Response('x'.repeat(200), { headers: { 'content-length': '200' } }));
+    const starFirst = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('*;q=1, br;q=0.5') }),
+    );
+    const starLast = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('br;q=0.5, *;q=1') }),
+    );
+    // br's explicit 0.5 replaces the catch-all 1 — gzip/deflate ride `*`
+    // at q=1 and outrank the down-weighted br in both orders.
+    starFirst.headers.get('content-encoding')!.should.equal('gzip');
+    starLast.headers.get('content-encoding')!.should.equal('gzip');
+  });
+
+  it('bans an encoding outright with q=0', async function () {
+    const app = createApp();
+    use(app, compress());
+    get(app, '/', () => new Response('x'.repeat(4096)));
+    const res = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('gzip;q=0') }),
+    );
+    res.headers.has('content-encoding').should.be.false;
+    (await res.text()).should.equal('x'.repeat(4096));
+  });
+
+  it('treats * as gzip without brotli and br with it', async function () {
+    const plain = createApp();
+    use(plain, compress());
+    get(plain, '/', () => new Response('x'.repeat(4096)));
+    const star = await handle(plain, new Request('http://localhost/', { headers: accept('*') }));
+    star.headers.get('content-encoding')!.should.equal('gzip');
+    const withBr = createApp();
+    use(withBr, compress({ minBytes: 0, brotli: { compress: async (b) => b } }));
+    get(withBr, '/', () => new Response('x'.repeat(200), { headers: { 'content-length': '200' } }));
+    const starBr = await handle(
+      withBr,
+      new Request('http://localhost/', { headers: accept('*, gzip;q=0') }),
+    );
+    // gzip is explicitly banned by q=0; `*` lifts br — not the banned gzip.
+    starBr.headers.get('content-encoding')!.should.equal('br');
+  });
+
+  it('ignores garbage headers', async function () {
+    const app = createApp();
+    use(app, compress());
+    get(app, '/', () => new Response('x'.repeat(4096)));
+    const unknown = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('not-a-coding, identity') }),
+    );
+    unknown.headers.has('content-encoding').should.be.false;
+    const badQ = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('gzip;q=banana') }),
+    );
+    // An unparseable q parameter is ignored — q stays 1.
+    badQ.headers.get('content-encoding')!.should.equal('gzip');
   });
 });
 
@@ -114,11 +198,23 @@ describe('compress brotli', () => {
     res.headers.has('content-encoding').should.be.false;
   });
 
-  it('prefers gzip over br on ties', async () => {
+  it('prefers br over gzip on q-value ties', async () => {
     const app = createApp();
     use(app, compress({ minBytes: 0, brotli: { compress: async (b) => b } }));
     get(app, '/', () => new Response('x'.repeat(200), { headers: { 'content-length': '200' } }));
     const res = await handle(app, new Request('http://localhost/', { headers: accept('gzip, br') }));
-    res.headers.get('content-encoding')!.should.equal('gzip');
+    // Equal q → server preference br > gzip > deflate (brotli is denser).
+    res.headers.get('content-encoding')!.should.equal('br');
+  });
+
+  it('picks br over a higher-listed low-q gzip', async () => {
+    const app = createApp();
+    use(app, compress({ minBytes: 0, brotli: { compress: async (b) => b } }));
+    get(app, '/', () => new Response('x'.repeat(200), { headers: { 'content-length': '200' } }));
+    const res = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('br, gzip;q=0.1') }),
+    );
+    res.headers.get('content-encoding')!.should.equal('br');
   });
 });

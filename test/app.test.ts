@@ -16,6 +16,7 @@ import {
   post,
   put,
   removeRoute,
+  routes,
   use,
   usePlugin,
 } from '../src/app';
@@ -1011,5 +1012,71 @@ describe('logError option', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('routes builder', () => {
+  it('registers exactly what the plain registrars register', async () => {
+    const plain = createApp();
+    use(plain, async (ctx, next) => {
+      ctx.state.order = 'mw';
+      await next();
+    });
+    get(plain, '/users/:id', (ctx) =>
+      json(ctx, { id: ctx.params.id, order: ctx.state.order ?? '' })
+    );
+    post(plain, '/users', () => new Response('created', { status: 201 }));
+    all(plain, '/echo', () => new Response('echo'));
+
+    const app = createApp();
+    const builder = routes(app)
+      .use(async (ctx, next) => {
+        ctx.state.order = 'mw';
+        await next();
+      })
+      .get('/users/:id', (ctx) =>
+        json(ctx, { id: ctx.params.id, order: ctx.state.order ?? '' })
+      )
+      .post('/users', () => new Response('created', { status: 201 }))
+      .all('/echo', () => new Response('echo'));
+
+    // Sugar over the same app object: registration is immediate.
+    (builder.app === app).should.be.true;
+    app.routes.length.should.equal(3);
+
+    const viaPlain = await handle(plain, new Request('http://localhost/users/42'));
+    const viaBuilder = await handle(app, new Request('http://localhost/users/42'));
+    viaBuilder.status.should.equal(viaPlain.status);
+    (await viaBuilder.json()).should.deep.equal(await viaPlain.json());
+
+    const created = await handle(app, new Request('http://localhost/users', { method: 'POST' }));
+    created.status.should.equal(201);
+    (await created.text()).should.equal('created');
+    const echoed = await handle(app, new Request('http://localhost/echo', { method: 'DELETE' }));
+    (await echoed.text()).should.equal('echo');
+    // The 405 Allow contract is unchanged through the builder.
+    const miss = await handle(app, new Request('http://localhost/users/42', { method: 'PATCH' }));
+    miss.status.should.equal(405);
+    (miss.headers.get('allow') ?? '').should.equal('GET');
+    (await handle(app, new Request('http://localhost/missing'))).status.should.equal(404);
+  });
+
+  it('scopes builder use and joins builder mount like the plain functions', async () => {
+    const parent = createApp();
+    const sub = createApp();
+    get(sub, '/x', () => new Response('sub'));
+    const seen: string[] = [];
+    const builder = routes(parent)
+      .use(async (ctx, next) => {
+        seen.push(ctx.url.pathname);
+        await next();
+      })
+      .mount('/v1', sub);
+    (builder.app === parent).should.be.true;
+    (await (await handle(parent, new Request('http://localhost/v1/x'))).text()).should.equal('sub');
+    // The builder use() is a real scoped middleware: it ran for the hit…
+    seen.should.deep.equal(['/v1/x']);
+    // …and the mount joined the sub pattern under the prefix.
+    (await handle(parent, new Request('http://localhost/x'))).status.should.equal(404);
   });
 });

@@ -81,10 +81,10 @@ serveStatic(options): Middleware
 | `cacheControl` | no | `Cache-Control` value stamped on 200/206/304; default none |
 | `redirectToSlash` | no | `true` (default): directory path without trailing slash gets a 301 to `<path>/` |
 | `dotfiles` | no | `'deny'` (default) falls through on `.env`-style paths; `'allow'` serves them |
-| `realPath` | no | Symlink-escape guard — inject the adapter's `createRealPathGuard(root)` |
+| `realPath` | no | Symlink-escape guard — inject the adapter's `createRealPathGuard(root)`; the adapters' own `createFileReader`s already apply it by default, so custom readers are the ones that need it here |
 
 `StaticFileInfo`: `{ size: number; mtimeMs: number }`.
 
 **Conditionals and ranges.** With `stat` injected, responses carry `ETag`/`Last-Modified`; `If-None-Match`/`If-Modified-Since` hits answer `304` — bodyless and without `content-length` (RFC 9110 §15.4.5: s200 omits the header rather than echoing the would-be size). A single `Range: bytes=…` is served as `206` (`416` when unsatisfiable), gated by `If-Range` per RFC 9110 §13.1.5: only an `If-Range` that is an exact HTTP-date match with `Last-Modified` lets the range through; anything else (weak entity tag, mismatched date, unparseable value, or a response without validators) falls back to the full `200` body. The layer's own tag is weak (`W/"size-mtime"`), and If-Range requires a strong comparison — so an entity-tag `If-Range` never authorizes a range here, not even the file's own tag.
 
-The Node and Bun adapters ship ready-made injectors — `createFileReader(root, { stream? })`, `createFileStat(root)`, `createFileRangeReader(root)`, `createRealPathGuard(root)` (see [`s200/node`](/api/node), [`s200/bun`](/api/bun)).
+The Node and Bun adapters ship ready-made injectors — `createFileReader(root, { stream?, realPath?, streamThreshold? })` (realpath containment on by default, files over `streamThreshold` — default 16 MiB — stream instead of buffering), `createFileStat(root)`, `createFileRangeReader(root)`, `createRealPathGuard(root)` (see [`s200/node`](/api/node), [`s200/bun`](/api/bun)).

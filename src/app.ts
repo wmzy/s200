@@ -87,13 +87,23 @@ export type App<
   logError: ((error: unknown, ctx: Ctx) => void) | undefined;
 };
 
+// Default matchers handed out by `createApp` (no `options.match` given).
+// `mount` drops the sub-app's router — only a CUSTOM matcher is worth a
+// warning, since dropping the default changes nothing (the parent's
+// default behaves identically). WeakSet: keyed per closure, zero retention.
+const defaultMatchers = new WeakSet<MatchFn>();
+
 export function createApp<S extends State = State>(
   options: AppOptions<S> = {}
 ): App<S, []> {
+  const match = options.match ?? createMatcher({ strict: options.strict });
+  if (options.match === undefined) {
+    defaultMatchers.add(match);
+  }
   return {
     routes: Object.freeze([]),
     middlewares: Object.freeze([]),
-    match: options.match ?? createMatcher({ strict: options.strict }),
+    match,
     onError: options.onError,
     onNotFound: options.onNotFound,
     logError: options.logError,
@@ -214,12 +224,23 @@ export function usePlugin<
  * onto each mounted route, running after the parent chain and before the
  * sub route's own middlewares and handler.
  *
+ * The sub-app's `onError` IS carried: every mounted route is wrapped in a
+ * route-scoped error boundary (outermost in its chain) that applies the
+ * sub's error policy — a response the sub `onError` writes is adopted, a
+ * decline (or a crashing handler) rethrows so the parent's policy maps it,
+ * exactly like the standalone sub's dispatch would degrade.
+ *
+ * What cannot structurally travel is dropped with a one-time warning per
+ * mount: `onNotFound` (the parent's 404 policy answers unmatched paths —
+ * mounted routes are parent routes) and a custom `match` (the parent's
+ * router dispatches the joined patterns). A default matcher is never
+ * warned about — dropping it changes nothing.
+ *
  * Pure data transform: `sub` is copied, never mutated, so one sub-app can
- * mount under many prefixes. `sub`'s `match`/`onError`/`onNotFound` are not
- * carried over — the parent dispatches (mount routes are parent routes) and
- * the parent's error/404 policy applies. Middlewares on an empty `sub` are
- * lost (no routes to carry them); gate on the prefix with a normal `use`
- * middleware instead.
+ * mount under many prefixes. Middlewares on an empty `sub` are lost (no
+ * routes to carry them); gate on the prefix with a normal `use` middleware
+ * instead. Post-mount registration on `sub` stays invisible to this mount
+ * (snapshot semantics — the documented contract).
  */
 export function mount<
   S extends State = State,
@@ -237,13 +258,51 @@ export function mount<
   // Normalize: '' and '/' are no-prefix; a trailing slash would double up
   // against the pattern's leading slash.
   const base = prefix === '' || prefix === '/' ? '' : prefix.replace(/\/+$/, '');
+  if (sub.onNotFound !== undefined || !defaultMatchers.has(sub.match)) {
+    console.warn(
+      '[s200] mount: sub-app onNotFound/match are not carried by mount() — ' +
+        'the parent app dispatches mounted routes; handle unmatched paths and ' +
+        'custom matching on the parent (a prefixed route or middleware) instead'
+    );
+  }
+  // Route-scoped error boundary carrying the sub's onError — outermost in
+  // the mounted chain so errors from the sub's app-level middlewares, its
+  // route middlewares, and the handler all reach the sub's policy, the
+  // same surface a standalone dispatch gives it. Absent when the sub
+  // defines no onError: the parent's policy then applies unchanged and
+  // the mounted route carries zero extra runtime.
+  const subOnError = sub.onError;
+  const errorBoundary: Middleware<S> | undefined =
+    subOnError === undefined
+      ? undefined
+      : async (ctx, next) => {
+          try {
+            await next();
+          } catch (error) {
+            // A crashing error handler propagates out of this boundary —
+            // the parent maps it, the same degradation mapError applies
+            // when an onError crashes.
+            await subOnError(ctx, error);
+            if (ctx.res === undefined) {
+              // The sub's policy declined — the parent's applies.
+              throw error;
+            }
+            // The adopted response bypassed newResponse — headers
+            // deferred onto this ctx still ride it (mapError parity).
+            drainPendingHeaders(ctx, ctx.res);
+          }
+        };
   const added: Route[] = [];
   for (const route of sub.routes) {
     const pattern = base === '' ? route.pattern : route.pattern === '/' ? base : `${base}${route.pattern}`;
-    const middlewares =
+    const inner: readonly Middleware[] =
       sub.middlewares.length === 0
         ? route.middlewares
         : ([...sub.middlewares, ...route.middlewares] as Middleware[]);
+    const middlewares: readonly Middleware[] =
+      errorBoundary === undefined
+        ? inner
+        : ([errorBoundary, ...inner] as Middleware[]);
     added.push(
       createRoute(route.method, pattern, route.handler as Handler, middlewares)
     );
@@ -407,6 +466,144 @@ export const addRoute: AddRoute = ((
   pattern: string,
   ...chain: unknown[]
 ): App => register(app, method, pattern, chain as [...Middleware[], Handler])) as AddRoute;
+
+/**
+ * One builder method's signature — the {@link Registrar} overloads with the
+ * `app` argument bound (by {@link routes}) and the builder returned in its
+ * place, the route appended to the phantom log exactly like the plain
+ * registrar's return type.
+ */
+type BuilderMethod<
+  M extends string,
+  S extends State,
+  R extends readonly RouteDef[]
+> = {
+  <
+    P extends string,
+    O = unknown,
+    Ms extends Middleware<S>[] = Middleware<S>[]
+  >(
+    pattern: P,
+    ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+  ): RoutesBuilder<S, [...R, RouteDefEntry<M, P, Ms, O>]>;
+  <O = unknown, Ms extends Middleware<S>[] = Middleware<S>[]>(
+    pattern: string,
+    ...chain: [...Ms, Handler<Params, S, O>]
+  ): RoutesBuilder<S, [...R, RouteDefEntry<M, string, Ms, O>]>;
+};
+
+/**
+ * The chainable builder {@link routes} returns: one method per registrar
+ * (`get`/`post`/`put`/`patch`/`del`/`head`/`options`/`all`) plus `use` and
+ * `mount`, each returning the builder with the phantom `App` type updated
+ * the same way the plain registrar's return type does — so the chain
+ * threads client inference identically. `app` exposes that typed `App`
+ * (the very object passed to `routes`; registration is immediate).
+ */
+export type RoutesBuilder<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+> = {
+  /** The app every method registers on — typed with the chain's full log. */
+  readonly app: App<S, R>;
+  readonly get: BuilderMethod<'GET', S, R>;
+  readonly post: BuilderMethod<'POST', S, R>;
+  readonly put: BuilderMethod<'PUT', S, R>;
+  readonly patch: BuilderMethod<'PATCH', S, R>;
+  readonly del: BuilderMethod<'DELETE', S, R>;
+  readonly head: BuilderMethod<'HEAD', S, R>;
+  readonly options: BuilderMethod<'OPTIONS', S, R>;
+  readonly all: BuilderMethod<'ALL', S, R>;
+  readonly use: (
+    prefixOrMiddleware: string | Middleware<S>,
+    ...middlewares: Middleware<S>[]
+  ) => RoutesBuilder<S, R>;
+  readonly mount: <
+    R2 extends readonly RouteDef[] = readonly RouteDef[],
+    Prefix extends string = string
+  >(
+    prefix: Prefix,
+    sub: App<S, R2>
+  ) => RoutesBuilder<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>]>;
+};
+
+/** One type-erased registrar method on the runtime builder object. */
+type ErasedMethod<S extends State> = (
+  pattern: string,
+  ...chain: unknown[]
+) => RoutesBuilderBase<S>;
+
+/**
+ * The type-erased runtime shape behind {@link routes}: every method
+ * registers then returns the same builder object. The precise per-call
+ * generics live only on {@link RoutesBuilder} — the phantom log comes
+ * from signatures, never from runtime values.
+ */
+type RoutesBuilderBase<S extends State = State> = {
+  readonly get: ErasedMethod<S>;
+  readonly post: ErasedMethod<S>;
+  readonly put: ErasedMethod<S>;
+  readonly patch: ErasedMethod<S>;
+  readonly del: ErasedMethod<S>;
+  readonly head: ErasedMethod<S>;
+  readonly options: ErasedMethod<S>;
+  readonly all: ErasedMethod<S>;
+  readonly use: (
+    prefixOrMiddleware: string | Middleware<S>,
+    ...middlewares: Middleware<S>[]
+  ) => RoutesBuilderBase<S>;
+  readonly mount: (prefix: string, sub: App<S>) => RoutesBuilderBase<S>;
+  readonly app: App<S>;
+};
+
+/**
+ * Chain sugar over the registrars: `routes(app)` returns a builder whose
+ * `get`/`post`/`put`/`patch`/`del`/`head`/`options`/`all`/`use`/`mount`
+ * methods delegate 1:1 to the plain functions and return the builder.
+ * Registration is immediate — each call registers on `app` right away
+ * (sugar, not a deferred model), so the original binding and the
+ * builder's `.app` observe identical route tables. The phantom `App` type
+ * threads through the chain, so `s200/client` inference off
+ * `routes(app).…().app` matches the plain registrars byte for byte.
+ *
+ * ```ts
+ * const app = createApp();
+ * routes(app)
+ *   .use(auth)
+ *   .get('/users/:id', (ctx) => json(ctx, { id: ctx.params.id }))
+ *   .post('/users', createUser);
+ * const client = createClient(routes(app).get('/x', h).app);
+ * ```
+ */
+export function routes<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[]
+>(app: App<S, R>): RoutesBuilder<S, R> {
+  const method = (m: string): ErasedMethod<S> => (pattern, ...chain) => {
+    register(app, m, pattern, chain as [...Middleware<S>[], Handler<never, S>]);
+    return builder;
+  };
+  const builder: RoutesBuilderBase<S> = {
+    get: method('GET'),
+    post: method('POST'),
+    put: method('PUT'),
+    patch: method('PATCH'),
+    del: method('DELETE'),
+    head: method('HEAD'),
+    options: method('OPTIONS'),
+    all: method('ALL'),
+    use: (prefixOrMiddleware, ...middlewares) => {
+      use(app, prefixOrMiddleware, ...middlewares);
+      return builder;
+    },
+    mount: (prefix, sub) => {
+      mount(app, prefix, sub);
+      return builder;
+    },
+    app,
+  };
+  return builder as unknown as RoutesBuilder<S, R>;
+}
 
 // Composed-chain caches. `compose`'s double-next `index` is created per
 // invocation, so one composed function is safe to reuse across requests;

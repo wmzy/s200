@@ -25,7 +25,7 @@ The default `'*'` emits the literal wildcard and skips `Vary: Origin`; allowlist
 
 ## CSRF (`s200/csrf`)
 
-Session-less synchronizer tokens: HMAC-signed (`nonce` + expiry) so only your secret can mint one, delivered in a cookie and verified on unsafe requests against the header/form field **and** the request `Origin` (closing both classic double-submit holes):
+Session-less synchronizer tokens: HMAC-signed (`nonce` + expiry) so only your secret can mint one, delivered in a cookie and verified on unsafe requests against the header/form field **and** the request `Origin` — or, when `Origin` is absent (same-origin form posts often omit it), `Sec-Fetch-Site: cross-site`, which is rejected outright while `same-origin`/`same-site`/`none` fall through to the token check (closing both classic double-submit holes):
 
 ```ts
 const csrf = createCsrf({ secret: CSRF_SECRET });   // keep the secret out of version control
@@ -42,9 +42,10 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 | `header` | `'x-csrf-token'` | Header presenting the token |
 | `form` | `'_csrf'` | Form field presenting the token |
 | `ttl` | 7 days | Token lifetime (seconds) |
+| `bind` | — | Callback returning a request-scoped value (e.g. the session id) folded into the token's HMAC at mint **and** at verify, so a token minted for another session/user no longer verifies |
 | `path` / `sameSite` / `httpOnly` / `secure` | `'/'` / `'lax'` / `true` / — | Cookie attributes; keep `httpOnly` and deliver the token via an endpoint or server-rendered form |
 
-`Csrf`: `{ middleware, token }` — `middleware` guarantees a valid token in `ctx.state.csrfToken` on safe requests (refreshing the cookie when needed) and verifies `Origin` + presented token on unsafe ones (403 in place); `token(ctx)` returns the request's valid cookie token (or a fresh one) to embed in forms.
+`Csrf`: `{ middleware, token, issueToken }` — `middleware` guarantees a valid token in `ctx.state.csrfToken` on safe requests (refreshing the cookie when needed — including one minted for another `bind` value) and verifies `Origin`/`Sec-Fetch-Site` + presented token on unsafe ones (403 in place); `token(ctx)` returns the request's valid cookie token (or a fresh one) to embed in forms; `issueToken(ctx)` mints a **fresh** token for the current request (new nonce, full TTL, current `bind` value) and the middleware persists it as the response cookie, unsafe responses included — the rotate-on-login primitive. Minting is stateless: the previous token stays valid until its own TTL, so pairing `bind` with a fresh session id is what retires the old token.
 
 ## Auth (`s200/auth`)
 
@@ -71,7 +72,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `signJwt(payload, key, options?)` | Compact JWT `header.payload.signature`; claims from options override same-named payload keys |
 | `verifyJwt<T>(token, key, options?)` | Verifies structure, algorithm, signature, `exp`/`nbf`, requested `aud`/`iss` → `T & RegisteredClaims`; throws `JwtError` on any failure |
 | `jwtAuth(options)` | Gate middleware: extracts the token (header `Authorization: Bearer …`, or a cookie), verifies, stores the payload on `ctx.state.jwt`; missing/invalid → `401` |
-| `createJwksResolver(url, options?)` | Builds a `KeyResolver` over a JWKS endpoint — fetches, caches (`ttlMs`, default 5 min), picks by `kid`; cached per URL module-wide in an LRU bounded at 50 endpoints |
+| `createJwksResolver(url, options?)` | Builds a `KeyResolver` over a JWKS endpoint — fetches, caches (`ttlMs`, default 5 min), picks by `kid`; a `kid` miss on an unexpired cached document forces exactly one refetch before failing (rotation races); cached per URL module-wide in an LRU bounded at 50 endpoints |
 | `isJwtError(error)` | `JwtError` predicate |
 
 | Type | Meaning |
@@ -79,7 +80,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `JwtAlgorithm` | `'HS256' \| … \| 'ES512'` |
 | `JwtKey` | `string \| Uint8Array \| CryptoKey \| JsonWebKey` |
 | `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId? }` — `alg` required when signing with a `CryptoKey`/JWK |
-| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, keyStore? }` — `alg:none` is rejected unconditionally |
+| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, keyStore? }` — `alg:none` is rejected unconditionally |
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` — what a `KeyResolver` sees |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
@@ -87,7 +88,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
 | `JwksStore` | `{ get(url), set(url, entry) }` — JWKS document cache; default in-process LRU, bounded at 50 URLs |
 | `JwksEntry` | `{ exp, keys }` — one cached document; `exp` is the ms-epoch refresh deadline |
-| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, header?, prefix?, cookie?, verify? }` — the `jwtAuth` gate's options (table below) |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, header?, prefix?, cookie?, verify? }` — the `jwtAuth` gate's options (table below) |
 
 `JwtAuthOptions` (the `jwtAuth` gate):
 
@@ -98,6 +99,10 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `keyResolver` | — | Per-token key resolution (rotation, multi-issuer) |
 | `jwks` | — | JWKS endpoint — `string` or `{ url, ttlMs?, store? }`; shorthand for `createJwksResolver` |
 | `algorithms` | every supported one | Algorithms the gate accepts |
+| `audience` | — | Required audience(s) — the token's `aud` must intersect |
+| `issuer` | — | Required issuer(s) |
+| `clockTolerance` | `0` | Clock skew tolerance in seconds for `exp`/`nbf`/`iat` |
+| `requireExpiry` | `false` | Reject tokens carrying no numeric `exp` claim |
 | `header` | `'authorization'` | Header carrying the token |
 | `prefix` | `'Bearer '` | Scheme prefix stripped from the header value |
 | `cookie` | — | Cookie name to fall back to when the header is absent |
@@ -121,7 +126,7 @@ get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
 A safe-by-default baseline stamped on the unwind (fallback responses included); headers the response already carries are never overwritten, and `false` drops one:
 
 ```ts
-use(app, secureHeaders());  // nosniff, DENY framing, strict-origin-when-cross-origin
+use(app, secureHeaders());  // nosniff, DENY framing, strict-origin-when-cross-origin, COOP/CORP same-origin
 ```
 
 `SecureHeadersOptions`:
@@ -132,6 +137,31 @@ use(app, secureHeaders());  // nosniff, DENY framing, strict-origin-when-cross-o
 | `xFrameOptions` | `'DENY'` | `SAMEORIGIN` for embedding apps (or a CSP frame-ancestors policy) |
 | `referrerPolicy` | `'strict-origin-when-cross-origin'` | |
 | `strictTransportSecurity` | off | Opt-in — behind a TLS-terminating proxy a stray HSTS header can pin a domain to a broken setup |
+| `contentSecurityPolicy` | off | Opt-in — a raw header value or a directives object |
+| `permissionsPolicy` | off | Opt-in — same shapes as CSP |
+| `crossOriginOpenerPolicy` | `'same-origin'` | `false` drops it |
+| `crossOriginResourcePolicy` | `'same-origin'` | `false` drops it |
+| `crossOriginEmbedderPolicy` | off | Opt-in — COEP requires every subresource to opt in via CORP/CORS, which typically breaks CDN images/scripts until they send CORP headers |
+| `xDnsPrefetchControl` | off | Opt-in (e.g. `'off'`) |
+| `removeHeaders` | none | Headers stripped from every response — baseline defaults and handler-set headers alike, e.g. `['x-powered-by']` |
+
+The directives-object form serializes CSP-style: `key value` (arrays space-joined), directives joined by `; `, keys in insertion order, an empty array rendering the bare key — `{ 'default-src': ["'self'"], 'upgrade-insecure-requests': [] }` becomes `default-src 'self'; upgrade-insecure-requests`. Permissions-Policy's parenthesised comma syntax (`camera=(), geolocation=(self)`) is a raw string away.
+
+`cspNonce(): string` — a cryptographically random 128-bit standard-base64 nonce (24 chars) for `'nonce-…'` CSP sources. Generate one per request in a middleware registered after `secureHeaders` — its unwind runs first, so the per-request CSP lands before the static fill-only pass:
+
+```ts
+use(app, secureHeaders());
+use(app, async (ctx, next) => {
+  const nonce = cspNonce();
+  await next();
+  ctx.res?.headers.set(
+    'content-security-policy',
+    `default-src 'self'; script-src 'nonce-${nonce}'`,
+  );
+});
+```
+
+Embed the same nonce in the HTML (`<script nonce="…">`) so the policy and the markup agree.
 
 ## Rate limit (`s200/rate-limit`)
 

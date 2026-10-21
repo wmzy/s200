@@ -6,10 +6,12 @@ s200 正在迈向 1.0。本页面就是那份契约：1.0 时会冻结什么、�
 
 ## 冻结面（1.0 契约） {#frozen-surface-the-10-contract}
 
-以下内容自 1.0 起全部是契约性的：只会在 major 版本中变更（1.0 之前则在带
-标记的 minor 版本中变更——参见 [semver 策略](#semver-policy)）。这份清单
-刻意只覆盖真实应用会接触到的表面；内部实现（私有辅助函数、chunk 布局、
-未写入文档的对象）仍可自由变动。
+以下核心契约自 1.0 起是契约性的：只会在 major 版本中变更（1.0 之前则在带
+标记的 minor 版本中变更——参见 [semver 策略](#semver-policy)）。它刻意
+只覆盖真实应用会接触到的表面；内部实现（私有辅助函数、chunk 布局、
+未写入文档的对象）仍可自由变动。包入口按两个层级冻结——一份核心清单随
+这份契约一起冻结，其余入口走更宽松的稳定层级（见
+[battery 入口](#battery-入口)）。
 
 ### 应用创建
 
@@ -107,7 +109,8 @@ throws({ 422: { issues: string[] } });       // 附带结构化 body 形状
 推断出客户端的错误分支（无需声明）。`throws` 门是为类型层看不见的分支（从
 辅助函数里抛出的那些）准备的声明通道：它把一条路由可能应答的状态码（及
 body 形状）合并进 `s200/client` 按状态码判别的 `res.status` /
-`res.json()` —— 运行时是纯透传。
+`res.json()` —— 请求处理运行时是纯透传（声明可从门上读回，
+`s200/openapi` 与 `s200/codegen` 由此拾取错误分支）。
 
 ### 路由语义
 
@@ -125,24 +128,53 @@ body 形状）合并进 `s200/client` 按状态码判别的 `res.status` /
 
 ### battery 入口
 
-下面这些包入口是冻结的模块地图——每一个都可独立导入、可 tree-shaking、零
-运行时依赖。可以**新增** battery（一次 minor），但既有入口的名字及其导出的
-标识符保持不变。
+1.0 冻结的是**上面的核心契约加上核心入口**——真实应用今天构建时所依赖的
+模块表面。本页早期草案曾冻结全部约 50 个入口的地图；这个决定被有意收回：
+在任何外部使用之前冻结五十个入口，等于冻结未经评审的 API。其余入口留在
+下面的稳定层级。
+
+#### 1.0 冻结：核心入口
+
+每一个都可独立导入、可 tree-shaking、零运行时依赖。既有入口的名字及其
+导出的标识符保持不变；选项形状可以增加字段。可以**新增** battery（一次
+minor）。
 
 ```
+s200                （核心 barrel：createApp、注册器、响应辅助函数、
+                     错误模型、路由）
 s200/node  s200/bun  s200/deno  s200/cloudflare          （适配器）
-s200/cors  s200/logger  s200/route-table  s200/cookies  s200/validate
-s200/rate-limit  s200/compress  s200/streaming  s200/request-id  s200/timeout
-s200/query  s200/websocket  s200/websocket/node  s200/websocket/bun
-s200/etag  s200/secure-headers  s200/auth  s200/accepts  s200/serialize
-s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta  s200/openapi
-s200/trust-proxy  s200/otel  s200/codegen  s200/test  s200/multipart
-s200/session  s200/swagger  s200/upload  s200/dev
-s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
-s200/shard  s200/shard-dev  s200/executor  s200/gateway  s200/unit-metrics
-s200/events
-s200/als
+s200/cors  s200/logger  s200/cookies  s200/validate  s200/query
+s200/rate-limit  s200/compress  s200/etag  s200/request-id  s200/timeout
+s200/websocket  s200/websocket/node  s200/websocket/bun
+s200/test  s200/dev
 ```
+
+#### 稳定但尚未冻结
+
+下面其余每个入口都是稳定且遵循语义化版本的，但在 minor 内其表面仍可能
+调整——每次变更都随附迁移说明——直到该入口积累起真实世界使用、晋升进
+冻结清单（晋升本身是一次 minor）。今天与 1.0 时都适用的“不静默破坏”
+精神：
+
+- 入口名与导出的标识符持续可用——不会在你脚下被改名或移除。
+- 选项形状只增加字段；本层级内，既有字段绝不会被静默改义或在 minor 内
+  被移除。
+- 上面的行为契约（`Ctx` 契约、响应、错误、路由语义）适用于所有入口——
+  每个 battery 都是基于同一核心的中间件。
+
+```
+s200/route-table  s200/streaming  s200/secure-headers  s200/auth  s200/accepts
+s200/serialize  s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta
+s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
+s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
+s200/config  s200/schedule  s200/version  s200/events  s200/als
+s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
+```
+
+五个带 `*` 的分片入口是**实验性（experimental）**的：它们的 API 在任意
+minor 中都可能变更或撤回，尚未经过生产环境的实战检验，且线程 executor
+快速路径依赖 Node 内部的监听器传递行为（Node ≥26.6）。见
+[分片与调度](./guides/sharding.md)。
 
 ## semver 策略 {#semver-policy}
 
@@ -157,7 +189,9 @@ semantic-release 会覆写的占位符——版本号从不手工编辑。
   中任何发布——都可能改变行为**，破坏用户代码的变更会随发布说明附上一份
   迁移提示。如果你在 1.0 之前就需要稳定，请锁定精确版本。
 - **1.0 及之后：** 严格 semver。[冻结面](#frozen-surface-the-10-contract)
-  只在 major 中变更；新能力以 minor 落地，修复以 patch 落地。
+  ——核心契约加核心入口——只在 major 中变更。其余入口稳定且遵循语义化
+  版本，但可在 minor 内调整并附迁移说明；实验性入口（分片层）在任意
+  minor 中都可能变更或撤回。新能力以 minor 落地，修复以 patch 落地。
 - **弃用节奏（1.0 后）：** 弃用以标记 API（`@deprecated` JSDoc + README）
   并附迁移指南的方式宣布，保持可用**两个 minor 发布**，随后移除——移除落
   在 major 中。

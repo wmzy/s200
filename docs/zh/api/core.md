@@ -19,6 +19,7 @@ barrel 还再导出[响应助手、请求体读取与 `serveStatic`](/zh/api/res
 | `RouteDef` | `{ method, pattern, … }` —— 一次注册的编译期签名 |
 | `Registrar<M>` | 每个方法注册器（`get`、`post`、…）共享的签名：字面量模式与动态模式两个重载，追加一个 `RouteDef` |
 | `AddRoute` | 动态方法注册器的签名 —— `addRoute(app, method, pattern, chain)`，def 的方法标记为 `Uppercase<M>` |
+| `RoutesBuilder<S, R>` | `routes(app)` 返回的可链式 builder —— 每个注册器一个方法外加 `use`/`mount`，各自返回追加了幻影日志的 builder，`.app` 暴露类型化的 `App` |
 | `Route` | `createRoute` 产出的不可变注册项 |
 | `MatchResult` | `{ route, params } \| { allowedMethods }` —— 后者供给 405 的 `Allow` 列表 |
 | `MatchFn` | `(routes, method, pathname) => MatchResult \| undefined` —— 可替换路由器 |
@@ -63,15 +64,21 @@ const app = createApp<MyState>({ strict: false });
 use(app, mw);                                   // 全局中间件
 use(app, '/admin', adminMw, auditMw);         // 前缀作用域中间件
 usePlugin(app, plugin);                       // `(app) => void` 扩展钩子
-mount(app, '/v1', v1App');                    // 把子应用路由挂到前缀下
+mount(app, '/v1', v1App);                    // 把子应用路由挂到前缀下
 addRoute(app, 'GET', '/raw', handler);        // 动态方法注册器（方法在前）
 get / post / put / patch / del / head / options / all (app, pattern, handler, middlewares?)
 removeRoute(app, method, pattern);            // 运行时过滤（类型层对应：RouteFilter）
+
+routes(app)                                    // 同一批注册器的可链式语法糖
+  .use(auth)
+  .get('/users/:id', (ctx) => json(ctx, { id: ctx.params.id }))
+  .post('/users', createUser);
 ```
 
 - `use(app, prefix, …mws)` 按路径名前缀作用域（允许参数，如 `/users/:id`）；前缀不带中间件会抛错。
-- `mount` 拼接模式（`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`），把子应用的中间件作用域到每个挂载路由，从不修改子应用。父应用的 `match`/`onError`/`onNotFound` 生效；空子应用的中间件会丢失。类型层，`MountedDefs<R, Base>` 记录挂载的定义 —— 模式以前缀为基（根为 `/` 的子应用坍缩为裸前缀），`out`/`status`/`in`/`errors`/`branches` 幻影通道随行 —— 因此挂载的应用保留其类型化客户端面；`MountBase` 规范化前缀，`MergeRecords` 并集重叠的幻影键。
+- `mount` 拼接模式（`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`），把子应用的中间件作用域到每个挂载路由，从不修改子应用。子应用的 `onError` 会被携带：每个挂载路由包在一个路由级错误边界里应用它（子 `onError` 写了响应则以它为准；放弃处理则重新抛出，由父应用的策略映射 —— 子 handler 自身崩溃同样如此）。`onNotFound` 与自定义 `match` 无法随行（父应用调度挂载路由），当子应用确实定义了它们时，每次 `mount` 调用发出一次 `console.warn` 后丢弃；空子应用的中间件会丢失。类型层，`MountedDefs<R, Base>` 记录挂载的定义 —— 模式以前缀为基（根为 `/` 的子应用坍缩为裸前缀），`out`/`status`/`in`/`errors`/`branches` 幻影通道随行 —— 因此挂载的应用保留其类型化客户端面；`MountBase` 规范化前缀，`MergeRecords` 并集重叠的幻影键。
 - 方法注册器（`get`、`post` …）按 handler 参数类型重载：`get(app, '/users/:id', (ctx) => …)` 通过 `ParamsOf<'/users/:id'>` 类型化 `ctx.params`。
+- `routes(app)` 是纯语法糖：builder 的每个方法（`get`/`post`/`put`/`patch`/`del`/`head`/`options`/`all`/`use`/`mount`）1:1 委托给普通注册器并立即在 `app` 上注册，然后返回 builder。幻影 `App` 类型像普通注册器一样贯穿链，因此 `s200/client` 推断经由 builder 的 `.app`（即传入的那个对象）完全一致地工作：`createClient(routes(app).get('/x', h).app)`。
 - `all` 对所有方法注册；此类路由会被 OpenAPI 生成跳过。
 
 ## `handle(app, request, init?)` → `Promise<Response>`
@@ -112,4 +119,4 @@ throws<{ 401: { error: string } }>({ … });
 ```
 
 - `httpError` 要求 `[400, 599]` 的整数状态；`body` 原样穿过 `toErrorResponse`，替代默认的 `{ error: message }` 信封。
-- `throws(...)` 是类型层声明（空操作中间件）：给路由错误通道打品牌，使 `s200/client` 的响应联合点名这些状态与体。
+- `throws(...)` 对请求处理是纯透传中间件：给路由错误通道打品牌，使 `s200/client` 的响应联合点名这些状态与体 —— 且同一声明现在运行时可读（门上的 `_errors`），`s200/openapi` 据此文档化错误分支，`s200/codegen` 据此生成进类型化客户端。

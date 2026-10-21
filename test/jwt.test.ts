@@ -188,6 +188,74 @@ describe('jwt', () => {
     missing.message.should.match(/no jwks key/);
   });
 
+  it('refetches the jwks document once when a fresh cache misses the kid', async () => {
+    const pairA = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const pairB = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const jwkA = await crypto.subtle.exportKey('jwk', pairA.publicKey);
+    const jwkB = await crypto.subtle.exportKey('jwk', pairB.publicKey);
+    let served = JSON.stringify({ keys: [{ ...jwkA, kid: 'A' }] });
+    let fetches = 0;
+    const fetchFn = async () => {
+      fetches += 1;
+      return new Response(served, { status: 200 });
+    };
+    const resolver = createJwksResolver('https://idp-rotate.test/jwks', {
+      ttlMs: 600_000,
+      fetchFn,
+    });
+    const tokenA = await signJwt({ sub: 'a' }, pairA.privateKey, { alg: 'ES256' });
+    (await verifyJwt(tokenA, await resolver({ alg: 'ES256', kid: 'A' }))).sub?.should.equal('a');
+    fetches.should.equal(1);
+    // Rotation: the stub now serves kid B only.
+    served = JSON.stringify({ keys: [{ ...jwkB, kid: 'B' }] });
+    const tokenB = await signJwt({ sub: 'b' }, pairB.privateKey, { alg: 'ES256' });
+    // kid B misses the fresh (mid-TTL) cache → exactly one forced refetch.
+    (await verifyJwt(tokenB, await resolver({ alg: 'ES256', kid: 'B' }))).sub?.should.equal('b');
+    fetches.should.equal(2);
+    // A kid unknown to both documents still refetches once, then fails.
+    const unknown = (await rejectionOf(
+      Promise.resolve().then(() => resolver({ alg: 'ES256', kid: 'C' }))
+    )) as Error;
+    unknown.message.should.match(/no jwks key for kid 'C'/);
+    fetches.should.equal(3);
+  });
+
+  it('does not refetch on a kid miss when this call just fetched the document', async () => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    let fetches = 0;
+    const fetchFn = async () => {
+      fetches += 1;
+      return new Response(
+        JSON.stringify({ keys: [{ ...publicJwk, kid: 'A' }] }),
+        { status: 200 }
+      );
+    };
+    // Cold cache: the miss happens against a document this call fetched,
+    // so the forced refetch must not fire a second time.
+    const resolver = createJwksResolver('https://idp-cold.test/jwks', {
+      ttlMs: 600_000,
+      fetchFn,
+    });
+    const missing = (await rejectionOf(
+      Promise.resolve().then(() => resolver({ alg: 'ES256', kid: 'B' }))
+    )) as Error;
+    missing.message.should.match(/no jwks key for kid 'B'/);
+    fetches.should.equal(1);
+  });
+
   it('gates routes through jwtAuth with a jwks endpoint', async () => {
     const pair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
@@ -216,6 +284,87 @@ describe('jwt', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('forwards audience and issuer checks through the gate', async () => {
+    const app = createApp();
+    use(app, jwtAuth({ secret: SECRET, audience: 'api', issuer: 's200-test' }));
+    get(app, '/me', () => new Response('ok'));
+
+    const good = await signJwt({ sub: 'u1' }, SECRET, { audience: 'api', issuer: 's200-test' });
+    const ok = await handle(
+      app,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${good}` } })
+    );
+    ok.status.should.equal(200);
+
+    const wrongAudience = await signJwt({ sub: 'u1' }, SECRET, {
+      audience: 'other',
+      issuer: 's200-test',
+    });
+    const aud401 = await handle(
+      app,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${wrongAudience}` } })
+    );
+    aud401.status.should.equal(401);
+
+    const wrongIssuer = await signJwt({ sub: 'u1' }, SECRET, {
+      audience: 'api',
+      issuer: 'who-else',
+    });
+    const iss401 = await handle(
+      app,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${wrongIssuer}` } })
+    );
+    iss401.status.should.equal(401);
+  });
+
+  it('honors clockTolerance and requireExpiry through the gate', async () => {
+    // 5 s past exp — inside a 10 s skew tolerance, outside the default 0.
+    const barelyExpired = await signJwt({ sub: 'u1' }, SECRET, { expiresIn: -5 });
+
+    const tolerant = createApp();
+    use(tolerant, jwtAuth({ secret: SECRET, clockTolerance: 10 }));
+    get(tolerant, '/me', () => new Response('ok'));
+    const ok = await handle(
+      tolerant,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${barelyExpired}` } })
+    );
+    ok.status.should.equal(200);
+
+    const strict = createApp();
+    use(strict, jwtAuth({ secret: SECRET }));
+    get(strict, '/me', () => new Response('ok'));
+    const gone = await handle(
+      strict,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${barelyExpired}` } })
+    );
+    gone.status.should.equal(401);
+
+    // signJwt adds iat but never exp without expiresIn.
+    const noExp = await signJwt({ sub: 'u1' }, SECRET);
+    const missingErr = (await rejectionOf(
+      verifyJwt(noExp, SECRET, { requireExpiry: true })
+    )) as Error;
+    missingErr.message.should.match(/missing exp/);
+
+    const demanding = createApp();
+    use(demanding, jwtAuth({ secret: SECRET, requireExpiry: true }));
+    get(demanding, '/me', () => new Response('ok'));
+    const rejected = await handle(
+      demanding,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${noExp}` } })
+    );
+    rejected.status.should.equal(401);
+    // Unset (the default) keeps accepting exp-less tokens.
+    const lax = createApp();
+    use(lax, jwtAuth({ secret: SECRET }));
+    get(lax, '/me', () => new Response('ok'));
+    const laxOk = await handle(
+      lax,
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${noExp}` } })
+    );
+    laxOk.status.should.equal(200);
   });
 
   it('bounds the default key cache: LRU evicts the oldest import', async () => {

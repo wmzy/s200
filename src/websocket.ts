@@ -43,6 +43,10 @@ export type WsSocket = {
    * runtime queues internally; a writer faster than the network can grow
    * memory (same contract as the minimal servers this replaces). */
   readonly send: (data: WsData) => void;
+  /** Bytes the transport has queued that are not yet on the wire —
+   * send-side backpressure visibility: it grows while `send` outruns the
+   * network and drains back to 0 as the socket flushes. */
+  readonly bufferedAmount: number;
   /** Starts the close handshake: a close frame is sent and the
    * connection ends once the peer answers (or the runtime gives up). */
   readonly close: (code?: number, reason?: string) => void;

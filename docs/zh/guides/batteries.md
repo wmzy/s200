@@ -185,7 +185,7 @@ await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });           
 serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
 ```
 
-node 服务器实现协议 —— 握手、文本/二进制（含分片）、ping/pong、关闭握手、`maxPayload` 预算（默认 64 MiB，超出为 1009）—— 外加可选的子协议协商与 permessage-deflate（RFC 7692，双向 no-context-takeover），以及心跳面（`socket.ping()` / `socket.onPong()`）：
+node 服务器实现协议 —— 握手、文本/二进制（含分片）、ping/pong、关闭握手、`maxPayload` 预算（默认 4 MiB，超出为 1009，在帧头解析时强制执行）—— 外加可选的子协议协商与 permessage-deflate（RFC 7692，双向 no-context-takeover），以及心跳面（`socket.ping()` / `socket.onPong()`）：
 
 ```ts
 upgradeWebSocket(app, '/graphql', (socket) => socket.onMessage(handle),
@@ -517,7 +517,7 @@ client.get('/list', {}, { query: { page: '2' } });              // query typed: 
 
 ### 错误分支
 
-错误分支来自两个通道。主通道是推断：从处理器**返回** `httpError(...)`，其状态与请求体形状落入路由日志 —— 无需声明（返回 `HttpError` 是抛它的糖：它流经同一个链内错误边界，`onError` included，中间件在 unwind 时看到盖好的响应）。第二通道是 `throws` 门，用于调用栈深处的辅助函数可能产生的分支 —— 类型层声明，运行时纯透传：
+错误分支来自两个通道。主通道是推断：从处理器**返回** `httpError(...)`，其状态与请求体形状落入路由日志 —— 无需声明（返回 `HttpError` 是抛它的糖：它流经同一个链内错误边界，`onError` included，中间件在 unwind 时看到盖好的响应）。第二通道是 `throws` 门，用于调用栈深处的辅助函数可能产生的分支 —— 请求处理运行时纯透传，但声明可从门上读回，`s200/openapi` 据此文档化分支、`s200/codegen` 据此生成进类型化客户端：
 
 ```ts
 import { httpError, throws } from 's200';

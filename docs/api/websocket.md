@@ -35,6 +35,7 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 | Member | Meaning |
 | --- | --- |
 | `send(data)` | Text or binary message; best-effort backpressure (the runtime queues internally) |
+| `bufferedAmount` | Bytes the transport has queued but not yet put on the wire — send-side backpressure visibility: grows while `send` outruns the network, drains back to `0` as the socket flushes (node: the socket's `writableLength`; bun: Bun's per-connection counter) |
 | `close(code?, reason?)` | Starts the close handshake |
 | `protocol` | The negotiated subprotocol, when the route declared protocols and the client offered one |
 | `ping(payload?)` / `onPong(cb)` | Keep-alive primitive — pair them to detect dead peers |
@@ -105,11 +106,11 @@ const server = await serve(app, { port: 3000, upgrade: createUpgradeHandler(app)
 | --- | --- |
 | `createUpgradeHandler(app, options?)` | Builds the http server's `'upgrade'` callback: matches the path against the app's WebSocket routes, runs the app + route middleware chain (a rejection is answered as plain HTTP instead of `101`), answers the handshake, and runs the matched handler per connection. Unknown paths destroy the socket; invalid handshakes get a 400 |
 
-`NodeUpgradeOptions`: `{ maxPayload?: number }` — maximum accumulated message size, default 64 MiB; oversized messages close with `1009` before more is buffered. `NodeUpgradeHandler`: `(req: IncomingMessage, socket: Duplex, head: Buffer) => void` — also the `upgrade` option type of `s200/node`'s `serve`.
+`NodeUpgradeOptions`: `{ maxPayload?: number }` — maximum accumulated message size, default **4 MiB**. The budget is enforced at **header-parse time**: a data frame whose declared length alone exceeds `maxPayload` — or a continuation that would push an in-progress fragmented message past it — fails the connection with `1009` immediately, before a single payload byte is buffered (a client declaring a 2^40-byte frame gets its `1009` after a few bytes, not after a terabyte). Control frames are exempt — RFC 6455 already caps them at 125 bytes. The post-buffer checks remain as defense in depth for the accumulated case. `NodeUpgradeHandler`: `(req: IncomingMessage, socket: Duplex, head: Buffer) => void` — also the `upgrade` option type of `s200/node`'s `serve`.
 
 ## Bun (`s200/websocket/bun`)
 
-Turns the app's WebSocket registry into `Bun.serve`'s `websocket` option plus an upgrade decision, passed through `s200/bun`'s `serve`. Bun implements the protocol; this module only routes upgrades and maps Bun's per-connection callbacks onto the `WsSocket` surface (including subprotocol negotiation, mirrored from the node adapter so both runtimes pick identically).
+Turns the app's WebSocket registry into `Bun.serve`'s `websocket` option plus an upgrade decision, passed through `s200/bun`'s `serve`. Bun implements the protocol; this module only routes upgrades and maps Bun's per-connection callbacks onto the `WsSocket` surface (including subprotocol negotiation, mirrored from the node adapter so both runtimes pick identically). `socket.bufferedAmount` is backed by Bun's per-connection `getBufferedAmount()` counter.
 
 ```ts
 import { createBunWebSocketBridge } from 's200/websocket/bun';

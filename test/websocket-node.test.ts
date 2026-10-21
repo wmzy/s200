@@ -74,6 +74,18 @@ function clientFrame(opcode: number, payload: Buffer | string, fin = true, rsv1 
   return Buffer.concat([header, mask, masked]);
 }
 
+/** A masked 64-bit-length frame header DECLARING `len` payload bytes, with
+ * only a few actually sent — the server must reject at header-parse time,
+ * never waiting for (or buffering) the declared payload. */
+function declaringFrame(opcode: number, len: bigint, fin = true): Buffer {
+  const header = Buffer.alloc(14);
+  header[0] = (fin ? 0x80 : 0) | opcode;
+  header[1] = 0x80 | 127;
+  header.writeBigUInt64BE(len, 2);
+  header.set([0x11, 0x22, 0x33, 0x44], 10);
+  return Buffer.concat([header, Buffer.from([0xde, 0xad, 0xbe, 0xef])]);
+}
+
 /** Opens a raw socket and sends the upgrade request. */
 function openSocket(port: number, path: string, extraHeaders = ''): Socket {
   const socket = connect(port, HOST);
@@ -223,6 +235,18 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
       socket.onMessage(() => socket.ping('beat'));
       socket.onPong(() => socket.send('got-pong'));
     });
+    // Sends a burst and/or reports socket.bufferedAmount as `stat:<n>`.
+    upgradeWebSocket(app, '/backlog', (socket) => {
+      socket.onMessage((data) => {
+        if (data === 'burst') {
+          // Binary chunks (opcode 2) so the closing text frame is the
+          // only opcode-1 frame on the wire — the drain marker.
+          const chunk = new Uint8Array(64 * 1024);
+          for (let i = 0; i < 128; i += 1) socket.send(chunk);
+        }
+        socket.send(`stat:${String(socket.bufferedAmount)}`);
+      });
+    });
     get(app, '/', () => new Response('http'));
     server = await serve(app, { port: 0, upgrade: createUpgradeHandler(app) });
   });
@@ -366,6 +390,77 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     }
     droppedCode.should.equal(1006);
   });
+
+  it('rejects a frame declaring a huge length at header time with 1009', async () => {
+    const socket = openSocket(server.port, '/echo');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    // A text frame declaring 2^40 payload bytes with only 4 sent: the
+    // header alone must fail the connection — buffering a terabyte would
+    // be exactly the DoS this guards against.
+    socket.write(declaringFrame(0x1, 2n ** 40n));
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1009);
+    await once(socket, 'end');
+    socket.destroy();
+  });
+
+  it('defaults maxPayload to 4 MiB — 5 MiB declared is rejected at header time', async () => {
+    const socket = openSocket(server.port, '/echo');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    socket.write(declaringFrame(0x1, BigInt(5 * 1024 * 1024)));
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1009);
+    socket.destroy();
+  });
+
+  it('accepts a message exactly at the 4 MiB default', async () => {
+    const socket = openSocket(server.port, '/echo');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x2, Buffer.alloc(4 * 1024 * 1024)));
+    const frame = await read();
+    frame.opcode.should.equal(0x2);
+    frame.payload.length.should.equal(4 * 1024 * 1024);
+    socket.destroy();
+  });
+
+  it('exposes bufferedAmount as a number, 0 when drained', async () => {
+    const socket = openSocket(server.port, '/backlog');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'stat'));
+    const frame = await read();
+    frame.opcode.should.equal(0x1);
+    const reported = Number(frame.payload.toString().slice(5));
+    reported.should.be.a('number');
+    reported.should.equal(0);
+    socket.destroy();
+  });
+
+  it('grows bufferedAmount while a burst outruns a paused client', async () => {
+    const socket = openSocket(server.port, '/backlog');
+    await readHead(socket);
+    // Pause the client's read: the server's 8 MiB burst cannot drain, so
+    // its transport queue (writableLength) must hold most of it.
+    socket.pause();
+    socket.write(clientFrame(0x1, 'burst'));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    socket.resume();
+    const read = frameReader(socket);
+    // 128 binary chunks drain, then the text stat frame closes the burst —
+    // read until that marker so the socket is fully drained before destroy.
+    let frame = await read();
+    while (frame.opcode !== 0x1) frame = await read();
+    const stat = frame.payload.toString();
+    // The stat frame carries the value captured at send time — positive
+    // because the client had not read a byte of the burst yet.
+    Number(stat.slice(5)).should.be.greaterThan(0);
+    socket.destroy();
+  });
 });
 
 describe('websocket node maxPayload', () => {
@@ -403,6 +498,59 @@ describe('websocket node maxPayload', () => {
     const frame = await read();
     frame.opcode.should.equal(0x8);
     frame.payload.readUInt16BE(0).should.equal(1009);
+    socket.destroy();
+  });
+
+  it('closes with 1009 when fragments accumulate past the budget', async () => {
+    const socket = openSocket(limited.port, '/ws');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, '12', false));
+    socket.write(clientFrame(0x0, '345'));
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1009);
+    socket.destroy();
+  });
+
+  it('rejects fragmentation at the header of the overflowing continuation', async () => {
+    const socket = openSocket(limited.port, '/ws');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, '12', false));
+    // A continuation DECLARING 10 more bytes with only 3 sent: 2 + 10 is
+    // already over the budget, so the header alone must fail with 1009 —
+    // the missing payload bytes are never waited for.
+    socket.write(declaringFrame(0x0, 10n));
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1009);
+    socket.destroy();
+  });
+
+  it('rejects a fragmented first frame declaring more than the budget', async () => {
+    const socket = openSocket(limited.port, '/ws');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    // First fragment (FIN=0) declaring an oversized length: rejected at
+    // header-parse time even though no message was in progress yet.
+    socket.write(declaringFrame(0x1, 5n, false));
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1009);
+    socket.destroy();
+  });
+
+  it('keeps control frames exempt from the payload budget', async () => {
+    const socket = openSocket(limited.port, '/ws');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    // A 5-byte ping with maxPayload 4: control frames answer (pong), not
+    // 1009 — RFC 6455 caps them at 125, not at maxPayload.
+    socket.write(clientFrame(0x9, '12345'));
+    const frame = await read();
+    frame.opcode.should.equal(0xa);
+    frame.payload.toString().should.equal('12345');
     socket.destroy();
   });
 });

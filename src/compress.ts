@@ -35,42 +35,58 @@ export type CompressOptions = {
 const DEFAULT_MIN_BYTES = 1024;
 
 /**
- * Picks the best supported encoding from Accept-Encoding. Returns undefined
- * when nothing acceptable is offered. gzip wins ties; `*` counts as gzip;
- * q=0 (or q=0.0) disqualifies; `br` is only offered when `brotli` is
- * injected (and loses ties to gzip for spec simplicity).
+ * Picks the best supported encoding from Accept-Encoding per RFC 9110
+ * §12.5.3: the highest-q coding wins, an explicit coding's q beats the
+ * `*` catch-all regardless of list order, and an explicit q=0 bans that
+ * coding even when `*` is acceptable. Ties break by server preference
+ * br > gzip > deflate (brotli is the densest). `*` alone means br when a
+ * brotli encoder is injected, else gzip. Returns undefined when nothing
+ * acceptable is offered. q is clamped to [0, 1]; an unparseable q
+ * parameter is ignored (q stays 1), matching `accepts` negotiation.
  */
 function pickEncoding(
   header: string,
   brotli: boolean
 ): 'gzip' | 'deflate' | 'br' | undefined {
-  let gzip = 0;
-  let deflate = 0;
-  let br = 0;
-  let star = 0;
+  let gzip: number | undefined;
+  let deflate: number | undefined;
+  let br: number | undefined;
+  let star: number | undefined;
   for (const part of header.split(',')) {
-    const [rawName, ...params] = part.trim().split(';');
+    const trimmed = part.trim();
+    if (trimmed === '') continue;
+    const [rawName, ...params] = trimmed.split(';');
     const name = (rawName ?? '').trim().toLowerCase();
+    if (name === '') continue;
     let q = 1;
     for (const param of params) {
-      const eq = param.indexOf('=');
-      if (eq < 0) continue;
-      const key = param.slice(0, eq).trim().toLowerCase();
-      if (key !== 'q') continue;
-      const value = Number(param.slice(eq + 1).trim());
-      if (!Number.isNaN(value)) q = value;
+      const kv = param.trim();
+      if (!kv.toLowerCase().startsWith('q=')) continue;
+      const parsed = Number(kv.slice(2));
+      q = Number.isNaN(parsed) ? 1 : Math.min(1, Math.max(0, parsed));
     }
-    if (q <= 0) continue;
+    // Later occurrences win, matching the accepts-family parser.
     if (name === 'gzip') gzip = q;
     else if (name === 'deflate') deflate = q;
     else if (name === 'br') br = q;
     else if (name === '*') star = q;
   }
-  if (gzip > 0) return 'gzip';
-  if (deflate > 0) return 'deflate';
-  if (brotli && br > 0) return 'br';
-  if (star > 0) return 'gzip';
-  return undefined;
+  // Effective q: an explicit listing overrides the `*` catch-all, so a
+  // q=0 ban holds even when `*` is acceptable.
+  const effBr = brotli ? br ?? star : undefined;
+  const effGzip = gzip ?? star;
+  const effDeflate = deflate ?? star;
+  let best: 'br' | 'gzip' | 'deflate' | undefined;
+  let bestQ = 0;
+  const consider = (name: 'br' | 'gzip' | 'deflate', q: number | undefined) => {
+    if (q === undefined || q <= bestQ) return;
+    best = name;
+    bestQ = q;
+  };
+  consider('br', effBr);
+  consider('gzip', effGzip);
+  consider('deflate', effDeflate);
+  return best;
 }
 
 /** Appends a value to the Vary header without duplicating it. */

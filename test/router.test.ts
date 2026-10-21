@@ -373,6 +373,42 @@ describe('matchRoutes', function () {
     });
   });
 
+  it('accumulates the Allow list for indexed /:tenant/resourceN shapes in one pass', function () {
+    const getR = createRoute('GET', '/:tenant/resource3', noop);
+    const postR = createRoute('POST', '/:tenant/resource3', noop);
+    const putFirst = createRoute('PUT', '/:tenant/resource3', noop);
+    // A sibling static segment files under a different indexed bucket —
+    // its routes never join this path's Allow list.
+    const delOther = createRoute('DELETE', '/:tenant/other', noop);
+    mustMatch(
+      matchRoutes([getR, postR, putFirst, delOther], 'PATCH', '/acme/resource3')
+    ).should.deep.equal({ allowedMethods: ['GET', 'POST', 'PUT'] });
+  });
+
+  it('emits the Allow list in registration order across trie nodes', function () {
+    // The PUT files at the 'a' node, the GET at the root's plain list; the
+    // walk reaches the root's candidate first, but registration order must
+    // win the Allow listing.
+    const putStatic = createRoute('PUT', '/a', noop);
+    const getDynamic = createRoute('GET', '/:t', noop);
+    mustMatch(matchRoutes([putStatic, getDynamic], 'PATCH', '/a')).should.deep.equal({
+      allowedMethods: ['PUT', 'GET'],
+    });
+  });
+
+  it('dedupes a method double-filed in both the plain list and an indexed bucket', function () {
+    // The optional segment files this route twice — the plain list (the
+    // backtracking matcher must see it) and the pos-2 'y' bucket; the walk
+    // examines it twice, and Allow must still list the method once.
+    const optional = createRoute('POST', '/x/:opt?/y', noop);
+    mustMatch(matchRoutes([optional], 'PATCH', '/x/1/y')).should.deep.equal({
+      allowedMethods: ['POST'],
+    });
+    mustMatch(matchRoutes([optional], 'PATCH', '/x/y')).should.deep.equal({
+      allowedMethods: ['POST'],
+    });
+  });
+
   it('tolerates a trailing slash when strict is off', function () {
     const route = createRoute('GET', '/a/:id', noop);
     const result = mustRoute(matchRoutes([route], 'GET', '/a/42/', false));

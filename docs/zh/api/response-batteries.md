@@ -67,7 +67,7 @@ use(app, compress({ brotli: { compress: brotliCompress } }));
 | `minBytes` | `1024` | 压缩前最小未压缩字节数；仅在响应带 content-length 时参考（流式响应照压，像代理一样） |
 | `brotli` | — | `{ compress: (bytes) => Promise<Uint8Array> }` —— 注入时才协商 `br`；brotli 是缓冲路径（仅字节支撑响应；流式响应回退 gzip/deflate） |
 
-编码选择：最佳 `Accept-Encoding` 匹配 —— gzip 赢得平局，`*` 算 gzip，`q=0` 取消资格，`br` 平局负于 gzip。
+编码选择遵循 RFC 9110 §12.5.3：q 最高的编码胜出；显式编码的 q 压过 `*` 通配（与列表顺序无关）；显式 `q=0` 即使在 `*` 可接受时也封禁该编码。平局按服务器偏好 br > gzip > deflate 打破（brotli 压得最紧）；仅 `*` 时选 `br`（注入了 brotli 编码器时），否则 `gzip`；无可接受项则不压缩。q 被夹到 [0, 1]；无法解析的 q 参数被忽略（q 保持 1）。
 
 跳过：已带 `content-encoding` 的响应、range 响应（`content-range`）、`cache-control: no-transform`（RFC 的不转换指令）与无体响应。凡被压缩的响应均盖 `Vary: Accept-Encoding`。在 `use` 顺序中注册于 logger/cors 之后 —— 它在 unwind 上重写响应。
 

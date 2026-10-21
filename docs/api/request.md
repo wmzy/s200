@@ -83,12 +83,13 @@ Incremental `multipart/form-data` parsing — the whole body is **never** buffer
 ```ts
 import { streamForm } from 's200/multipart';
 await streamForm(ctx, (part) => { /* part.name, part.data, … */ });
-// streamForm(ctx, onPart, options?) — options.limit budgets the whole body
+// streamForm(ctx, onPart, options?) — options.limit budgets the whole body;
+// maxParts (default 256) and maxPartSize (default 8 MiB) bound the form
 ```
 
 `FormPart`: `{ name: string; filename?: string; contentType?: string; data: Uint8Array }` — binary-safe, byte-exact.
 
-Memory is bounded per part, not per body: one part's bytes accumulate until its delimiter arrives, plus a scan window across chunk edges. A part's header block is capped at 16 KiB and transport padding at 256 bytes; a body crossing either is rejected as malformed. The `limit` budget rejects an oversized upload with a `413` `HttpError` while the platform body is cancelled mid-receive; an aborted `ctx.signal` surfaces as an `AbortError`; a second read of an already-streamed body rejects with a `409`.
+Memory is bounded per part, not per body: one part's bytes accumulate until its delimiter arrives, plus a scan window across chunk edges. A part's header block is capped at 16 KiB and transport padding at 256 bytes; a body crossing either is rejected as malformed. The accumulation itself is capped mid-stream: `maxPartSize` (default 8 MiB) rejects an oversized part with a `413` `HttpError` while its bytes are still arriving (the part is never fully buffered), and `maxParts` (default 256) rejects a form of endless parts at the offending part's headers — the platform body is cancelled either way. `Number.POSITIVE_INFINITY` lifts either cap. The `limit` budget rejects an oversized upload with a `413` while the body streams; an aborted `ctx.signal` surfaces as an `AbortError`; a second read of an already-streamed body rejects with a `409`.
 
 ## Upload (`s200/upload`)
 
@@ -103,7 +104,7 @@ const result = await uploadForm(
   (file) => writeFile(`/tmp/${file.filename}`, file.data),   // the sink
   {
     limit: 10 * 1024 * 1024,          // total body budget, enforced while streaming
-    maxFileSize: 5 * 1024 * 1024,     // per-file cap (413)
+    maxFileSize: 5 * 1024 * 1024,     // per-file cap (413), enforced mid-stream
     maxFiles: 8,                        // file-part cap (413)
     accept: ['image/'],                 // content-type allowlist (415)
   }
@@ -120,8 +121,8 @@ const result = await uploadForm(
 | `UploadFile` | `{ name, filename, contentType?, data: Uint8Array, size }` — one buffered file part |
 | `UploadSink` | `(file: UploadFile) => Promise<string \| void> \| string \| void` — a returned string is reported as that file's `id`; a rejection aborts the whole upload |
 | `UploadAccept` | `readonly string[]` (media-type prefixes) or `(part: FormPart) => boolean` |
-| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, accept? }` — all optional; the gates the example above shows |
+| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, maxParts?, accept? }` — all optional; the gates the example above shows |
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 
-Gates run in order — `accept` (415), `maxFiles` (413), `maxFileSize` (413) — before a file reaches the sink. Every rejection and any sink error aborts the upload: the parse stops, the platform source is cancelled, the error bubbles. A part is the unit of buffering: each file sits fully in memory by the time the sink sees it — for truly huge files, use `streamForm` directly.
+Gates: `accept` (415) and `maxFiles` (413) run at part delivery; `maxFileSize` composes into `streamForm`'s per-part cap and aborts while the file is still streaming — the crossing byte rejects with a `413`, the source is cancelled, and the sink never sees the file (default cap: `streamForm`'s 8 MiB). `maxParts` (default 256, fields included) rejects endless-part forms mid-stream the same way. Every rejection and any sink error aborts the upload: the parse stops, the platform source is cancelled, the error bubbles. A part is the unit of buffering: each file sits fully in memory by the time the sink sees it — for truly huge files, use `streamForm` directly.

@@ -98,6 +98,11 @@ support, in data + functions form:
 The horizontal-scaling layer — one app, partitioned across
 units, with the dispatch seam kept runtime-neutral:
 
+> **Experimental.** All five entries in this table are experimental: their
+> APIs may change or be withdrawn in any minor, they are not yet
+> battle-tested in production, and the thread-executor fast path depends
+> on Node-internal listener-transfer behavior (Node ≥26.6).
+
 | Entry               | Gives you                                                        |
 | ------------------- | ---------------------------------------------------------------- |
 | `s200/shard`        | `policy`, `shardSpecs`, `shardApp`, `matchShard` — route policy annotations, the serializable shard descriptor, partition, and the dispatch seam |

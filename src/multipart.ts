@@ -11,6 +11,10 @@
  * so a delimiter can match when it straddles two chunks. Each part's
  * header block is capped at 16 KiB and the transport padding after a
  * boundary at 256 bytes; a body crossing either is rejected as malformed.
+ * The per-part accumulation itself is capped — `maxPartSize` (default
+ * 8 MiB) rejects mid-part while the bytes are still arriving, and
+ * `maxParts` (default 256) rejects a form of endless tiny parts — both
+ * with a 413.
  *
  * Budget and cancellation ride through from `readStream`: `options.limit`
  * rejects an oversized upload with a 413 `HttpError` while the platform
@@ -47,6 +51,14 @@ const LF = 0x0a;
 const DASH = 0x2d;
 const SPACE = 0x20;
 const TAB = 0x09;
+
+/** Default cap on the number of parts a single form may carry: a stream of
+ * endless tiny parts is the many-parts flavor of the oversized-part attack,
+ * and no legitimate form comes close. */
+const DEFAULT_MAX_PARTS = 256;
+/** Default cap on one part's assembled size — the per-part memory bound.
+ * `Number.POSITIVE_INFINITY` lifts it for trusted callers. */
+const DEFAULT_MAX_PART_SIZE = 8 * 1024 * 1024;
 
 /** A part's header block is the one place the parser buffers text before
  * validating it — cap it so an adversarial stream cannot grow it forever. */
@@ -257,7 +269,8 @@ function parsePartHeaders(block: string): {
 async function scanForm(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   delim: Uint8Array,
-  onPart: (part: FormPart) => void | Promise<void>
+  onPart: (part: FormPart) => void | Promise<void>,
+  bounds: { readonly maxParts: number; readonly maxPartSize: number }
 ): Promise<void> {
   const crlfcrlf = encoder.encode('\r\n\r\n');
   const decoder = new TextDecoder();
@@ -269,6 +282,7 @@ async function scanForm(
   let from = 0;
   let partChunks: Uint8Array[] = [];
   let partLen = 0;
+  let partCount = 0;
   let name = '';
   let filename: string | undefined;
   let contentType: string | undefined;
@@ -321,6 +335,16 @@ async function scanForm(
         const block = decoder.decode(carry.subarray(0, i));
         carry = carry.subarray(i + 4);
         ({ name, filename, contentType } = parsePartHeaders(block));
+        // Counted at part START — the earliest mid-stream point the
+        // (maxParts + 1)-th part is knowable, before any of its bytes
+        // are buffered.
+        partCount += 1;
+        if (partCount > bounds.maxParts) {
+          throw httpError(
+            413,
+            `Too many multipart parts: the limit is ${bounds.maxParts}`
+          );
+        }
         stage = 'body';
         partChunks = [];
         partLen = 0;
@@ -337,6 +361,14 @@ async function scanForm(
           partChunks.push(carry.subarray(0, flush));
           partLen += flush;
           carry = carry.subarray(flush);
+          // Checked as the bytes land, not once the part is complete: an
+          // oversized part aborts the receive instead of buffering whole.
+          if (partLen > bounds.maxPartSize) {
+            throw httpError(
+              413,
+              `Multipart part "${name}" exceeds the ${bounds.maxPartSize}-byte part limit`
+            );
+          }
         }
         from = 0;
       } else {
@@ -352,6 +384,12 @@ async function scanForm(
           if (i > 0) {
             partChunks.push(carry.subarray(0, i));
             partLen += i;
+            if (partLen > bounds.maxPartSize) {
+              throw httpError(
+                413,
+                `Multipart part "${name}" exceeds the ${bounds.maxPartSize}-byte part limit`
+              );
+            }
           }
           const part: FormPart = {
             name,
@@ -394,6 +432,12 @@ async function scanForm(
  * - `options.limit` and `ctx.signal` ride through `readStream`: an
  *   oversized body rejects with a 413 `HttpError` (platform body
  *   cancelled), an aborted request with an `AbortError`.
+ * - `options.maxParts` (default 256) and `options.maxPartSize` (default
+ *   8 MiB) are enforced mid-stream: a form exceeding the part count
+ *   rejects at the offending part's headers, a part whose assembled bytes
+ *   cross the size cap rejects as they land — both 413 `HttpError`s with
+ *   the source cancelled, never a full buffer of the offending part.
+ *   `Number.POSITIVE_INFINITY` lifts either cap for trusted callers.
  * - `onPart` is awaited sequentially; a rejection propagates after the
  *   stream is cancelled, aborting the parse.
  * - Truncated or malformed bodies (no final boundary, headerless part,
@@ -407,13 +451,21 @@ async function scanForm(
 export async function streamForm(
   ctx: Ctx,
   onPart: (part: FormPart) => void | Promise<void>,
-  options: { limit?: number } = {}
+  options: {
+    readonly limit?: number;
+    readonly maxParts?: number;
+    readonly maxPartSize?: number;
+  } = {}
 ): Promise<void> {
   const boundary = boundaryOf(ctx.req.headers.get('content-type'));
   const reader = readStream(ctx, { limit: options.limit }).getReader();
   const delim = encoder.encode(`\r\n--${boundary}`);
+  const bounds = {
+    maxParts: options.maxParts ?? DEFAULT_MAX_PARTS,
+    maxPartSize: options.maxPartSize ?? DEFAULT_MAX_PART_SIZE,
+  };
   try {
-    await scanForm(reader, delim, onPart);
+    await scanForm(reader, delim, onPart, bounds);
   } catch (error) {
     // A failed parse must not leave the upload draining on the platform.
     await reader.cancel().catch(() => undefined);

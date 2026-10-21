@@ -122,6 +122,17 @@ use(app, routeHints(app));
 s200 dev ./app.ts --port 3000 --overlay
 ```
 
+运行器旗标（带值的旗标同时接受 `--flag value` 与 `--flag=value`）：
+
+| 旗标 | 含义 |
+| --- | --- |
+| `--port N` | 监听端口（默认 `$PORT` 或 `3000`；`0` 选一个空闲端口） |
+| `--host H` | 监听主机，转发给 `serve`（默认：所有网络接口） |
+| `--watch DIR` | 额外监听的重载目录 —— 可重复；入口所在目录始终被监听，`--watch` 目录追加在 `RunDevOptions.watchDirs` 之后 |
+| `--env-file FILE` | dotenv 风格文件（`KEY=VALUE` 行，两侧空白修剪，跳过 `#` 注释与空行，成对的单/双引号值去引号），在**入口模块图被导入之前**载入 `process.env` —— 可重复；文件缺失是点名该路径的硬错误。载入的值**覆盖** `process.env` 中已有的变量，与 `node --env-file` 语义一致 |
+| `--no-hints` | 关闭 404 路由提示中间件（默认开启） |
+| `--overlay` | 开启浏览器错误 overlay（默认关闭） |
+
 路由提示默认开启（`--no-hints` 关闭）：运行器把每次加载出的表包进一个携带 `routeHints` 中间件的派生副本 —— 用户的应用对象从不被变异，重载保持纯表交换。错误 overlay（`--overlay`，默认关闭）经由同一派生副本缝隙再加两样东西：
 
 - 一个中间件，把内联的零依赖 `<script>` 注入到**字节支撑**的 `text/html` 响应最后的 `</body>` 之前 —— 即携带 `content-length` 的响应，`json`/`text`/`html`/`send` 的契约。流式 HTML（`stream()`/`streamSSE()`，无 `content-length`）原样放行 —— 已文档化的行为：为了注入而缓冲它就违背了流式本身。重建的响应保留状态与响应头，并带上诚实的新 `content-length`；`HEAD` 请求跳过注入。

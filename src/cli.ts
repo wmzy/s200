@@ -18,7 +18,7 @@ import type { App } from './app';
 import type { DevEvent, DevEventBus, HotApp, WatchAndReloadHandle } from './dev';
 
 import * as nodeModule from 'node:module';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -38,7 +38,8 @@ import { createRouteTable, formatRouteTable } from './route-table';
 const USAGE = `usage: s200 <command> [args]
 
 commands:
-  dev <entry> [--port N] [--no-hints] [--overlay]    dev server with hot reload
+  dev <entry> [--port N] [--host H] [--watch DIR] [--env-file FILE]
+             [--no-hints] [--overlay]                     dev server with hot reload
   routes <entry> [--json]                            print the route table
   codegen <entry> [--out file] [--name X] [--base-url U]
                                                     print a typed client module
@@ -47,6 +48,12 @@ dev options:
   entry     app module exporting the app as default or as a named export "app"
             (default ./app.ts)
   --port    listen port (default $PORT or 3000; 0 picks a free port)
+  --host    listen host (default: all interfaces)
+  --watch   extra directory to watch for reloads (repeatable; the entry's
+            directory is always watched)
+  --env-file  dotenv-style file loaded into process.env before the entry
+            loads (repeatable; overrides existing variables, like node
+            --env-file)
   --no-hints   disable the 404 route-hints middleware (on by default)
   --overlay    enable the browser error overlay (off by default)
 
@@ -54,30 +61,38 @@ Every command loads its entry with the same convention (default export or a
 named export "app"; default ./app.ts). TypeScript entries need Node >= 22.18
 (or >= 22.6 with --experimental-strip-types).`;
 
-/** Parsed `s200 dev` arguments — `port`/`hints`/`overlay` are `undefined`
- * when their flags are absent, so an embedding `runDev` call can supply its
- * own defaults. */
+/** Parsed `s200 dev` arguments — `port`/`hints`/`overlay`/`host` are
+ * `undefined` when their flags are absent, so an embedding `runDev` call
+ * can supply its own defaults; `watch`/`envFiles` collect their repeatable
+ * flags in argv order (empty arrays when absent). */
 export type DevArgs = {
   readonly entry: string;
   readonly port: number | undefined;
   readonly hints: boolean | undefined;
   readonly overlay: boolean | undefined;
+  readonly host: string | undefined;
+  readonly watch: readonly string[];
+  readonly envFiles: readonly string[];
 };
 
-/** The argv grammar of `s200 dev`: `[entry] [--port N] [--no-hints]
- * [--overlay]`. Throws on anything else, with the usage text in the
- * message. */
+/** The argv grammar of `s200 dev`: `[entry] [--port N] [--host H]
+ * [--watch DIR] [--env-file FILE] [--no-hints] [--overlay]` — value flags
+ * take both `--flag value` and `--flag=value`, `--watch`/`--env-file`
+ * repeat. Throws on anything else, with the usage text in the message. */
 export function parseDevArgs(argv: readonly string[]): DevArgs {
   let entry: string | undefined;
   let port: number | undefined;
   let hints: boolean | undefined;
   let overlay: boolean | undefined;
+  let host: string | undefined;
+  const watch: string[] = [];
+  const envFiles: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     const flagValue = (): string => {
       const value = argv[i + 1];
       if (value === undefined) {
-        throw new Error(`s200 dev: ${arg} requires a number\n${USAGE}`);
+        throw new Error(`s200 dev: ${arg} requires a value\n${USAGE}`);
       }
       return value;
     };
@@ -97,6 +112,21 @@ export function parseDevArgs(argv: readonly string[]): DevArgs {
       hints = false;
     } else if (arg === '--overlay') {
       overlay = true;
+    } else if (arg === '--host') {
+      host = flagValue();
+      i += 1;
+    } else if (arg.startsWith('--host=')) {
+      host = arg.slice('--host='.length);
+    } else if (arg === '--watch') {
+      watch.push(flagValue());
+      i += 1;
+    } else if (arg.startsWith('--watch=')) {
+      watch.push(arg.slice('--watch='.length));
+    } else if (arg === '--env-file') {
+      envFiles.push(flagValue());
+      i += 1;
+    } else if (arg.startsWith('--env-file=')) {
+      envFiles.push(arg.slice('--env-file='.length));
     } else if (arg.startsWith('--')) {
       throw new Error(`s200 dev: unknown option "${arg}"\n${USAGE}`);
     } else if (entry !== undefined) {
@@ -105,7 +135,7 @@ export function parseDevArgs(argv: readonly string[]): DevArgs {
       entry = arg;
     }
   }
-  return { entry: entry ?? './app.ts', port, hints, overlay };
+  return { entry: entry ?? './app.ts', port, hints, overlay, host, watch, envFiles };
 }
 
 /** What the watch seam receives: everything `watchAndReload` needs. */
@@ -127,6 +157,8 @@ export type RunDevOptions = {
   readonly load?: () => Promise<App>;
   /** Port override — the `--port` flag wins over this, `$PORT` sits last. */
   readonly port?: number;
+  /** Listen host override — the `--host` flag wins over this. */
+  readonly host?: string;
   /** Extra directories to watch in addition to the entry's directory. */
   readonly watchDirs?: readonly string[];
   /** Reload observer; the default logs one `reloaded (N routes)` line. */
@@ -277,29 +309,86 @@ function assertTypeScriptEntrySupported(entry: string): void {
 }
 
 /**
+ * Parses one dotenv-style file body into key/value pairs: `KEY=VALUE`
+ * lines with surrounding whitespace trimmed, `#` comments and blank lines
+ * skipped, matching single- or double-quoted values unquoted. Lines
+ * without a `=` (or with an empty key) are skipped, dotenv-style.
+ */
+function parseEnvSource(source: string): readonly (readonly [string, string])[] {
+  const pairs: [string, string][] = [];
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) {
+      continue;
+    }
+    const eq = line.indexOf('=');
+    if (eq <= 0) {
+      continue;
+    }
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    pairs.push([key, value]);
+  }
+  return pairs;
+}
+
+/**
+ * Loads `--env-file` files into `process.env` BEFORE the entry module
+ * graph is imported — callers place it ahead of the first `load()`. A
+ * missing/unreadable file is a hard error naming the path. Loaded values
+ * OVERRIDE variables already present in `process.env` — the same
+ * precedence as `node --env-file`.
+ */
+function loadEnvFiles(paths: readonly string[]): void {
+  for (const file of paths) {
+    let source: string;
+    try {
+      source = readFileSync(file, 'utf8');
+    } catch {
+      throw new Error(`s200 dev: --env-file: cannot read "${file}"\n${USAGE}`);
+    }
+    for (const [key, value] of parseEnvSource(source)) {
+      process.env[key] = value;
+    }
+  }
+}
+
+/**
  * Runs the dev server for one entry: loads the app, serves the hot app
- * identity (one server for the whole session), and wires the watcher whose
- * reloads swap the route table in place. The first load prints the aligned
- * route table; reloads keep the one-line count. Route hints (`--no-hints`
- * to disable) and the error overlay (`--overlay`) wrap every loaded table
- * as derived copies — the user's app data is never mutated. Returns the
- * listening URL, the adapter's server handle, and a `close()` that stops
- * watcher then server.
+ * on one server identity, and reloads the table on watch events — all dev
+ * extras (hints, overlay) as derived copies, so the user's app data is
+ * never mutated. Returns the listening URL, the adapter's server handle,
+ * and a `close()` that stops watcher then server.
  */
 export async function runDev(
   argv: readonly string[],
   opts: RunDevOptions = {}
 ): Promise<DevServer> {
   const parsed = parseDevArgs(argv);
+  // Env files first: they must be populated before ANY entry code runs —
+  // the graph below (loader, watchers) imports the entry afterwards.
+  loadEnvFiles(parsed.envFiles);
   assertTypeScriptEntrySupported(parsed.entry);
   const port = parsed.port ?? opts.port ?? Number(process.env.PORT ?? 3000);
   if (!Number.isInteger(port) || port < 0) {
     throw new Error(`s200 dev: invalid port "${String(port)}"\n${USAGE}`);
   }
+  const host = parsed.host ?? opts.host;
   const hints = parsed.hints ?? opts.hints ?? true;
   const overlay = parsed.overlay ?? opts.overlay ?? false;
   const baseLoader = opts.load ?? loadFromEntry(parsed.entry);
-  const watchDirs = [dirname(resolve(parsed.entry)), ...(opts.watchDirs ?? [])];
+  const watchDirs = [
+    dirname(resolve(parsed.entry)),
+    ...(opts.watchDirs ?? []),
+    ...parsed.watch,
+  ];
   // Populate the graph roots before the first load so even the initial
   // import carries the epoch stamp — reloads then re-evaluate every module
   // under these roots, not just the entry.
@@ -368,7 +457,7 @@ export async function runDev(
     },
   };
 
-  const server = await serve(hot.app, { port });
+  const server = await serve(hot.app, { port, host });
   const watcher = (opts.watch ?? watchDefault)({
     dirs: watchDirs,
     hot: reporting,

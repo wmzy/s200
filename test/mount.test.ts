@@ -1,6 +1,7 @@
-import { describe, it } from 'vitest';
+import { describe, it, vi } from 'vitest';
 
 import { createApp, get, handle, mount, use } from '../src/app';
+import { json, text } from '../src/respond';
 
 function makeRequest(path: string, method = 'GET'): Request {
   return new Request(`http://localhost${path}`, { method });
@@ -99,5 +100,93 @@ describe('mount', function () {
     mount(app, '/v1', sub);
     const res = await handle(app, makeRequest('/v1/p/7'));
     (await res.text()).should.equal('id=7');
+  });
+
+  it('carries the sub-app onError: a thrown sub error maps through the sub policy', async function () {
+    const app = createApp();
+    const sub = createApp({
+      onError: (ctx, error) => {
+        json(ctx, { sub: true, message: (error as Error).message }, { status: 502 });
+      },
+    });
+    get(sub, '/boom', () => {
+      throw new Error('kaput');
+    });
+    mount(app, '/v1', sub);
+    const res = await handle(app, makeRequest('/v1/boom'));
+    res.status.should.equal(502);
+    (await res.json()).should.deep.equal({ sub: true, message: 'kaput' });
+  });
+
+  it('applies the carried sub onError to sub middleware errors too', async function () {
+    const app = createApp();
+    const sub = createApp({
+      onError: (ctx) => {
+        text(ctx, 'sub-caught', { status: 500 });
+      },
+    });
+    use(sub, async () => {
+      throw new Error('middleware boom');
+    });
+    get(sub, '/x', () => new Response('never'));
+    mount(app, '/v1', sub);
+    const res = await handle(app, makeRequest('/v1/x'));
+    res.status.should.equal(500);
+    (await res.text()).should.equal('sub-caught');
+  });
+
+  it('falls back to the parent policy when the sub onError declines', async function () {
+    const parent = createApp({
+      onError: (ctx) => {
+        json(ctx, { parent: true }, { status: 501 });
+      },
+    });
+    // Declines: the sub policy acknowledges the error but writes nothing.
+    const sub = createApp({ onError: () => undefined });
+    get(sub, '/x', () => {
+      throw new Error('kaput');
+    });
+    mount(parent, '/p', sub);
+    const res = await handle(parent, makeRequest('/p/x'));
+    res.status.should.equal(501);
+    (await res.json()).should.deep.equal({ parent: true });
+  });
+
+  it('warns once when the sub defines onNotFound — mount drops it', function () {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      const sub = createApp({
+        onNotFound: (ctx) => {
+          text(ctx, 'nope', { status: 404 });
+        },
+      });
+      get(sub, '/a', () => new Response('a'));
+      get(sub, '/b', () => new Response('b'));
+      mount(app, '/w', sub);
+      warn.mock.calls.length.should.equal(1);
+      (warn.mock.calls[0]![0] as string).should.match(
+        /^\[s200\] mount: sub-app onNotFound\/match are not carried by mount\(\)/
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns for a custom matcher, never for default/strict matchers or carried onError', function () {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      mount(app, '/plain', createApp());
+      // strict:false still installs the default matcher — no warning.
+      mount(app, '/strict', createApp({ strict: false }));
+      // onError is carried now — not a warnable drop.
+      mount(app, '/onerr', createApp({ onError: (ctx) => { text(ctx, 'x'); } }));
+      warn.mock.calls.length.should.equal(0);
+      mount(app, '/custom', createApp({ match: () => undefined }));
+      warn.mock.calls.length.should.equal(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

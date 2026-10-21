@@ -127,6 +127,15 @@ export default defineConfig({
             items: [{ text: '数据与方法论', link: '/zh/benchmarks' }],
           },
           {
+            text: '博客',
+            items: [
+              {
+                text: 'unwind 税：中间件的真实成本',
+                link: '/zh/blog/middleware-unwind-cost',
+              },
+            ],
+          },
+          {
             text: '迁移',
             items: [
               { text: '从 Express', link: '/zh/migration-from-express' },
@@ -248,6 +257,15 @@ export default defineConfig({
       {
         text: 'Benchmarks',
         items: [{ text: 'Numbers & methodology', link: '/benchmarks' }],
+      },
+      {
+        text: 'Blog',
+        items: [
+          {
+            text: 'The unwind tax: what middleware actually costs',
+            link: '/blog/middleware-unwind-cost',
+          },
+        ],
       },
       {
         text: 'Migration',

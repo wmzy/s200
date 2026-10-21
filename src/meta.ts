@@ -32,6 +32,14 @@ export type RouteMeta = {
     number,
     { readonly description: string; readonly schema?: SerializeSchema }
   >;
+  /**
+   * OpenAPI security requirements for this operation — one entry per
+   * alternative (OR-of-ANDs, exactly OpenAPI's `security` shape); each
+   * entry maps a scheme name (declared via `openapiSpec`'s
+   * `securitySchemes`) to its required scopes, `[]` when the scheme needs
+   * none. Emitted verbatim as the operation's `security`.
+   */
+  readonly security?: readonly Record<string, readonly string[]>[];
 };
 
 export type AppMeta = {

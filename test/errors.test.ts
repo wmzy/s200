@@ -57,6 +57,17 @@ describe('throws', function () {
     res.status.should.equal(200);
     (await res.json()).should.deep.equal({ ok: true });
   });
+
+  it('stashes its declaration at runtime for spec-time consumers', function () {
+    // Bare statuses stash the default envelope as `{ error: '' }`; the
+    // record form stashes its values verbatim (shape examples); the
+    // zero-argument form declares nothing and keeps today's bare shape.
+    throws(401, 404)._errors?.should.deep.equal({ 401: { error: '' }, 404: { error: '' } });
+    throws({ 422: { issues: ['x'] } })._errors?.should.deep.equal({
+      422: { issues: ['x'] },
+    });
+    (throws()._errors === undefined).should.be.true;
+  });
 });
 
 describe('isHttpError', function () {

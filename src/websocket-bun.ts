@@ -46,6 +46,9 @@ export type BunWs = {
   send(data: string | Uint8Array): void;
   close(code: number, reason: string): void;
   ping(data?: string | Uint8Array): void;
+  /** Bytes queued for the peer but not yet on the wire — Bun's live
+   * per-connection backlog counter. */
+  getBufferedAmount(): number;
 };
 
 /** The `websocket` option Bun.serve accepts, narrowed to the members used. */
@@ -147,6 +150,10 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
         send(data: WsData) {
           // Bun's send accepts string|Uint8Array; ArrayBuffer needs the view.
           ws.send(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+        },
+        // Live: Bun tracks the per-connection send backlog itself.
+        get bufferedAmount(): number {
+          return ws.getBufferedAmount();
         },
         close(code, reason) {
           ws.close(code ?? 1000, reason ?? '');

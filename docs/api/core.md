@@ -19,6 +19,7 @@ The barrel also re-exports the [response helpers, body readers, and `serveStatic
 | `RouteDef` | `{ method, pattern, … }` — one registration's compile-time signature |
 | `Registrar<M>` | The shared signature of every method registrar (`get`, `post`, …): literal-pattern and dynamic-pattern overloads appending one `RouteDef` |
 | `AddRoute` | The dynamic-method registrar's signature — `addRoute(app, method, pattern, chain)` with the def's method branded `Uppercase<M>` |
+| `RoutesBuilder<S, R>` | The chainable builder `routes(app)` returns — one method per registrar plus `use`/`mount`, each returning the builder with the phantom log appended, and `.app` exposing the typed `App` |
 | `Route` | Immutable registration entry produced by `createRoute` |
 | `MatchResult` | `{ route, params } \| { allowedMethods }` — the latter feeds the 405 `Allow` list |
 | `MatchFn` | `(routes, method, pathname) => MatchResult \| undefined` — pluggable router |
@@ -67,11 +68,17 @@ mount(app, '/v1', v1App);                     // mount a sub-app's routes under 
 addRoute(app, 'GET', '/raw', handler);        // dynamic-method registrar (method first)
 get / post / put / patch / del / head / options / all (app, pattern, handler, middlewares?)
 removeRoute(app, method, pattern);            // runtime filter (typed twin: RouteFilter)
+
+routes(app)                                    // chainable sugar over the same registrars
+  .use(auth)
+  .get('/users/:id', (ctx) => json(ctx, { id: ctx.params.id }))
+  .post('/users', createUser);
 ```
 
 - `use(app, prefix, …mws)` scopes by pathname prefix (params allowed, e.g. `/users/:id`); a prefix with no middlewares throws.
-- `mount` joins patterns (`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`), scopes the sub-app's middlewares onto each mounted route, and never mutates the sub-app. The parent's `match`/`onError`/`onNotFound` apply; empty sub-app middlewares are lost. Type-level, `MountedDefs<R, Base>` logs the mounted defs — patterns prefixed under the base (a sub-app rooted at `/` collapses onto the bare prefix) with the `out`/`status`/`in`/`errors`/`branches` phantom channels riding along — so a mounted app keeps its typed client surface; `MountBase` normalizes the prefix and `MergeRecords` unions overlapping phantom keys.
+- `mount` joins patterns (`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`), scopes the sub-app's middlewares onto each mounted route, and never mutates the sub-app. The sub-app's `onError` is carried: every mounted route is wrapped in a route-scoped error boundary that applies it (a response the sub `onError` writes wins; a decline rethrows, so the parent's policy maps it — including a crashing sub handler). `onNotFound` and a custom `match` cannot travel (the parent dispatches mounted routes) and are dropped with one `console.warn` per `mount` call when the sub-app actually defines them; empty sub-app middlewares are lost. Type-level, `MountedDefs<R, Base>` logs the mounted defs — patterns prefixed under the base (a sub-app rooted at `/` collapses onto the bare prefix) with the `out`/`status`/`in`/`errors`/`branches` phantom channels riding along — so a mounted app keeps its typed client surface; `MountBase` normalizes the prefix and `MergeRecords` unions overlapping phantom keys.
 - Method registrars (`get`, `post`, …) overload on the handler's params type: `get(app, '/users/:id', (ctx) => …)` types `ctx.params` through `ParamsOf<'/users/:id'>`.
+- `routes(app)` is pure sugar: each builder method (`get`/`post`/`put`/`patch`/`del`/`head`/`options`/`all`/`use`/`mount`) delegates 1:1 to the plain registrar and registers on `app` immediately, then returns the builder. The phantom `App` type threads through the chain exactly like the plain registrars, so `s200/client` inference works off the builder's `.app` (the very object passed in) identically: `createClient(routes(app).get('/x', h).app)`.
 - `all` registers for every method; such routes are skipped by OpenAPI emission.
 
 ## `handle(app, request, init?)` → `Promise<Response>`
@@ -112,4 +119,4 @@ throws<{ 401: { error: string } }>({ … });
 ```
 
 - `httpError` requires an integer status in `[400, 599]`; `body` rides through `toErrorResponse` verbatim instead of the default `{ error: message }` envelope.
-- `throws(...)` is a type-level declaration (a no-op middleware): it brands the route's error channel so `s200/client`'s response union names the statuses and bodies.
+- `throws(...)` is a pass-through middleware for request handling: it brands the route's error channel so `s200/client`'s response union names the statuses and bodies — and the same declaration is now readable at runtime (`_errors` on the gate), which is how `s200/openapi` documents the error branches and `s200/codegen` emits them into typed clients.

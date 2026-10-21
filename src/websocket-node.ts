@@ -51,8 +51,10 @@ const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 const TEXT_ENCODER = new TextEncoder();
 
 export type NodeUpgradeOptions = {
-  /** Maximum accumulated message size in bytes; default 64 MiB. Oversized
-   * messages close with 1009 before more of them is buffered. */
+  /** Maximum accumulated message size in bytes; default 4 MiB. A frame
+   * whose declared length exceeds the budget — alone, or atop a
+   * fragmented message in progress — fails at header-parse time with
+   * 1009, before its payload is buffered. */
   readonly maxPayload?: number;
 };
 
@@ -77,7 +79,7 @@ export function createUpgradeHandler(
   app: App,
   options: NodeUpgradeOptions = {}
 ): NodeUpgradeHandler {
-  const maxPayload = options.maxPayload ?? 64 * 1024 * 1024;
+  const maxPayload = options.maxPayload ?? 4 * 1024 * 1024;
   return (req, socket, head) => {
     acceptUpgrade(app, req, socket, head, maxPayload);
   };
@@ -447,6 +449,21 @@ function runConnection(
         failProtocol();
         return;
       }
+      // DoS guard at header-parse time: reject BEFORE waiting for the
+      // payload — a data frame whose declared length alone exceeds
+      // maxPayload, or a continuation that would push an in-progress
+      // fragmented message past it, fails with 1009 immediately, without
+      // buffering a payload the memory cannot afford. Control frames are
+      // already capped at 125 bytes above; data frames in an invalid
+      // fragmentation state keep their 1002 path in the switch below.
+      const oversizeHeader =
+        opcode === 0x0
+          ? fragOpcode !== 0 && fragSize + len > maxPayload
+          : opcode < 0x8 && fragOpcode === 0 && len > maxPayload;
+      if (oversizeHeader) {
+        failTooBig();
+        return;
+      }
       const mask = pending.subarray(offset, offset + 4);
       offset += 4;
       if (pending.length < offset + len) return; // incomplete — wait for more
@@ -591,6 +608,10 @@ function runConnection(
       } else {
         sendMessage(0x2, data instanceof Uint8Array ? data : new Uint8Array(data));
       }
+    },
+    // Live: bytes node has queued for the wire but not yet flushed.
+    get bufferedAmount(): number {
+      return socket.writableLength;
     },
     close(code, reason) {
       sendClose(code ?? 1000, reason ?? '');

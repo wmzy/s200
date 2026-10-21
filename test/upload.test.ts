@@ -268,14 +268,63 @@ describe('uploadForm', () => {
     (outcome.result === null).should.equal(true);
   });
 
-  it('enforces maxFileSize with a 413 naming the per-file constraint', async () => {
+  it('enforces maxFileSize mid-stream with a 413 (part cap composition)', async () => {
     const outcome = await runUpload(
       bodyOf(filePart('avatar', 'big.png', 'image/png', concat(PNG, PNG, PNG))),
       () => 'ok',
       { maxFileSize: PNG.length * 2 }
     );
     (outcome.error as { status: number }).status.should.equal(413);
-    (outcome.error as { message: string }).message.should.match(/per-file limit/);
+    // The cap composes into streamForm's per-part bound, so the message
+    // names the part limit, not the old post-buffer per-file wording.
+    (outcome.error as { message: string }).message.should.match(/part limit/);
+    (outcome.error as { message: string }).message.should.match(/avatar/);
+    outcome.landed.length.should.equal(0);
+  });
+
+  it('aborts an over-limit file while it streams: 413, source cancelled, sink untouched', async () => {
+    let cancelled = false;
+    const outcome = await runUpload(
+      stallingBody(
+        [
+          filePart('small', 'ok.png', 'image/png', PNG),
+          filePart('avatar', 'big.bin', 'application/octet-stream', new Uint8Array(4096).fill(7)),
+        ],
+        () => {
+          cancelled = true;
+        }
+      ),
+      () => 'ok',
+      { maxFileSize: PNG.length * 2 }
+    );
+    (outcome.error as { status: number }).status.should.equal(413);
+    // The good file before the oversize one landed; the oversize part
+    // never reached the sink and the source was cut mid-receive.
+    outcome.landed.length.should.equal(1);
+    outcome.landed[0]!.name.should.equal('small');
+    (outcome.result === null).should.equal(true);
+    cancelled.should.equal(true);
+  });
+
+  it('bounds parts by uploadForm defaults: an 8 MiB+1 part rejects with 413', async () => {
+    const over = new Uint8Array(8 * 1024 * 1024 + 1);
+    const outcome = await runUpload(
+      bodyOf(filePart('blob', 'big.bin', 'application/octet-stream', over)),
+      () => 'ok'
+    );
+    (outcome.error as { status: number }).status.should.equal(413);
+    (outcome.error as { message: string }).message.should.match(/part limit/);
+    outcome.landed.length.should.equal(0);
+  });
+
+  it('enforces maxParts (fields count) with a 413 mid-stream', async () => {
+    const outcome = await runUpload(
+      bodyOf(field('a', '1'), field('b', '2'), field('c', '3')),
+      () => 'ok',
+      { maxParts: 2 }
+    );
+    (outcome.error as { status: number }).status.should.equal(413);
+    (outcome.error as { message: string }).message.should.match(/Too many multipart parts/);
     outcome.landed.length.should.equal(0);
   });
 

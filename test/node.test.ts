@@ -384,6 +384,199 @@ describe('node adapter TLS', () => {
   });
 });
 
+describe('node adapter graceful close and server tunables', () => {
+  it('drains an in-flight response before resolving close()', async () => {
+    const app = createApp();
+    get(app, '/slow', async (ctx) => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return json(ctx, { done: true });
+    });
+    const server = await serve(app, { port: 0 });
+    try {
+      const pending = fetch(`${server.url}/slow`);
+      // Let the request reach the handler before closing.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const started = Date.now();
+      const closing = server.close();
+      const res = await pending; // close() must not kill the in-flight response
+      res.status.should.equal(200);
+      (await res.json()).should.deep.equal({ done: true });
+      await closing; // resolves once the response landed — not at grace
+      server.server.listening.should.be.false;
+      (Date.now() - started).should.be.below(2_000);
+    } finally {
+      await server.close().catch(() => undefined);
+    }
+  });
+
+  it('closes idle keep-alive sockets instead of waiting out their timeout', async () => {
+    const app = createApp();
+    get(app, '/', (ctx) => send(ctx, 'ok'));
+    const server = await serve(app, { port: 0 });
+    // Park a raw socket whose request already completed: it sits idle on
+    // keep-alive and would otherwise hold close() open for its own 5s
+    // keepAliveTimeout (or the 10s grace).
+    const socket = new Socket();
+    const received = await new Promise<string>((resolve, reject) => {
+      let data = '';
+      socket.on('error', reject);
+      socket.on('data', (chunk: Buffer) => {
+        data += chunk.toString();
+        if (data.endsWith('ok')) resolve(data);
+      });
+      socket.connect(server.port, '127.0.0.1');
+      socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
+    });
+    received.should.contain('HTTP/1.1 200');
+    try {
+      const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+      const started = Date.now();
+      await server.close();
+      (Date.now() - started).should.be.below(2_000);
+      await closed; // the client sees the FIN from the destroyed socket
+      socket.destroyed.should.be.true;
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it('hard-kills in-flight responses immediately with closeGraceMs: 0', async () => {
+    const app = createApp();
+    get(app, '/slow', async (ctx) => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return json(ctx, { done: true });
+    });
+    const server = await serve(app, { port: 0, closeGraceMs: 0 });
+    try {
+      const pending = fetch(`${server.url}/slow`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const started = Date.now();
+      await server.close(); // resolves well before the handler finishes
+      (Date.now() - started).should.be.below(150);
+      let rejected = false;
+      try {
+        await pending;
+      } catch {
+        rejected = true;
+      }
+      rejected.should.be.true; // the in-flight response died with the socket
+    } finally {
+      await server.close().catch(() => undefined);
+    }
+  });
+
+  it('applies the curated tunables on the plain http path', async () => {
+    const app = createApp();
+    const server = await serve(app, {
+      port: 0,
+      server: {
+        keepAliveTimeout: 1_234,
+        requestTimeout: 5_678,
+        headersTimeout: 4_321,
+        maxHeaderSize: 4_096,
+        connectionsCheckingInterval: 3_000,
+      },
+    });
+    try {
+      // maxHeaderSize/connectionsCheckingInterval exist at runtime but are
+      // missing from this @types/node's http.Server surface.
+      const raw = server.server as http.Server & {
+        maxHeaderSize: number;
+        connectionsCheckingInterval: number;
+      };
+      raw.keepAliveTimeout.should.equal(1_234);
+      raw.requestTimeout.should.equal(5_678);
+      raw.headersTimeout.should.equal(4_321);
+      raw.maxHeaderSize.should.equal(4_096);
+      raw.connectionsCheckingInterval.should.equal(3_000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('applies the curated tunables on the https path', async () => {
+    const app = createApp();
+    const server = await serve(app, {
+      port: 0,
+      server: { keepAliveTimeout: 2_345, requestTimeout: 6_789 },
+      https: { key: await readFile(KEY_PATH), cert: await readFile(CERT_PATH) },
+    });
+    try {
+      const raw = server.server as https.Server;
+      raw.keepAliveTimeout.should.equal(2_345);
+      raw.requestTimeout.should.equal(6_789);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('bounds the drain on upgraded (websocket) sockets: grace hard-kills them', async () => {
+    // Sockets taken over by 'upgrade' are invisible to node's own
+    // closeIdleConnections()/closeAllConnections() — without the
+    // adapter's registry close() would hang forever on them.
+    const app = createApp();
+    const server = await serve(app, {
+      port: 0,
+      closeGraceMs: 300,
+      upgrade: (req, socket) => {
+        socket.write(
+          'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n'
+        );
+      },
+    });
+    const socket = new Socket();
+    const upgraded = new Promise<void>((resolve, reject) => {
+      socket.on('error', reject);
+      socket.on('data', () => resolve());
+      socket.connect(server.port, '127.0.0.1');
+      socket.write('GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    });
+    try {
+      await upgraded;
+      const started = Date.now();
+      await server.close(); // resolves at the grace bound, not never
+      const elapsed = Date.now() - started;
+      elapsed.should.be.at.least(250); // it did wait the grace window
+      elapsed.should.be.below(2_000);
+      await new Promise<void>((resolve) => socket.once('close', () => resolve()));
+      socket.destroyed.should.be.true;
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it('wires the clientError hook for malformed requests', async () => {
+    const app = createApp();
+    get(app, '/', (ctx) => send(ctx, 'ok'));
+    const seen: string[] = [];
+    const server = await serve(app, {
+      port: 0,
+      clientError: (err, socket) => {
+        seen.push((err as Error & { code?: string }).code ?? err.message);
+        socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      },
+    });
+    try {
+      // A NUL byte in a header value never parses — node hands the socket
+      // to 'clientError' instead of the request handler.
+      const reply = await new Promise<string>((resolve, reject) => {
+        const socket = new Socket();
+        let data = '';
+        socket.on('error', reject);
+        socket.on('data', (chunk: Buffer) => (data += chunk.toString()));
+        socket.on('close', () => resolve(data));
+        socket.connect(server.port, '127.0.0.1');
+        socket.write('GET / HTTP/1.1\r\nHost: \x00bad\r\n\r\n');
+      });
+      seen.should.have.lengthOf(1);
+      seen[0]?.should.equal('HPE_INVALID_HEADER_TOKEN');
+      reply.should.contain('400 Bad Request');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe('node adapter light mode', () => {
   let light: NodeServer;
 

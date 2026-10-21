@@ -180,6 +180,93 @@ describe('runDev', () => {
     await devExplicit.close();
   });
 
+  it('merges --watch dirs after watchDirs (the entry dir always first)', async () => {
+    const dev = await runDev(['--watch', 'lib', '--watch=pkgs'], {
+      load: async () => appA,
+      port: 0,
+      watch: stubWatch,
+      watchDirs: ['opt-dir'],
+    });
+    captured.dirs!.should.deep.equal([process.cwd(), 'opt-dir', 'lib', 'pkgs']);
+    await dev.close();
+  });
+
+  it('loads --env-file before the first load, overriding process.env', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-env-'));
+    const keys = [
+      'S200_ENV_TEST_A',
+      'S200_ENV_TEST_B',
+      'S200_ENV_TEST_C',
+      'S200_ENV_TEST_D',
+    ];
+    try {
+      await writeFile(
+        join(dir, '.env'),
+        [
+          '# a comment',
+          '',
+          'S200_ENV_TEST_A=from-file',
+          'S200_ENV_TEST_B="double quoted"',
+          "S200_ENV_TEST_C='single quoted'",
+          '  S200_ENV_TEST_D = spaced  ',
+          'no-equals-line',
+        ].join('\n')
+      );
+      process.env.S200_ENV_TEST_A = 'preexisting'; // node --env-file parity: file wins
+      let seen: NodeJS.ProcessEnv = {};
+      const dev = await runDev(['--env-file', join(dir, '.env')], {
+        load: async () => {
+          seen = { ...process.env }; // captured where the entry graph would read it
+          return appA;
+        },
+        port: 0,
+        watch: stubWatch,
+      });
+      seen.S200_ENV_TEST_A!.should.equal('from-file');
+      seen.S200_ENV_TEST_B!.should.equal('double quoted');
+      seen.S200_ENV_TEST_C!.should.equal('single quoted');
+      seen.S200_ENV_TEST_D!.should.equal('spaced');
+      await dev.close();
+    } finally {
+      for (const key of keys) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- process.env has no setter-based removal
+        delete process.env[key];
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('errors naming the path when --env-file is missing', async () => {
+    const missing = join(tmpdir(), 's200-no-such.env');
+    const error = (await rejectionOf(
+      runDev(['--env-file', missing], { load: async () => appA, port: 0, watch: stubWatch })
+    )) as Error;
+    error.message.should.contain(missing);
+  });
+
+  it('forwards --host to serve: loopback serves, unresolvable host rejects', async () => {
+    // A fresh app: earlier tests hot-swap the shared appA's table in place
+    // (the createHotApp contract), so it no longer serves '/a'.
+    const dev = await runDev(['--host', '127.0.0.1'], {
+      load: async () => makeApp({ '/a': 'a' }),
+      port: 0,
+      watch: stubWatch,
+    });
+    (await fetch(`${dev.url.href}a`)).status.should.equal(200);
+    await dev.close();
+
+    // The flag reaches server.listen itself: an unresolvable host makes
+    // the listen fail instead of binding everywhere.
+    const error = (await rejectionOf(
+      runDev(['--host', 'no-such-host.s200.invalid'], {
+        load: async () => appA,
+        port: 0,
+        watch: stubWatch,
+      })
+    )) as Error;
+    error.message.should.contain('no-such-host.s200.invalid');
+  });
+
   it('boots from a real entry via importFresh + the default-export convention', async () => {
     const dir = await mkdtemp(join(tmpdir(), 's200-cli-'));
     try {
@@ -512,12 +599,15 @@ describe('s200 codegen', () => {
 });
 
 describe('parseDevArgs', () => {
-  it('defaults entry to ./app.ts and leaves port/hints/overlay unset', () => {
+  it('defaults entry to ./app.ts and leaves port/hints/overlay/host unset', () => {
     parseDevArgs([]).should.deep.equal({
       entry: './app.ts',
       port: undefined,
       hints: undefined,
       overlay: undefined,
+      host: undefined,
+      watch: [],
+      envFiles: [],
     });
   });
 
@@ -527,18 +617,27 @@ describe('parseDevArgs', () => {
       port: undefined,
       hints: undefined,
       overlay: undefined,
+      host: undefined,
+      watch: [],
+      envFiles: [],
     });
     parseDevArgs(['./src/api.ts', '--port', '4123']).should.deep.equal({
       entry: './src/api.ts',
       port: 4123,
       hints: undefined,
       overlay: undefined,
+      host: undefined,
+      watch: [],
+      envFiles: [],
     });
     parseDevArgs(['--port=4123', './src/api.ts']).should.deep.equal({
       entry: './src/api.ts',
       port: 4123,
       hints: undefined,
       overlay: undefined,
+      host: undefined,
+      watch: [],
+      envFiles: [],
     });
   });
 
@@ -548,17 +647,53 @@ describe('parseDevArgs', () => {
       port: undefined,
       hints: false,
       overlay: true,
+      host: undefined,
+      watch: [],
+      envFiles: [],
     });
     parseDevArgs(['entry.mjs', '--no-hints']).should.deep.equal({
       entry: 'entry.mjs',
       port: undefined,
       hints: false,
       overlay: undefined,
+      host: undefined,
+      watch: [],
+      envFiles: [],
     });
   });
 
-  it('rejects unknown options, bad ports, and extra positionals', async () => {
-    ((await rejectionOf(Promise.resolve().then(() => parseDevArgs(['--watch'])))) as Error).message.should.contain(
+  it('parses --host, and repeatable --watch/--env-file, in both spellings', () => {
+    parseDevArgs(['--host', '127.0.0.1']).should.deep.equal({
+      entry: './app.ts',
+      port: undefined,
+      hints: undefined,
+      overlay: undefined,
+      host: '127.0.0.1',
+      watch: [],
+      envFiles: [],
+    });
+    parseDevArgs([
+      'api.ts',
+      '--host=localhost',
+      '--watch',
+      'lib',
+      '--watch=src',
+      '--env-file',
+      '.env',
+      '--env-file=.env.local',
+    ]).should.deep.equal({
+      entry: 'api.ts',
+      port: undefined,
+      hints: undefined,
+      overlay: undefined,
+      host: 'localhost',
+      watch: ['lib', 'src'],
+      envFiles: ['.env', '.env.local'],
+    });
+  });
+
+  it('rejects unknown options, bad ports, extra positionals, and missing values', async () => {
+    ((await rejectionOf(Promise.resolve().then(() => parseDevArgs(['--nope'])))) as Error).message.should.contain(
       'unknown option'
     );
     ((await rejectionOf(Promise.resolve().then(() => parseDevArgs(['--port', 'nope'])))) as Error).message.should.contain(
@@ -566,6 +701,12 @@ describe('parseDevArgs', () => {
     );
     ((await rejectionOf(Promise.resolve().then(() => parseDevArgs(['a.ts', 'b.ts'])))) as Error).message.should.contain(
       'unexpected argument'
+    );
+    ((await rejectionOf(Promise.resolve().then(() => parseDevArgs(['--watch'])))) as Error).message.should.contain(
+      'requires a value'
+    );
+    ((await rejectionOf(Promise.resolve().then(() => parseDevArgs(['--env-file'])))) as Error).message.should.contain(
+      'requires a value'
     );
   });
 });

@@ -185,7 +185,7 @@ await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });           
 serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
 ```
 
-The node server implements the protocol — handshake, text/binary with fragmentation, ping/pong, close handshake, a `maxPayload` budget (default 64 MiB, 1009 beyond it) — plus opt-in subprotocol negotiation and permessage-deflate (RFC 7692, no-context-takeover both ways), and a heartbeat surface (`socket.ping()` / `socket.onPong()`):
+The node server implements the protocol — handshake, text/binary with fragmentation, ping/pong, close handshake, a `maxPayload` budget (default 4 MiB, 1009 beyond it, enforced at frame-header time) — plus opt-in subprotocol negotiation and permessage-deflate (RFC 7692, no-context-takeover both ways), and a heartbeat surface (`socket.ping()` / `socket.onPong()`):
 
 ```ts
 upgradeWebSocket(app, '/graphql', (socket) => socket.onMessage(handle),
@@ -517,7 +517,7 @@ A plain-object `body` is JSON-stringified and stamped `content-type: application
 
 ### Error branches
 
-Error branches flow from two channels. The primary one is inference: **return** an `httpError(...)` from the handler and its status and body shape land in the route log — no declaration needed (returning an `HttpError` is sugar for throwing it: it flows through the same in-chain error boundary, `onError` included, and middlewares see the stamped response on the unwind). The second is the `throws` gate, for branches a helper deep in the call stack may produce — a type-level declaration, a pure pass-through at runtime:
+Error branches flow from two channels. The primary one is inference: **return** an `httpError(...)` from the handler and its status and body shape land in the route log — no declaration needed (returning an `HttpError` is sugar for throwing it: it flows through the same in-chain error boundary, `onError` included, and middlewares see the stamped response on the unwind). The second is the `throws` gate, for branches a helper deep in the call stack may produce — pass-through at runtime for request handling, but the declaration is readable off the gate, so `s200/openapi` documents the branches and `s200/codegen` emits them into generated clients:
 
 ```ts
 import { httpError, throws } from 's200';

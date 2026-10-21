@@ -122,6 +122,17 @@ Dev battery, not hot path: every default-404 body is cloned and parsed, and ever
 s200 dev ./app.ts --port 3000 --overlay
 ```
 
+Runner flags (value flags take both `--flag value` and `--flag=value`):
+
+| Flag | Meaning |
+| --- | --- |
+| `--port N` | listen port (default `$PORT` or `3000`; `0` picks a free port) |
+| `--host H` | listen host, forwarded to `serve` (default: all interfaces) |
+| `--watch DIR` | extra directory to watch for reloads — repeatable; the entry's directory is always watched, and `--watch` dirs are appended after `RunDevOptions.watchDirs` |
+| `--env-file FILE` | dotenv-style file (`KEY=VALUE` lines, surrounding whitespace trimmed, `#` comments and blank lines skipped, matching single-/double-quoted values unquoted) loaded into `process.env` **before the entry module graph is imported** — repeatable; a missing file is a hard error naming the path. Loaded values **override** variables already in `process.env`, matching `node --env-file` semantics |
+| `--no-hints` | disable the 404 route-hints middleware (on by default) |
+| `--overlay` | enable the browser error overlay (off by default) |
+
 Route hints are on by default (`--no-hints` disables them): the runner wraps every loaded table in a derived copy carrying the `routeHints` middleware — the user's app object is never mutated, and a reload stays a pure table swap. The error overlay (`--overlay`, off by default) adds two more things through the same derived-copy seam:
 
 - a middleware that injects an inline, zero-dependency `<script>` right before the closing `</body>` of **byte-backed** `text/html` responses — those carrying a `content-length`, the `json`/`text`/`html`/`send` contract. Streamed HTML (`stream()`/`streamSSE()`, no `content-length`) passes through untouched — documented behavior: buffering it to inject would defeat the streaming. The rebuilt response keeps status and headers with an honest new `content-length`; `HEAD` requests skip injection.

@@ -121,6 +121,11 @@ export function toErrorResponse(error: unknown): Response {
  * merge their records. On the client, `res.status` gains the declared
  * literals and `res.json()` unions the declared body shapes. The checker
  * verifies none of it — the handler still has to actually throw.
+ *
+ * The declaration also exists at runtime now, as the gate's `_errors` own
+ * property (status → example body — `{ error: '' }` for the bare form,
+ * the record's values verbatim), so `s200/openapi` and `s200/codegen`
+ * document and type the same error branches off the live route table.
  */
 export function throws<S extends number>(
   ...statuses: S[]
@@ -128,9 +133,27 @@ export function throws<S extends number>(
 export function throws<E extends Readonly<Record<number, unknown>>>(
   errors: E
 ): Middleware & { readonly _errors?: E };
-export function throws(): Middleware {
-  // Deliberately takes no runtime input: `throws` is a declaration for
-  // the type checker, not a runtime check. A zero-argument signature
-  // satisfies both overloads (callers always go through them).
-  return (_ctx, next) => next();
+export function throws(
+  ...args: readonly number[] | [Readonly<Record<number, unknown>>]
+): Middleware {
+  // Still a pure pass-through at request time: nothing is checked, no
+  // state is written. The declaration itself, however, rides the returned
+  // function as an `_errors` own property (status → example body) so
+  // spec-time consumers (`s200/openapi`, `s200/codegen`) can read the
+  // error branches off the route's middleware chain: bare statuses stash
+  // the default `{ error: string }` envelope as `{ error: '' }`; the
+  // record form stashes its values verbatim, doubling as shape examples.
+  const gate: Middleware = (_ctx, next) => next();
+  const declared: Record<number, unknown> = {};
+  const first = args[0];
+  if (typeof first === 'number') {
+    for (const status of args as readonly number[]) {
+      declared[status] = { error: '' };
+    }
+  } else if (first !== undefined) {
+    Object.assign(declared, first);
+  }
+  return Object.keys(declared).length === 0
+    ? gate
+    : Object.assign(gate, { _errors: declared });
 }

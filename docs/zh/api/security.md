@@ -25,7 +25,7 @@ use(app, cors({ origin: 'https://app.example', credentials: true }));
 
 ## CSRF（`s200/csrf`）
 
-无会话同步令牌：HMAC 签名（`nonce` + 过期期），只有你的密钥能铸造，经 cookie 传递，在非安全请求上对**头部/表单字段**与请求 `Origin` 双重校验（堵死两个经典双重提交漏洞）：
+无会话同步令牌：HMAC 签名（`nonce` + 过期期），只有你的密钥能铸造，经 cookie 传递，在非安全请求上对**头部/表单字段**与请求 `Origin` 双重校验 —— `Origin` 缺席时（同源表单提交常不带它）退回 `Sec-Fetch-Site: cross-site` 直接拒绝，`same-origin`/`same-site`/`none` 放行到令牌校验（堵死两个经典双重提交漏洞）：
 
 ```ts
 const csrf = createCsrf({ secret: CSRF_SECRET });   // 密钥别进版本控制
@@ -42,9 +42,10 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 | `header` | `'x-csrf-token'` | 提交令牌的头名 |
 | `form` | `'_csrf'` | 提交令牌的表单字段名 |
 | `ttl` | 7 天 | 令牌寿命（秒） |
+| `bind` | — | 返回请求级绑定值（如会话 id）的回调，铸造**与**校验时都折进令牌 HMAC —— 为其他会话/用户铸造的令牌不再通过校验 |
 | `path` / `sameSite` / `httpOnly` / `secure` | `'/'` / `'lax'` / `true` / — | cookie 属性；保持 `httpOnly` 并经端点或服务端渲染表单传递令牌 |
 
-`Csrf`：`{ middleware, token }` —— `middleware` 在安全请求上保证 `ctx.state.csrfToken` 有有效令牌（需要时刷新 cookie），在非安全请求上校验 `Origin` + 提交的令牌（就地 403）；`token(ctx)` 返回请求的有效 cookie 令牌（或新铸的）用于嵌入表单。
+`Csrf`：`{ middleware, token, issueToken }` —— `middleware` 在安全请求上保证 `ctx.state.csrfToken` 有有效令牌（需要时刷新 cookie —— 为其他 `bind` 值铸造的也一并换新），在非安全请求上校验 `Origin`/`Sec-Fetch-Site` + 提交的令牌（就地 403）；`token(ctx)` 返回请求的有效 cookie 令牌（或新铸的）用于嵌入表单；`issueToken(ctx)` 为当前请求铸造**全新**令牌（新 nonce、完整 TTL、当前 `bind` 值），middleware 会在 unwind 时把它持久化为响应 cookie —— 非安全响应也包括，这就是登录时轮换的原语。铸造是无状态的：旧令牌在自身到期前仍然有效，让旧令牌真正退役要靠 `bind` 配合新的会话 id。
 
 ## 认证（`s200/auth`）
 
@@ -71,7 +72,7 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `signJwt(payload, key, options?)` | 紧凑 JWT `header.payload.signature`；options 中的声明覆盖同名 payload 键 |
 | `verifyJwt<T>(token, key, options?)` | 校验结构、算法、签名、`exp`/`nbf`、要求的 `aud`/`iss` → `T & RegisteredClaims`；任何失败抛 `JwtError` |
 | `jwtAuth(options)` | 闸门中间件：提取令牌（头 `Authorization: Bearer …` 或 cookie）、校验、把载荷存入 `ctx.state.jwt`；缺失/无效 → `401` |
-| `createJwksResolver(url, options?)` | 基于 JWKS 端点构建 `KeyResolver` —— 拉取、缓存（`ttlMs`，默认 5 分钟）、按 `kid` 选取；按 URL 模块级缓存，LRU 上限 50 个端点 |
+| `createJwksResolver(url, options?)` | 基于 JWKS 端点构建 `KeyResolver` —— 拉取、缓存（`ttlMs`，默认 5 分钟）、按 `kid` 选取；未过期缓存上 `kid` 未命中会强制重拉一次再判失败（轮换竞态）；按 URL 模块级缓存，LRU 上限 50 个端点 |
 | `isJwtError(error)` | `JwtError` 谓词 |
 
 | 类型 | 含义 |
@@ -79,7 +80,7 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `JwtAlgorithm` | `'HS256' \| … \| 'ES512'` |
 | `JwtKey` | `string \| Uint8Array \| CryptoKey \| JsonWebKey` |
 | `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId? }` —— 用 `CryptoKey`/JWK 签名时 `alg` 必填 |
-| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, keyStore? }` —— `alg:none` 无条件拒绝 |
+| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, keyStore? }` —— `alg:none` 无条件拒绝 |
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` —— `KeyResolver` 所见 |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
@@ -87,7 +88,7 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
 | `JwksStore` | `{ get(url), set(url, entry) }` —— JWKS 文档缓存；默认进程内 LRU，上限 50 个 URL |
 | `JwksEntry` | `{ exp, keys }` —— 一份缓存文档；`exp` 为 ms 纪元的刷新截止时间 |
-| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, header?, prefix?, cookie?, verify? }` —— `jwtAuth` 闸门的选项（见下表） |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, header?, prefix?, cookie?, verify? }` —— `jwtAuth` 闸门的选项（见下表） |
 
 `JwtAuthOptions`（`jwtAuth` 闸门）：
 
@@ -98,6 +99,10 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `keyResolver` | — | 逐令牌密钥解析（轮换、多发行方） |
 | `jwks` | — | JWKS 端点 —— `string` 或 `{ url, ttlMs?, store? }`；`createJwksResolver` 的简写 |
 | `algorithms` | 全部支持 | 闸门接受的算法 |
+| `audience` | — | 要求的受众 —— 令牌的 `aud` 必须与之相交 |
+| `issuer` | — | 要求的发行方 |
+| `clockTolerance` | `0` | `exp`/`nbf`/`iat` 的时钟偏移容忍（秒） |
+| `requireExpiry` | `false` | 拒绝不携带数字 `exp` 声明的令牌 |
 | `header` | `'authorization'` | 承载令牌的头 |
 | `prefix` | `'Bearer '` | 从头值中剥离的方案前缀 |
 | `cookie` | — | 头缺失时回退的 cookie 名 |
@@ -121,7 +126,7 @@ get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
 安全默认基线，在 unwind 时盖上（回退响应也包含）；响应已有的头绝不覆盖，`false` 则移除某项：
 
 ```ts
-use(app, secureHeaders());  // nosniff、DENY 框架嵌入、strict-origin-when-cross-origin
+use(app, secureHeaders());  // nosniff、DENY 框架嵌入、strict-origin-when-cross-origin、COOP/CORP same-origin
 ```
 
 `SecureHeadersOptions`：
@@ -131,7 +136,32 @@ use(app, secureHeaders());  // nosniff、DENY 框架嵌入、strict-origin-when-
 | `xContentTypeOptions` | `'nosniff'` | `false` 移除 |
 | `xFrameOptions` | `'DENY'` | 需要嵌入的应用用 `SAMEORIGIN`（或 CSP frame-ancestors 策略） |
 | `referrerPolicy` | `'strict-origin-when-cross-origin'` | |
-| `strictTransportSecurity` | 关 | 显式开启 —— 在 TLS 终止代理之后， stray HSTS 头可能把域名钉死在坏配置上 |
+| `strictTransportSecurity` | 关 | 显式开启 —— 在 TLS 终止代理之后，stray HSTS 头可能把域名钉死在坏配置上 |
+| `contentSecurityPolicy` | 关 | 显式开启 —— 原始头值或指令对象 |
+| `permissionsPolicy` | 关 | 显式开启 —— 与 CSP 相同的形状 |
+| `crossOriginOpenerPolicy` | `'same-origin'` | `false` 移除 |
+| `crossOriginResourcePolicy` | `'same-origin'` | `false` 移除 |
+| `crossOriginEmbedderPolicy` | 关 | 显式开启 —— COEP 要求每个子资源经 CORP/CORS 加入，而 CDN 图片/脚本在发出 CORP 头之前通常会被它弄坏 |
+| `xDnsPrefetchControl` | 关 | 显式开启（如 `'off'`） |
+| `removeHeaders` | 无 | 从每个响应剥离的头 —— 基线默认与 handler 设置的头一视同仁，如 `['x-powered-by']` |
+
+指令对象形式按 CSP 风格序列化：`key value`（数组空格连接）、指令间以 `; ` 连接、键按插入顺序、空数组渲染为裸键 —— `{ 'default-src': ["'self'"], 'upgrade-insecure-requests': [] }` 变成 `default-src 'self'; upgrade-insecure-requests`。Permissions-Policy 的括号逗号语法（`camera=(), geolocation=(self)`）传原始字符串即可。
+
+`cspNonce(): string` —— 加密随机的 128 位标准 base64 nonce（24 字符），用于 `'nonce-…'` CSP 源。在注册于 `secureHeaders` 之后的中间件里每请求生成一个 —— 它的 unwind 先运行，因此每请求 CSP 先于静态 fill-only 传递落位：
+
+```ts
+use(app, secureHeaders());
+use(app, async (ctx, next) => {
+  const nonce = cspNonce();
+  await next();
+  ctx.res?.headers.set(
+    'content-security-policy',
+    `default-src 'self'; script-src 'nonce-${nonce}'`,
+  );
+});
+```
+
+把同一 nonce 嵌进 HTML（`<script nonce="…">`），让策略与标记一致。
 
 ## 限流（`s200/rate-limit`）
 

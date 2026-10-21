@@ -8,11 +8,13 @@
  *
  * Gates, in order, before a file reaches the sink: `accept` (a 415 for a
  * content type outside the allowlist), `maxFiles` (a 413 naming the count
- * constraint), `maxFileSize` (a 413 naming the per-file constraint). The
- * total `limit` is enforced by `streamForm` while the body streams — an
- * oversized upload rejects mid-receive instead of after buffering. Every
- * rejection and any sink error abort the upload: the parse stops, the
- * platform source is cancelled, the error bubbles for the error boundary.
+ * constraint). `maxFileSize` composes into `streamForm`'s per-part cap and
+ * rejects while the part is still streaming — the crossing byte aborts the
+ * receive, the sink never sees the file. The total `limit` and the part
+ * count `maxParts` (default 256) are likewise enforced by `streamForm`
+ * mid-receive. Every rejection and any sink error abort the upload: the
+ * parse stops, the platform source is cancelled, the error bubbles for the
+ * error boundary.
  *
  * A part is the unit of buffering (see `s200/multipart`): each file sits
  * fully in memory by the time the sink sees it — right for typical
@@ -74,10 +76,17 @@ export type UploadOptions = {
    * an oversized upload rejects with a 413 while bytes are still
    * arriving. */
   readonly limit?: number;
-  /** Per-file byte cap, checked before the sink sees the file. */
+  /** Per-file byte cap, enforced while the part streams (composed into
+   * `streamForm`'s per-part cap): the upload rejects with a 413 the
+   * moment the crossing byte lands, before the file is buffered or the
+   * sink sees anything. Default: `streamForm`'s 8 MiB per-part bound. */
   readonly maxFileSize?: number;
   /** Cap on the number of file parts. */
   readonly maxFiles?: number;
+  /** Cap on the TOTAL number of parts, fields included (default 256,
+   * `streamForm`'s bound): a form of endless parts rejects with a 413
+   * mid-stream at the offending part's headers. */
+  readonly maxParts?: number;
   /** Content-type allowlist for file parts — field parts are never
    * filtered. A prefix list only matches a declared Content-Type: a file
    * part without one is rejected (strict allowlist); the callback form
@@ -130,13 +139,14 @@ function accepted(part: FormPart, accept: UploadAccept): boolean {
  * - Field parts (no `filename`) decode as UTF-8 and collect into
  *   `fields` with `parseQuery`'s convention: a name seen once is a
  *   `string`, a repeated name a `string[]`.
- * - File parts pass the `accept`/`maxFiles`/`maxFileSize` gates in that
- *   order, then reach the sink. A sink-returned string is reported as
- *   that file's `id`; a sink rejection aborts everything and propagates.
+ * - File parts pass the `accept`/`maxFiles` gates in that order, then
+ *   reach the sink. A sink-returned string is reported as that file's
+ *   `id`; a sink rejection aborts everything and propagates.
  * - Errors, all bubbling for the error boundary: a 415 `HttpError` for a
  *   non-multipart content type or an allowlist rejection, a 413 for the
- *   total `limit` (streamed), `maxFiles` or `maxFileSize`, a 400 for a
- *   malformed body.
+ *   total `limit`, the part count `maxParts` (default 256), `maxFiles`,
+ *   or `maxFileSize` (the last enforced mid-stream while the part is
+ *   still arriving), a 400 for a malformed body.
  * - Terminal for the body: a later `readJson`/`readText`/`readForm`
  *   rejects with the 409.
  */
@@ -145,7 +155,7 @@ export async function uploadForm(
   sink: UploadSink,
   options: UploadOptions = {}
 ): Promise<UploadResult> {
-  const { accept, limit, maxFiles, maxFileSize } = options;
+  const { accept, limit, maxFiles, maxFileSize, maxParts } = options;
   const files: UploadedFile[] = [];
   // Null prototype, same reason as `parseQuery`: `__proto__` must land as
   // a plain own key, `constructor` must not shadow inherited members.
@@ -177,12 +187,6 @@ export async function uploadForm(
           `Too many files: "${part.filename}" exceeds the limit of ${maxFiles}`
         );
       }
-      if (maxFileSize !== undefined && part.data.length > maxFileSize) {
-        throw httpError(
-          413,
-          `File "${part.filename}" is ${part.data.length} bytes; the per-file limit is ${maxFileSize}`
-        );
-      }
       const file: UploadFile = {
         name: part.name,
         filename: part.filename,
@@ -199,7 +203,11 @@ export async function uploadForm(
         ...(typeof id === 'string' ? { id } : {}),
       });
     },
-    { limit }
+    // `maxFileSize` composes into `streamForm`'s per-part cap (undefined
+    // falls back to its 8 MiB default): the cap rejects while the part
+    // streams, so `onPart` never sees an over-limit file and the sink
+    // never buffers one.
+    { limit, maxParts, maxPartSize: maxFileSize }
   );
   return { files, fields };
 }

@@ -35,7 +35,7 @@ Backed by `Bun.file` — the same injection surface as the Node adapter (see [`s
 
 | Function | Signature | Meaning |
 | --- | --- | --- |
-| `createFileReader(root, { stream? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | `Bun.file` bytes by default; `{ stream: true }` streams |
+| `createFileReader(root, { stream?, realPath?, streamThreshold? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | `Bun.file` bytes by default with the node adapter's safe defaults: realpath containment on (`realPath: false` opts out) and files over `streamThreshold` (default 16 MiB) stream; `{ stream: true }` streams everything |
 | `createFileStat(root)` | `(path) => Promise<StaticFileInfo \| null>` | `size` + `lastModified` for conditional requests |
 | `createFileRangeReader(root)` | `(path, start, end) => Promise<ReadableStream \| null>` | `Bun.file(...).slice(start, end).stream()` |
-| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | Symlink-escape guard via `realpathSync` |
+| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | Symlink-escape guard via `realpathSync` — applied by `createFileReader` by default |

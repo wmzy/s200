@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from 'vitest';
 
-import { createApp, get, post } from '../src/app';
+import { createApp, get, post, routes } from '../src/app';
 import { throws } from '../src/errors';
 import {
   createClient,
@@ -109,6 +109,51 @@ describe('client input types', () => {
     // @ts-expect-error -- a plain object is not a BodyInit; only a gate
     // brand widens `body` into a JSON shape
     void client.post('/plain/:id', { id: '7' }, { body: { a: 1 } });
+  });
+
+  it('threads identical inference through the routes() builder chain', () => {
+    const app = createApp();
+    const built = routes(app)
+      .post(
+        '/users/:id',
+        jsonBody((data: unknown) => {
+          const body = data as { name: unknown };
+          if (typeof body.name !== 'string') throw new Error('name required');
+          return { name: body.name, id: 7 };
+        }),
+        (ctx) => json(ctx, { created: ctx.params.id === '7' })
+      )
+      .get(
+        '/list',
+        queryParams((q: { page?: string }) => q),
+        () => new Response('ok')
+      );
+    // `.app` carries the phantom log accumulated by the chain — the same
+    // App type the plain registrars return.
+    const client = createClient(built.app, { fetch: async () => new Response('ok') });
+
+    expectTypeOf<typeof client.post>().toExtend<
+      (
+        path: '/users/:id',
+        args: { id: string },
+        init: Omit<ClientInit, 'body'> & { body: { name: string; id: number } }
+      ) => Promise<ClientResponse<{ created: boolean }>>
+    >();
+    void client.post('/users/:id', { id: '7' }, { body: { name: 'ada', id: 7 } });
+    // @ts-expect-error -- a jsonBody route without its body is a client bug
+    void client.post('/users/:id', { id: '7' });
+    // @ts-expect-error -- { name: string } is not { name: string; id: number }
+    void client.post('/users/:id', { id: '7' }, { body: { name: 'ada' } });
+
+    expectTypeOf<typeof client.get>().toExtend<
+      (
+        path: '/list',
+        init?: ClientInit & { query: { page?: string } }
+      ) => Promise<ClientResponse<unknown>>
+    >();
+    void client.get('/list', { query: { page: '2' } });
+    // @ts-expect-error -- page is string on this route, not number
+    void client.get('/list', { query: { page: 2 } });
   });
 
   it('types init.body as the schema\'s INPUT when input ≠ output', () => {

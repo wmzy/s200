@@ -8,6 +8,16 @@ import {
 } from '../src/client';
 import { json } from '../src/respond';
 
+// vitest's should chain has no rejectedWith; capture manually instead.
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  return undefined; // resolved — property assertions below will fail
+}
+
 describe('client (typed fetch)', () => {
   function capture() {
     const calls: { url: string; init: RequestInit }[] = [];
@@ -178,5 +188,113 @@ describe('client (typed fetch)', () => {
         init?: ClientInit
       ) => Promise<ClientResponse<{ id: string }>>
     >();
+  });
+});
+
+describe('client signal, timeout & baseUrl guard', () => {
+  /** A fetch that never settles on its own — only an abort can end it. */
+  const hangingFetch = (input: string | URL | Request, init?: RequestInit) =>
+    new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    });
+
+  it('applies the client-level signal to every request', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const controller = new AbortController();
+    const signals: (AbortSignal | undefined)[] = [];
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Response('ok');
+    };
+    const client = createClient(app, { baseUrl: 'http://x.test', fetch, signal: controller.signal });
+    await client.get('/x');
+    await client.get('/x');
+    signals[0]!.should.equal(controller.signal);
+    signals[1]!.should.equal(controller.signal);
+  });
+
+  it('lets a per-call init.signal override the client signal', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const clientSignal = new AbortController().signal;
+    const callSignal = new AbortController().signal;
+    const signals: (AbortSignal | undefined)[] = [];
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Response('ok');
+    };
+    const client = createClient(app, { baseUrl: 'http://x.test', fetch, signal: clientSignal });
+    await client.get('/x', { signal: callSignal });
+    signals[0]!.should.equal(callSignal);
+  });
+
+  it('aborts a hanging request at timeoutMs (TimeoutError)', async () => {
+    const app = get(createApp(), '/hang', () => new Response('ok'));
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch: hangingFetch,
+      timeoutMs: 10,
+    });
+    const error = (await rejectionOf(client.get('/hang'))) as DOMException;
+    error.name.should.equal('TimeoutError');
+  });
+
+  it('races the user signal with the timeout (linked, not replaced)', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const controller = new AbortController();
+    const signals: (AbortSignal | undefined)[] = [];
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Response('ok');
+    };
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch,
+      signal: controller.signal,
+      timeoutMs: 60_000, // far away — only the user signal decides here
+    });
+    await client.get('/x');
+    signals[0]!.should.not.equal(controller.signal); // a linked composite
+    controller.abort(new Error('gone'));
+    signals[0]!.aborted.should.equal(true);
+    ((signals[0]!.reason as Error).message as string).should.equal('gone');
+  });
+
+  it('throws at creation with a baseUrl hint when Node has no location', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    // Node (this suite's runtime) defines no globalThis.location — the
+    // guard's exact target. The message must name the remedy, and must
+    // fire at createClient time, not on the first request.
+    (typeof globalThis.location).should.equal('undefined');
+    const error = (await rejectionOf(
+      Promise.resolve().then(() => createClient(app))
+    )) as Error;
+    error.message.should.contain('baseUrl');
+    // An injected fetch owns URL resolution itself — no guard.
+    const shim = createClient(app, { fetch: async () => new Response('ok') });
+    (await shim.get('/x')).status.should.equal(200);
+  });
+
+  it('keeps relative URLs working when globalThis.location exists', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const original = (globalThis as { location?: unknown }).location;
+    Object.defineProperty(globalThis, 'location', {
+      value: new URL('http://browser.test/'),
+      configurable: true,
+    });
+    try {
+      const calls: string[] = [];
+      const fetch = async (input: string | URL | Request) => {
+        calls.push(String(input));
+        return new Response('ok');
+      };
+      const client = createClient(app, { fetch }); // no baseUrl, no throw
+      await client.get('/x');
+      calls[0]!.should.equal('/x');
+    } finally {
+      delete (globalThis as { location?: unknown }).location;
+      if (original !== undefined) {
+        Object.defineProperty(globalThis, 'location', { value: original, configurable: true });
+      }
+    }
   });
 });

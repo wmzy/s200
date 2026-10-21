@@ -26,7 +26,7 @@ Traversal (`..`) never escapes the root, `index` (default `index.html`) serves d
 
 ## Symlinks
 
-Lexical checks can't see through symlinks: a symlink inside the root can point anywhere. When the served root can contain symlinks, inject the adapter's realpath guard — every lookup is resolved, and a real path outside the root falls through like a miss (opt-in: it costs one realpath per request):
+Lexical checks can't see through symlinks: a symlink inside the root can point anywhere. The adapters' `createFileReader` therefore wires the realpath guard **by default** — every lookup is resolved, and a real path outside the root falls through like a miss. Bring your own `read` function and you own the guard (inject the adapter's `createRealPathGuard` the same way); it costs one realpath per request, and `createFileReader(root, { realPath: false })` opts out when the served tree is known symlink-free:
 
 ```ts
 import { createRealPathGuard } from 's200/node';   // or 's200/bun'
@@ -36,5 +36,5 @@ use(app, serveStatic({ …, realPath: createRealPathGuard('public') }));
 
 ## Ranges and conditionals
 
-Byte readers support single byte ranges (`Range: bytes=…` → 206, or 416 when unsatisfiable), so video seeking works — but buffered readers hold the whole file in memory. For large media, `read` may return a `ReadableStream` (see `createFileReader('public', { stream: true })`) and `readRange` streams slice reads. `stat` additionally turns on conditional requests: responses carry `ETag`/`Last-Modified`, and `If-None-Match`/`If-Modified-Since` hits answer 304. A directory path missing its trailing slash gets a 301 to the slash form when the directory index exists (opt out: `redirectToSlash: false`).
+Byte readers support single byte ranges (`Range: bytes=…` → 206, or 416 when unsatisfiable), so video seeking works — but a buffered read holds the file in memory. The adapters' `createFileReader` bounds that: files larger than `streamThreshold` (default 16 MiB) are served through the streamed path (`{ stream: true }` still forces it for everything), and with `readRange` injected, ranges on large files stream slice reads. `stat` additionally turns on conditional requests: responses carry `ETag`/`Last-Modified`, and `If-None-Match`/`If-Modified-Since` hits answer 304. A directory path missing its trailing slash gets a 301 to the slash form when the directory index exists (opt out: `redirectToSlash: false`).
 

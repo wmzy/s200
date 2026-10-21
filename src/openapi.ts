@@ -11,7 +11,8 @@
  * get(app, '/openapi.json', (ctx) => json(ctx, spec));
  * ```
  *
- * `ALL` routes are skipped (no single method to document); dynamic-pattern
+ * `ALL` routes are skipped (no single method to document) with a
+ * once-per-build `console.warn` naming the pattern; dynamic-pattern
  * routes emit with their pattern verbatim.
  *
  * {@link withRouteValidation} is the runtime twin: the same annotations
@@ -41,6 +42,40 @@ import { json } from './respond';
 import { createRoute } from './router';
 import { compileValidator, type SerializeSchema, type ValidationIssue } from './serialize';
 
+/**
+ * One named security scheme — OpenAPI 3.1's `Security Scheme Object`
+ * shape, kept permissive (s200 emits data, it does not validate it):
+ * `type` picks the flavor, the rest of the fields are the ones that
+ * flavor reads (`name`/`in` for `apiKey`, `scheme`/`bearerFormat` for
+ * `http`, `flows` for `oauth2`, `openIdConnectUrl` for `openIdConnect`).
+ */
+export type SecuritySchemeObject = {
+  readonly type: 'apiKey' | 'http' | 'oauth2' | 'openIdConnect' | 'mutualTLS';
+  readonly description?: string;
+  readonly name?: string;
+  readonly in?: 'query' | 'header' | 'cookie';
+  readonly scheme?: string;
+  readonly bearerFormat?: string;
+  readonly flows?: Record<string, unknown>;
+  readonly openIdConnectUrl?: string;
+};
+
+/**
+ * Options for {@link openapiSpec} (and {@link openapiJson}'s override):
+ * the OpenAPI `info` block plus optional document-level `servers` and
+ * `securitySchemes` (emitted under `components.securitySchemes`).
+ */
+export type OpenApiSpecOptions = {
+  readonly title: string;
+  readonly version: string;
+  readonly description?: string;
+  /** Connect entries — emitted verbatim as the document's `servers`. */
+  readonly servers?: readonly { readonly url: string; readonly description?: string }[];
+  /** Named schemes — emitted under `components.securitySchemes` and
+   * referenced by `RouteMeta.security` entries. */
+  readonly securitySchemes?: Readonly<Record<string, SecuritySchemeObject>>;
+};
+
 /** The emitted document — OpenAPI 3.1.0, JSON-compatible by construction. */
 export type OpenApiDocument = {
   readonly openapi: '3.1.0';
@@ -49,10 +84,18 @@ export type OpenApiDocument = {
     readonly version: string;
     readonly description?: string;
   };
+  readonly servers?: readonly { readonly url: string; readonly description?: string }[];
+  readonly components?: {
+    readonly securitySchemes: Readonly<Record<string, SecuritySchemeObject>>;
+  };
   readonly paths: Record<string, Record<string, unknown>>;
 };
 
-/** A `SerializeSchema` as a JSON Schema (OpenAPI 3.1's schema dialect). */
+/** A `SerializeSchema` as a JSON Schema (OpenAPI 3.1's schema dialect).
+ * Passes through exactly the fields a `SerializeSchema` carries at
+ * runtime — `type`, `properties`/`required`, `items`, `nullable` — and
+ * nothing more: the DSL has no `enum`/`format`/`description`/bounds
+ * markers to forward, so none are invented. */
 function toJsonSchema(schema: SerializeSchema): Record<string, unknown> {
   switch (schema.type) {
     case 'object': {
@@ -116,14 +159,85 @@ function queryParameters(meta: RouteMeta): unknown[] {
   return out;
 }
 
-/** Responses by status code, from the metadata (or a bare 200). */
-function responsesOf(meta: RouteMeta | undefined): Record<string, unknown> {
-  const declared = meta?.responses;
-  if (declared === undefined) {
-    return { 200: { description: 'Successful response' } };
+/**
+ * The error branches a route's `throws` gates declare, read off the live
+ * middleware chain: each gate's runtime `_errors` stash (status → example
+ * body — see `s200`'s `throws`) merges into one record. When two gates
+ * name the same status the later registration wins: the type layer unions
+ * body shapes, but example values cannot union, and the last declaration
+ * is the honest pick.
+ */
+function throwsErrors(route: Route): Record<number, unknown> {
+  const merged: Record<number, unknown> = {};
+  for (const middleware of route.middlewares) {
+    const declared = (middleware as { readonly _errors?: unknown })._errors;
+    if (typeof declared !== 'object' || declared === null) continue;
+    for (const [status, example] of Object.entries(
+      declared as Readonly<Record<string, unknown>>
+    )) {
+      const code = Number(status);
+      if (Number.isInteger(code) && code >= 100 && code <= 599) {
+        merged[code] = example;
+      }
+    }
   }
+  return merged;
+}
+
+/** Structural JSON-string equality for the array-items agreement check. */
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * A `throws` example body as a JSON Schema: structural inference over the
+ * example value — strings/booleans/null map directly, integrality splits
+ * `integer` from `number`, arrays describe their `items` when every
+ * element agrees (an empty or mixed array stays unconstrained), objects
+ * list the keys present. Required-ness is unknowable from an example, so
+ * no key is ever `required`. `undefined` means "no body declared" — the
+ * status answers with no JSON content.
+ */
+function exampleToJsonSchema(example: unknown): Record<string, unknown> | undefined {
+  if (example === undefined) return undefined;
+  if (example === null) return { type: 'null' };
+  if (typeof example === 'string') return { type: 'string' };
+  if (typeof example === 'boolean') return { type: 'boolean' };
+  if (typeof example === 'number') {
+    return { type: Number.isInteger(example) ? 'integer' : 'number' };
+  }
+  if (Array.isArray(example)) {
+    const schemas = example.map(exampleToJsonSchema);
+    const first = schemas[0];
+    return first !== undefined && schemas.every((schema) => sameJson(schema, first))
+      ? { type: 'array', items: first }
+      : { type: 'array' };
+  }
+  const properties: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(example as Readonly<Record<string, unknown>>)) {
+    const schema = exampleToJsonSchema(value);
+    if (schema !== undefined) {
+      properties[key] = schema;
+    }
+  }
+  return { type: 'object', ...(Object.keys(properties).length > 0 ? { properties } : {}) };
+}
+
+/**
+ * Responses by status code: the metadata's declarations (or a bare 200)
+ * merged with the `throws` gates' error branches. Neither clobbers the
+ * other — a status only one side declares is emitted; on conflict
+ * `meta.responses` wins (its description and schema were written for the
+ * spec, the gate's example is only an inference seed).
+ */
+function responsesOf(meta: RouteMeta | undefined, route: Route): Record<string, unknown> {
+  const declared = meta?.responses;
+  const gates = throwsErrors(route);
   const out: Record<string, unknown> = {};
-  for (const [status, entry] of Object.entries(declared)) {
+  if (declared === undefined) {
+    out[200] = { description: 'Successful response' };
+  }
+  for (const [status, entry] of Object.entries(declared ?? {})) {
     out[status] = {
       description: entry.description,
       ...(entry.schema === undefined
@@ -135,25 +249,49 @@ function responsesOf(meta: RouteMeta | undefined): Record<string, unknown> {
           }),
     };
   }
+  for (const [status, example] of Object.entries(gates)) {
+    if (status in out) continue;
+    const schema = exampleToJsonSchema(example);
+    out[status] = {
+      description: 'Error response',
+      ...(schema === undefined
+        ? {}
+        : {
+            content: {
+              'application/json': { schema },
+            },
+          }),
+    };
+  }
   return out;
 }
 
 /**
  * Builds the OpenAPI 3.1 document for an app. Routes without metadata are
  * still documented (method + path + parameters, bare 200) — the table is
- * the source of truth; metadata only enriches it.
+ * the source of truth; metadata only enriches it. Error branches declared
+ * by `throws` gates on a route's chain become error `responses` (merged
+ * with `meta.responses` — meta wins a status both declare), and
+ * `meta.security` lands on the operation verbatim.
+ *
+ * `ALL` routes are skipped — there is no single method to document — and
+ * each distinct pattern warns once per build:
+ * `[s200] openapi: route /x uses ALL — expand to explicit methods to
+ * document it`. Dynamic-pattern routes emit with their pattern verbatim.
  */
-export function openapiSpec(
-  app: App,
-  info: {
-    readonly title: string;
-    readonly version: string;
-    readonly description?: string;
-  }
-): OpenApiDocument {
+export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocument {
   const paths: Record<string, Record<string, unknown>> = {};
+  const warnedAll = new Set<string>();
   for (const route of app.routes) {
-    if (route.method === 'ALL') continue;
+    if (route.method === 'ALL') {
+      if (!warnedAll.has(route.pattern)) {
+        warnedAll.add(route.pattern);
+        console.warn(
+          `[s200] openapi: route ${route.pattern} uses ALL — expand to explicit methods to document it`
+        );
+      }
+      continue;
+    }
     const meta = getRouteMeta(route);
     const path = openapiPath(route.pattern);
     const parameters = [
@@ -166,6 +304,7 @@ export function openapiSpec(
       ...(meta?.tags !== undefined ? { tags: meta.tags } : {}),
       ...(meta?.deprecated === true ? { deprecated: true } : {}),
       ...(parameters.length > 0 ? { parameters } : {}),
+      ...(meta?.security !== undefined ? { security: meta.security } : {}),
       ...(meta?.body !== undefined
         ? {
             requestBody: {
@@ -175,33 +314,41 @@ export function openapiSpec(
             },
           }
         : {}),
-      responses: responsesOf(meta),
+      responses: responsesOf(meta, route),
     };
     paths[path] ??= {};
     paths[path][route.method.toLowerCase()] = item;
   }
-  return { openapi: '3.1.0', info, paths };
+  return {
+    openapi: '3.1.0',
+    info: {
+      title: options.title,
+      version: options.version,
+      description: options.description,
+    },
+    ...(options.servers !== undefined && options.servers.length > 0
+      ? { servers: options.servers }
+      : {}),
+    ...(options.securitySchemes !== undefined
+      ? { components: { securitySchemes: options.securitySchemes } }
+      : {}),
+    paths,
+  };
 }
 
 /**
  * The spec as a JSON response helper — pairs with {@link openapiSpec} for
  * the `/openapi.json` route. Uses the app-level metadata (`describeApp`)
- * when the caller omitted `info`.
+ * when the caller omitted `info`-block fields; every other option
+ * (`servers`, `securitySchemes`) passes through verbatim.
  */
-export function openapiJson(
-  ctx: Ctx,
-  app: App,
-  info?: {
-    readonly title: string;
-    readonly version: string;
-    readonly description?: string;
-  }
-): Response {
+export function openapiJson(ctx: Ctx, app: App, options?: OpenApiSpecOptions): Response {
   const appMeta = getAppMeta(app);
   return json(ctx, openapiSpec(app, {
-    title: info?.title ?? appMeta?.title ?? 'API',
-    version: info?.version ?? appMeta?.version ?? '0.0.0',
-    description: info?.description ?? appMeta?.description,
+    ...(options === undefined ? {} : options),
+    title: options?.title ?? appMeta?.title ?? 'API',
+    version: options?.version ?? appMeta?.version ?? '0.0.0',
+    description: options?.description ?? appMeta?.description,
   }));
 }
 

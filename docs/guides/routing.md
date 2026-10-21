@@ -70,3 +70,5 @@ const app = createApp();
 mount(app, '/v1', api);   // /v1/users/:id — api itself stays reusable
 ```
 
+The sub-app's `onError` is carried: each mounted route is wrapped in a route-scoped error boundary that applies it, so a thrown sub error still maps through the sub's policy (a decline rethrows and the parent's policy takes over). What mount cannot carry it says out loud: a sub-app that defines `onNotFound` or a custom `match` triggers one `console.warn` per `mount` call, because mounted routes are dispatched by the parent — its 404 policy and its router are the ones that run. Post-mount registration on `sub` stays invisible to the mount (snapshot semantics).
+

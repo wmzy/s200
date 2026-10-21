@@ -67,7 +67,7 @@ use(app, compress({ brotli: { compress: brotliCompress } }));
 | `minBytes` | `1024` | Minimum uncompressed size before a response is compressed; only consulted when the response carries a content-length (streamed responses compress regardless, like a proxy would) |
 | `brotli` | — | `{ compress: (bytes) => Promise<Uint8Array> }` — `br` is only negotiated when injected; brotli is a buffered path (byte-backed responses only; streamed responses fall back to gzip/deflate) |
 
-Encoding choice: the best `Accept-Encoding` match — gzip wins ties, `*` counts as gzip, `q=0` disqualifies, `br` loses ties to gzip.
+Encoding choice follows RFC 9110 §12.5.3: the highest-q coding wins; an explicit coding's q beats the `*` catch-all regardless of list order; an explicit `q=0` bans that coding even when `*` is acceptable. Ties break by server preference br > gzip > deflate (brotli is the densest); `*` alone picks `br` when a brotli encoder is injected, else `gzip`; nothing acceptable → uncompressed. q is clamped to [0, 1]; an unparseable q parameter is ignored (q stays 1).
 
 Skips: responses that already carry a `content-encoding`, range responses (`content-range`), `cache-control: no-transform` (the RFC's do-not-transform directive), and bodyless responses. Everything it compresses gets `Vary: Accept-Encoding` stamped. Register it after the logger/cors slot in `use` order — it rewrites the response on the unwind.
 

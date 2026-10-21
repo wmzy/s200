@@ -35,6 +35,7 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 | 成员 | 含义 |
 | --- | --- |
 | `send(data)` | 文本或二进制消息；尽力背压（运行时内部排队） |
+| `bufferedAmount` | 传输层已排队、尚未发送到网络的字节数 —— 发送侧背压可见性：`send` 快于网络时增长，socket 冲刷后回落到 `0`（node：socket 的 `writableLength`；bun：Bun 的每连接计数器） |
 | `close(code?, reason?)` | 启动关闭握手 |
 | `protocol` | 协商出的子协议 —— 路由声明了 protocols 且客户端提供了时 |
 | `ping(payload?)` / `onPong(cb)` | 保活原语 —— 配对检测死连接 |
@@ -105,11 +106,11 @@ const server = await serve(app, { port: 3000, upgrade: createUpgradeHandler(app)
 | --- | --- |
 | `createUpgradeHandler(app, options?)` | 构建 http 服务器的 `'upgrade'` 回调：把路径与应用的 WebSocket 路由匹配、运行应用 + 路由中间件链（拒绝以普通 HTTP 应答替代 `101`）、应答握手、每连接运行匹配 handler。未知道路销毁 socket；非法握手得 400 |
 
-`NodeUpgradeOptions`：`{ maxPayload?: number }` —— 累计消息上限，默认 64 MiB；超限消息在缓冲更多之前以 `1009` 关闭。`NodeUpgradeHandler`：`(req: IncomingMessage, socket: Duplex, head: Buffer) => void` —— 也是 `s200/node` 的 `serve` 的 `upgrade` 选项类型。
+`NodeUpgradeOptions`：`{ maxPayload?: number }` —— 累计消息上限，默认 **4 MiB**。预算在**帧头解析时**强制执行：声明长度独自超过 `maxPayload` 的数据帧 —— 或会把进行中的分片消息推过上限的延续帧 —— 立即以 `1009` 断开，一个负载字节都不缓冲（声明 2^40 字节帧的客户端在几个字节后就会收到 `1009`，而不是缓冲完 1TB 之后）。控制帧不受此限 —— RFC 6455 已把它们限制在 125 字节。缓冲后的检查保留作为累计场景的纵深防御。`NodeUpgradeHandler`：`(req: IncomingMessage, socket: Duplex, head: Buffer) => void` —— 也是 `s200/node` 的 `serve` 的 `upgrade` 选项类型。
 
 ## Bun（`s200/websocket/bun`）
 
-把应用的 WebSocket 注册表变成 `Bun.serve` 的 `websocket` 选项加升级判定，经 `s200/bun` 的 `serve` 传入。Bun 实现协议；本模块只做升级路由并把 Bun 的每连接回调映射到 `WsSocket` 面（含子协议协商，与 node 适配器镜像，使两个运行时选择一致）。
+把应用的 WebSocket 注册表变成 `Bun.serve` 的 `websocket` 选项加升级判定，经 `s200/bun` 的 `serve` 传入。Bun 实现协议；本模块只做升级路由并把 Bun 的每连接回调映射到 `WsSocket` 面（含子协议协商，与 node 适配器镜像，使两个运行时选择一致）。`socket.bufferedAmount` 由 Bun 每连接的 `getBufferedAmount()` 计数器支撑。
 
 ```ts
 import { createBunWebSocketBridge } from 's200/websocket/bun';

@@ -53,6 +53,31 @@ export type NodeHttpsOptions = {
   http2?: boolean;
 };
 
+/**
+ * Curated pass-through of `node:http` server knobs — applied at
+ * construction on every path (http, https, http2-over-TLS). Only these
+ * whitelisted fields travel to the server; nothing else is spread onto
+ * node's own constructors.
+ */
+export type NodeServerTunables = {
+  /** Per-request header budget in bytes (node default `16384`). */
+  readonly maxHeaderSize?: number;
+  /** Whole-request deadline in ms (node default `300_000`; `0` disables). */
+  readonly requestTimeout?: number;
+  /** Headers-only deadline in ms (node default `60_000`). */
+  readonly headersTimeout?: number;
+  /** Keep-alive idle window in ms (node default `5_000`). */
+  readonly keepAliveTimeout?: number;
+  /** Incomplete-request reaping cadence in ms (node default `30_000`). */
+  readonly connectionsCheckingInterval?: number;
+  /** TCP keep-alive probes on sockets (node default `false`). */
+  readonly keepAlive?: boolean;
+  /** `socket.setNoDelay` — disable Nagle (node default `true`). */
+  readonly noDelay?: boolean;
+  /** Per-socket stream buffer size in bytes (node default `16384`). */
+  readonly highWaterMark?: number;
+};
+
 export type NodeServeOptions = {
   port?: number;
   host?: string;
@@ -92,6 +117,28 @@ export type NodeServeOptions = {
    * throws at `serve` time.
    */
   https?: NodeHttpsOptions;
+  /**
+   * Curated node server tunables (`maxHeaderSize`, `requestTimeout`,
+   * `headersTimeout`, `keepAliveTimeout`, `connectionsCheckingInterval`,
+   * `keepAlive`, `noDelay`, `highWaterMark`) — applied at construction on
+   * every path. See {@link NodeServerTunables}.
+   */
+  server?: NodeServerTunables;
+  /**
+   * Graceful close budget in ms (default `10_000`). `close()` stops
+   * accepting, destroys idle keep-alive sockets, and lets in-flight
+   * responses finish — resolving as soon as the last one lands. When the
+   * budget elapses, whatever is still open is hard-killed
+   * (`closeAllConnections()`). `0` restores the hard-kill-immediately
+   * semantics: in-flight responses die the moment `close()` is called.
+   */
+  closeGraceMs?: number;
+  /**
+   * Replaces node's own `'clientError'` behavior for malformed requests
+   * (`(err, socket) => void` — e.g. answer a 400 then destroy). Without
+   * it, node's default applies: the offending socket is destroyed.
+   */
+  clientError?: (err: Error, socket: Duplex) => void;
 };
 
 /** The request surface the adapter reads — `node:http` and `node:http2`
@@ -137,14 +184,55 @@ export async function serve(
   const handler = (req: IncomingMessage | Http2ServerRequest, res: ServerResponse | Http2ServerResponse) => {
     void dispatch(app, req, res, options.light === true, options.abortOnDisconnect !== false);
   };
+  // Whitelisted node constructor options — never a blind spread of a
+  // foreign options object. Each field is picked explicitly so unknown
+  // keys cannot reach node's constructors.
+  const tunables: { -readonly [K in keyof NodeServerTunables]: NodeServerTunables[K] } = {};
+  const requested = options.server;
+  if (requested !== undefined) {
+    if (requested.maxHeaderSize !== undefined) tunables.maxHeaderSize = requested.maxHeaderSize;
+    if (requested.requestTimeout !== undefined) tunables.requestTimeout = requested.requestTimeout;
+    if (requested.headersTimeout !== undefined) tunables.headersTimeout = requested.headersTimeout;
+    if (requested.keepAliveTimeout !== undefined) {
+      tunables.keepAliveTimeout = requested.keepAliveTimeout;
+    }
+    if (requested.connectionsCheckingInterval !== undefined) {
+      tunables.connectionsCheckingInterval = requested.connectionsCheckingInterval;
+    }
+    if (requested.keepAlive !== undefined) tunables.keepAlive = requested.keepAlive;
+    if (requested.noDelay !== undefined) tunables.noDelay = requested.noDelay;
+    if (requested.highWaterMark !== undefined) {
+      tunables.highWaterMark = requested.highWaterMark;
+    }
+  }
   const server: NodeServerKind =
     options.https !== undefined
       ? options.https.http2 === true
-        ? createSecureServer(options.https, handler)
-        : createHttpsServer(options.https, handler)
-      : createServer(handler);
+        ? // http2's constructor reads its own subset of the whitelist
+          // (highWaterMark, ...); node ignores what it does not know.
+          createSecureServer({ ...tunables, ...options.https }, handler)
+        : createHttpsServer({ ...tunables, ...options.https }, handler)
+      : createServer(tunables, handler);
+  const upgraded = options.upgrade !== undefined ? new Set<Duplex>() : undefined;
   if (options.upgrade !== undefined) {
-    server.on('upgrade', options.upgrade);
+    const userUpgrade = options.upgrade;
+    const wrappedUpgrade: NodeUpgradeHandler = (req, socket, head) => {
+      // Sockets taken over by 'upgrade' (websockets) are detached from the
+      // server's connection bookkeeping: neither closeIdleConnections()
+      // nor closeAllConnections() reaches them, and server.close()'s
+      // callback waits on them — the grace hard-kill needs its own
+      // registry to be a real bound.
+      upgraded?.add(socket);
+      socket.once('close', () => upgraded?.delete(socket));
+      userUpgrade(req, socket, head);
+    };
+    server.on('upgrade', wrappedUpgrade);
+  }
+  if (options.clientError !== undefined) {
+    // Without a listener node's own default applies (the offending
+    // socket is destroyed). http2 never emits 'clientError' — wiring it
+    // there is inert, not an error.
+    server.on('clientError', options.clientError);
   }
   server.listen(options.port ?? 0, options.host);
   // once() also rejects when the server emits 'error' before 'listening'
@@ -153,16 +241,85 @@ export async function serve(
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : (options?.port ?? 0);
   const scheme = options.https !== undefined ? 'https' : 'http';
-  return { server, url: `${scheme}://127.0.0.1:${port}`, port, close: () => closeServer(server) };
+  const closeGraceMs = options.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
+  return {
+    server,
+    url: `${scheme}://127.0.0.1:${port}`,
+    port,
+    close: () => closeServer(server, upgraded, closeGraceMs),
+  };
 }
 
-function closeServer(server: NodeServerKind): Promise<void> {
-  // closeAllConnections() first: idle keep-alive sockets would otherwise hold
-  // server.close()'s callback open until their own timeout fires. HTTP/2
-  // servers close their sessions via close() — no such method there.
-  (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+/** Graceful-close budget when `closeGraceMs` is omitted. */
+const DEFAULT_CLOSE_GRACE_MS = 10_000;
+
+/** Idle-socket reap cadence while draining — the same clamp `s200/lifecycle`
+ * uses: fast enough that a response finishing mid-drain does not wait the
+ * whole budget for its keep-alive socket to be noticed, slow enough to be
+ * free. */
+const reapCadenceMs = (graceMs: number): number =>
+  Math.max(1, Math.min(250, Math.floor(graceMs / 20)));
+
+function closeServer(
+  server: NodeServerKind,
+  upgraded: Set<Duplex> | undefined,
+  graceMs: number
+): Promise<void> {
+  // closeAllConnections() cannot reach sockets taken over by 'upgrade'
+  // (websockets) — destroy them from the registry. HTTP/2 servers close
+  // their sessions via close() — no such method there.
+  const hardKill = (): void => {
+    (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+    if (upgraded !== undefined) {
+      for (const socket of upgraded) {
+        socket.destroy();
+      }
+    }
+  };
+  // 0 = hard-kill immediately: in-flight responses die.
+  if (graceMs <= 0) {
+    hardKill();
+    return new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+  // The node drain pattern shared with s200/lifecycle and the shard
+  // executor: stop accepting, destroy idle keep-alive sockets now and
+  // whenever they go idle mid-drain, hard-kill on the grace deadline.
+  // server.close()'s callback fires once every connection has ended, so
+  // the last in-flight response landing resolves the promise early.
   return new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
+    let settled = false;
+    let reaper: ReturnType<typeof setInterval> | undefined;
+    const closeIdle = (): void => {
+      (server as { closeIdleConnections?: () => void }).closeIdleConnections?.();
+    };
+    const finish = (error?: Error | null): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (reaper !== undefined) {
+        clearInterval(reaper);
+      }
+      clearTimeout(deadline);
+      if (error !== undefined && error !== null) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const deadline = setTimeout(hardKill, graceMs);
+    try {
+      server.close((error) => finish(error));
+    } catch (error) {
+      // A server refusing a second close() is already drained.
+      finish(error as Error);
+    }
+    if (!settled) {
+      closeIdle();
+      reaper = setInterval(closeIdle, reapCadenceMs(graceMs));
+    }
   });
 }
 
@@ -392,21 +549,41 @@ export async function brotliCompress(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
- * Buffered whole-file reader (the default — Buffer is a Uint8Array, so
- * returning it directly avoids a copy). With `{ stream: true }`, returns a
- * web stream instead: memory-safe for large files, but without `stat` the
- * static layer cannot know sizes for HEAD/ranges. A missing file returns
- * `null` after an existence check — a createReadStream error would surface
- * mid-response and reset the connection.
+ * Buffered-whole-file ceiling (16 MiB): files strictly larger stream
+ * instead, so a huge asset cannot balloon memory by default. The
+ * threshold matches `serveStatic`'s streamed path — with `stat` injected
+ * the response still carries content-length/validators.
+ */
+const STREAM_THRESHOLD = 16 * 1024 * 1024;
+
+/**
+ * Whole-file reader with safe defaults. Containment first: the resolved
+ * real path must stay under `root` (the adapter's own
+ * `createRealPathGuard`, on by default — a symlink inside the root
+ * pointing elsewhere reads as a miss; `realPath: false` restores the raw
+ * filesystem trust). Then no unbounded buffering: the file is stat'ed and
+ * anything strictly larger than `streamThreshold` (default 16 MiB) is
+ * returned as a web stream instead of a buffered whole file — pair with
+ * `createFileStat`/`createFileRangeReader` so size, validators and ranges
+ * ride the injected metadata. With `{ stream: true }` everything streams
+ * regardless of size. A missing file returns `null` — a createReadStream
+ * error would surface mid-response and reset the connection.
  */
 export function createFileReader(
   root: string,
-  options: { stream?: boolean } = {}
+  options: {
+    readonly stream?: boolean;
+    readonly realPath?: boolean;
+    readonly streamThreshold?: number;
+  } = {}
 ): (path: string) => Promise<Uint8Array | ReadableStream<Uint8Array> | null> {
   const stream = options.stream === true;
+  const guard = options.realPath === false ? undefined : createRealPathGuard(root);
+  const streamThreshold = options.streamThreshold ?? STREAM_THRESHOLD;
   return async (
     path: string
   ): Promise<Uint8Array | ReadableStream<Uint8Array> | null> => {
+    if (guard !== undefined && (await guard(path)) === null) return null;
     const file = join(root, path);
     if (stream) {
       try {
@@ -414,6 +591,23 @@ export function createFileReader(
       } catch {
         return null;
       }
+      return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
+    }
+    // Stat before reading: the size decides buffered vs streamed, and a
+    // directory (or a race-deleted path) reads as a plain miss.
+    let size: number;
+    try {
+      const info = await stat(file);
+      if (info.isDirectory()) return null;
+      size = info.size;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+        return null;
+      }
+      throw error;
+    }
+    if (size > streamThreshold) {
       return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
     }
     try {
@@ -489,8 +683,10 @@ export function createFileRangeReader(
  * exist or lands outside `root` — so a symlink inside the root pointing
  * elsewhere falls through instead of being served. The root's own real
  * path is resolved once and cached; each request still costs one realpath
- * syscall (the guard is opt-in). Lexical `..` checks hold without it, but
- * symlinks inside the root are trusted.
+ * syscall. Lexical `..` checks hold without it, but symlinks inside the
+ * root are trusted. {@link createFileReader} applies this guard by
+ * default; inject this directly only when composing a custom reader (or
+ * adapter surfaces) that cannot go through it.
  */
 export function createRealPathGuard(
   root: string

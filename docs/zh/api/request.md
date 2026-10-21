@@ -83,12 +83,13 @@ const type = want.type(['application/json', 'text/html']) ?? 'application/json';
 ```ts
 import { streamForm } from 's200/multipart';
 await streamForm(ctx, (part) => { /* part.name, part.data, … */ });
-// streamForm(ctx, onPart, options?) —— options.limit 限制全体字节预算
+// streamForm(ctx, onPart, options?) —— options.limit 限制全体字节预算；
+// maxParts（默认 256）与 maxPartSize（默认 8 MiB）约束表单
 ```
 
 `FormPart`：`{ name: string; filename?: string; contentType?: string; data: Uint8Array }` —— 二进制安全、字节精确。
 
-内存按 part 而非按体受限：一个 part 的字节累积到其定界符到达，另加跨块边界的扫描窗口。part 的头块上限 16 KiB、传输填充上限 256 字节；越过任一即判为畸形。`limit` 预算在字节到达途中以 `413` `HttpError` 拒绝超限上传，同时取消平台体；已中止的 `ctx.signal` 浮现为 `AbortError`；对已流式化体的二次读取以 `409` 拒绝。
+内存按 part 而非按体受限：一个 part 的字节累积到其定界符到达，另加跨块边界的扫描窗口。part 的头块上限 16 KiB、传输填充上限 256 字节；越过任一即判为畸形。累积本身也在流中受限：`maxPartSize`（默认 8 MiB）在超限 part 的字节仍在到达途中时即以 `413` `HttpError` 拒绝（该 part 永远不会被完整缓冲），`maxParts`（默认 256）在违规 part 的头部处以 `413` 拒绝无尽小 part 的表单 —— 两者都会取消平台体。`Number.POSITIVE_INFINITY` 可解除任一上限。`limit` 预算在字节到达途中以 `413` 拒绝超限上传；已中止的 `ctx.signal` 浮现为 `AbortError`；对已流式化体的二次读取以 `409` 拒绝。
 
 ## 上传（`s200/upload`）{#upload-s200-upload}
 
@@ -103,8 +104,8 @@ const result = await uploadForm(
   (file) => writeFile(`/tmp/${file.filename}`, file.data),   // sink
   {
     limit: 10 * 1024 * 1024,          // 总体预算，流式过程中强制执行
-    maxFileSize: 5 * 1024 * 1024,     // 每文件上限（413）
-    maxFiles: 8,                        // 文件 part 上限（413）
+    maxFileSize: 5 * 1024 * 1024,     // 每文件上限（413），流式中途强制执行
+    maxFiles: 8,                        // 文件 part 数上限（413）
     accept: ['image/'],                 // content-type 白名单（415）
   }
 );
@@ -120,8 +121,8 @@ const result = await uploadForm(
 | `UploadFile` | `{ name, filename, contentType?, data: Uint8Array, size }` —— 一个缓冲的文件 part |
 | `UploadSink` | `(file: UploadFile) => Promise<string \| void> \| string \| void` —— 返回的字符串作为该文件的 `id` 报告；拒绝则中止整个上传 |
 | `UploadAccept` | `readonly string[]`（媒体类型前缀）或 `(part: FormPart) => boolean` |
-| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, accept? }` —— 全部可选；即上文示例展示的闸门 |
+| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, maxParts?, accept? }` —— 全部可选；即上文示例展示的闸门 |
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 
-闸门按序运行 —— `accept`（415）、`maxFiles`（413）、`maxFileSize`（413）—— 在文件到达 sink 之前。任何拒绝与任何 sink 错误都会中止上传：解析停止、平台源取消、错误冒泡。part 是缓冲单元：文件到达 sink 时已整体在内存 —— 真正巨大的文件请直接用 `streamForm`。
+闸门：`accept`（415）与 `maxFiles`（413）在 part 交付时运行；`maxFileSize` 组合进 `streamForm` 的每 part 上限，在文件仍在流式到达时中止 —— 越限字节即以 `413` 拒绝、源被取消、sink 根本看不到该文件（默认上限即 `streamForm` 的 8 MiB）。`maxParts`（默认 256，字段也计入）以同样方式在流中拒绝无尽 part 的表单。任何拒绝与任何 sink 错误都会中止上传：解析停止、平台源取消、错误冒泡。part 是缓冲单元：文件到达 sink 时已整体在内存 —— 真正巨大的文件请直接用 `streamForm`。

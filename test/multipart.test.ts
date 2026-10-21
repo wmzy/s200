@@ -135,6 +135,8 @@ async function runForm(
   contentType: string,
   options: {
     limit?: number;
+    maxParts?: number;
+    maxPartSize?: number;
     onPart?: (part: FormPart) => void | Promise<void>;
   } = {}
 ): Promise<Outcome> {
@@ -146,7 +148,11 @@ async function runForm(
       await streamForm(
         ctx,
         options.onPart ?? ((part) => { parts.push(part); }),
-        { limit: options.limit }
+        {
+          limit: options.limit,
+          maxParts: options.maxParts,
+          maxPartSize: options.maxPartSize,
+        }
       );
     } catch (e) {
       const err = e as { status?: number; message?: string; name?: string };
@@ -387,5 +393,95 @@ describe('streamForm', () => {
     );
     outcome.parts.length.should.equal(2); // fields delivered; file part pending
     (outcome.error as { status: number }).status.should.equal(400);
+  });
+
+  /** N field parts plus the closing boundary, as one body. */
+  function fieldsBody(count: number): Uint8Array {
+    const segments: Uint8Array[] = [];
+    for (let i = 0; i < count; i += 1) {
+      segments.push(
+        text(`--${BOUNDARY}\r\nContent-Disposition: form-data; name="f${i}"\r\n\r\nv\r\n`)
+      );
+    }
+    segments.push(text(`--${BOUNDARY}--\r\n`));
+    return concat(...segments);
+  }
+
+  it('rejects an oversized part mid-accumulation with a 413, cancelling the source', async () => {
+    let cancelled = false;
+    const outcome = await runForm(
+      stallingBody(
+        [
+          text(`--${BOUNDARY}\r\nContent-Disposition: form-data; name="a"\r\n\r\nhi\r\n`),
+          text(`--${BOUNDARY}\r\nContent-Disposition: form-data; name="b"\r\n\r\n`),
+          new Uint8Array(4096).fill(0x78), // no closing delimiter — stalls
+        ],
+        () => {
+          cancelled = true;
+        }
+      ),
+      CONTENT_TYPE,
+      { maxPartSize: 100 }
+    );
+    // The in-limit part before the offender was already delivered.
+    outcome.parts.length.should.equal(1);
+    outcome.parts[0]!.name.should.equal('a');
+    (outcome.error as { status: number }).status.should.equal(413);
+    (outcome.error as { message: string }).message.should.match(/part limit/);
+    (outcome.error as { message: string }).message.should.match(/"b"/);
+    cancelled.should.equal(true);
+  });
+
+  it('accepts a part that lands exactly at the part-size cap', async () => {
+    const body = buildBody([
+      { label: 'd1', bytes: text(`--${BOUNDARY}\r\n`) },
+      { label: 'h1', bytes: text('Content-Disposition: form-data; name="a"\r\n\r\n') },
+      { label: 'p1', bytes: text('0123456789') },
+      { label: 'd2', bytes: text(`\r\n--${BOUNDARY}--\r\n`) },
+    ]);
+    const outcome = await runForm(eagerBody([body.bytes]), CONTENT_TYPE, {
+      maxPartSize: 10,
+    });
+    (outcome.error === null).should.equal(true);
+    outcome.parts.length.should.equal(1);
+    outcome.parts[0]!.data.should.deep.equal(Array.from(text('0123456789')));
+  });
+
+  it('rejects a form over maxParts at the offending part, keeping earlier ones', async () => {
+    const outcome = await runForm(eagerBody([fieldsBody(3)]), CONTENT_TYPE, {
+      maxParts: 2,
+    });
+    outcome.parts.length.should.equal(2);
+    (outcome.error as { status: number }).status.should.equal(413);
+    (outcome.error as { message: string }).message.should.match(/Too many multipart parts/);
+  });
+
+  it('defaults maxParts to 256: 256 pass, the 257th rejects', async () => {
+    const ok = await runForm(eagerBody([fieldsBody(256)]), CONTENT_TYPE);
+    (ok.error === null).should.equal(true);
+    ok.parts.length.should.equal(256);
+    const over = await runForm(eagerBody([fieldsBody(257)]), CONTENT_TYPE);
+    over.parts.length.should.equal(256);
+    (over.error as { status: number }).status.should.equal(413);
+  });
+
+  it('defaults maxPartSize to 8 MiB; Infinity lifts it', async () => {
+    const big = new Uint8Array(8 * 1024 * 1024 + 1);
+    const body = concat(
+      text(`--${BOUNDARY}\r\nContent-Disposition: form-data; name="big"\r\n\r\n`),
+      big,
+      text(`\r\n--${BOUNDARY}--\r\n`)
+    );
+    const rejected = await runForm(eagerBody([body]), CONTENT_TYPE);
+    (rejected.error as { status: number }).status.should.equal(413);
+    (rejected.error as { message: string }).message.should.match(/part limit/);
+    rejected.parts.length.should.equal(0);
+
+    const lifted = await runForm(eagerBody([body]), CONTENT_TYPE, {
+      maxPartSize: Number.POSITIVE_INFINITY,
+    });
+    (lifted.error === null).should.equal(true);
+    lifted.parts.length.should.equal(1);
+    lifted.parts[0]!.data.length.should.equal(big.length);
   });
 });

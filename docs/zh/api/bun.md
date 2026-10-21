@@ -35,7 +35,7 @@ await server.close();
 
 | 函数 | 签名 | 含义 |
 | --- | --- | --- |
-| `createFileReader(root, { stream? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | 默认 `Bun.file` 字节；`{ stream: true }` 流式 |
+| `createFileReader(root, { stream?, realPath?, streamThreshold? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | 默认 `Bun.file` 字节，并带 Node 适配器同款安全默认：realpath 包含性检查开启（`realPath: false` 关闭）、超过 `streamThreshold`（默认 16 MiB）的文件流式返回；`{ stream: true }` 一律流式 |
 | `createFileStat(root)` | `(path) => Promise<StaticFileInfo \| null>` | 条件请求所需的 `size` + `lastModified` |
 | `createFileRangeReader(root)` | `(path, start, end) => Promise<ReadableStream \| null>` | `Bun.file(...).slice(start, end).stream()` |
-| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | 经 `realpathSync` 的符号链接逃逸守卫 |
+| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | 经 `realpathSync` 的符号链接逃逸守卫 —— `createFileReader` 已默认内置 |

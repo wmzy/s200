@@ -81,10 +81,10 @@ serveStatic(options): Middleware
 | `cacheControl` | 否 | 刻在 200/206/304 上的 `Cache-Control` 值；默认无 |
 | `redirectToSlash` | 否 | `true`（默认）：无尾斜杠的目录路径 301 到 `<path>/` |
 | `dotfiles` | 否 | `'deny'`（默认）对 `.env` 式路径放行到 next()；`'allow'` 像普通路径一样服务 |
-| `realPath` | 否 | 符号链接逃逸守卫 —— 注入适配器的 `createRealPathGuard(root)` |
+| `realPath` | 否 | 符号链接逃逸守卫 —— 注入适配器的 `createRealPathGuard(root)`；适配器自己的 `createFileReader` 已默认内置该守卫，这里主要供自定义 reader 使用 |
 
 `StaticFileInfo`：`{ size: number; mtimeMs: number }`。
 
 **条件请求与范围。** 注入 `stat` 后，响应携带 `ETag`/`Last-Modified`；`If-None-Match`/`If-Modified-Since` 命中以 `304` 应答 —— 无主体且不带 `content-length`（RFC 9110 §15.4.5：s200 选择省略该头，而非回显本应具有的大小）。单个 `Range: bytes=…` 以 `206` 服务（不可满足时 `416`），并按 RFC 9110 §13.1.5 受 `If-Range` 门控：只有与 `Last-Modified` 精确匹配的 HTTP-date 才放行范围；其余情形（弱实体标签、日期不匹配、无法解析的值、或无验证器的响应）回退到完整 `200` 主体。本层自己的标签是弱标签（`W/"size-mtime"`），而 If-Range 要求强比较 —— 因此实体标签形式的 `If-Range` 在这里永不放行范围，即便是文件自己的标签。
 
-Node 与 Bun 适配器带现成的注入器 —— `createFileReader(root, { stream? })`、`createFileStat(root)`、`createFileRangeReader(root)`、`createRealPathGuard(root)`（见 [`s200/node`](/zh/api/node)、[`s200/bun`](/zh/api/bun)）。
+Node 与 Bun 适配器带现成的注入器 —— `createFileReader(root, { stream?, realPath?, streamThreshold? })`（realpath 包含性检查默认开启、超过 `streamThreshold` —— 默认 16 MiB —— 的文件流式返回而非缓冲）、`createFileStat(root)`、`createFileRangeReader(root)`、`createRealPathGuard(root)`（见 [`s200/node`](/zh/api/node)、[`s200/bun`](/zh/api/bun)）。

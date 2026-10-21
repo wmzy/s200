@@ -35,11 +35,13 @@ describeRoute(app, 'GET', '/users/:id', {
 | `describeApp(app, meta)` | Annotates the app itself (the OpenAPI `info` block) |
 | `getRouteMeta(route)` / `getAppMeta(app)` | Read back what was set |
 
-`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, SerializeSchema>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }> }`. `AppMeta`: `{ title?, version?, description? }`.
+`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, SerializeSchema>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`. `AppMeta`: `{ title?, version?, description? }`.
+
+`security` is OpenAPI's requirement shape — one entry per alternative (OR), each entry mapping a scheme name to its required scopes (`[]` when the scheme needs none). It lands on the operation verbatim; declare the schemes themselves via `openapiSpec`'s `securitySchemes` option.
 
 ## OpenAPI (`s200/openapi`)
 
-The OpenAPI 3.1 document comes out of the route table directly — no code generation, no execution, no schema library. Every route becomes a path item; `RouteMeta` annotations fill in summaries, query/body schemas, and response shapes. Unannotated routes still appear with their params and a bare 200. `ALL` routes are skipped (no single method to document); dynamic-pattern routes emit with their pattern verbatim.
+The OpenAPI 3.1 document comes out of the route table directly — no code generation, no execution, no schema library. Every route becomes a path item; `RouteMeta` annotations fill in summaries, query/body schemas, security requirements, and response shapes. Unannotated routes still appear with their params and a bare 200. Error branches declared by `throws` gates on a route's chain become error `responses` too (see below). `ALL` routes are skipped (no single method to document) with one `console.warn` per distinct pattern per build — `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`; dynamic-pattern routes emit with their pattern verbatim.
 
 ```ts
 import { openapiJson } from 's200/openapi';
@@ -47,10 +49,25 @@ get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
 const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 ```
 
+`openapiSpec`'s options (and `openapiJson`'s optional third parameter) are the `info` block plus two document-level extras:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `title` / `version` | (required) | The OpenAPI `info` block |
+| `description` | — | `info.description` |
+| `servers` | — | `ReadonlyArray<{ url: string; description?: string }>` — emitted verbatim as the document's `servers` (omitted when absent or empty) |
+| `securitySchemes` | — | `Record<string, SecuritySchemeObject>` — emitted under `components.securitySchemes`, referenced by name from `RouteMeta.security` |
+
+`SecuritySchemeObject` is OpenAPI 3.1's scheme shape, kept permissive (s200 emits data, it does not validate it): `{ type: 'apiKey' | 'http' | 'oauth2' | 'openIdConnect' | 'mutualTLS', description?, name?, in?, scheme?, bearerFormat?, flows?, openIdConnectUrl? }` — the non-`type` fields are the ones each flavor reads.
+
+**Error responses from `throws` gates.** A route whose chain carries `throws` gates gets their statuses emitted as error responses. The bare form (`throws(401, 404)`) documents the default `{ error: string }` envelope; the record form (`throws({ 422: { issues: ['x'] } })`) infers the schema structurally from the record's example value — strings/booleans/null map directly, integrality splits `integer` from `number`, arrays describe their items when every element agrees, objects list the keys present (required-ness is unknowable from an example, so no key is `required`). Gates merge with `meta.responses` without clobbering: a status only one side declares is emitted, and on conflict **`meta.responses` wins** — its description and schema were written for the spec, the gate's example is only an inference seed. Several gates naming the same status: the later registration wins (the type layer unions body shapes; example values cannot).
+
+**Schema pass-through.** `toJsonSchema` forwarding covers exactly the fields a `SerializeSchema` carries at runtime — `type`, `properties`/`required`, `items`, `nullable`. The DSL has no `enum`/`format`/`description`/bounds markers, so none are invented.
+
 | Function | Meaning |
 | --- | --- |
-| `openapiSpec(app, info)` | The `OpenApiDocument` — `{ openapi: '3.1.0', info, paths }`, JSON-compatible by construction |
-| `openapiJson(ctx, app, info?)` | Response helper: the spec as a JSON response (the `info` override pairs with `openapiSpec`'s) |
+| `openapiSpec(app, options)` | The `OpenApiDocument` — `{ openapi: '3.1.0', info, servers?, components?, paths }`, JSON-compatible by construction |
+| `openapiJson(ctx, app, options?)` | Response helper: the spec as a JSON response (`info` fields fall back to `describeApp`; `servers`/`securitySchemes` pass through verbatim) |
 | `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` |
 
 `withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming the first offending path (`{"error":"body.tags.1: expected string, got number"}`); valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes.
@@ -72,12 +89,13 @@ get(app, '/docs', (ctx) => swaggerUi(ctx, { url: '/openapi.json', title: 'Users 
 | `title` | `'API Reference'` | Page `<title>` |
 | `theme` | Scalar default | Scalar theme name (`default`, `alternate`, `moon`, `kepler`, …) |
 | `cdn` | pinned `@scalar/api-reference` build | Scalar bundle URL — override for a self-hosted mirror |
+| `document` | Scalar CDN shell | Full HTML document override, served **verbatim** — the air-gapped escape hatch: vendor Scalar yourself and point the shell at your own assets. A string, or a `() => string \| Promise<string>` factory resolved per request. When set it wins over everything else: `url`/`title`/`theme`/`cdn` are ignored and nothing is escaped (still `text/html` with an honest `content-length`) |
 
 Every interpolated value runs through `escapeHtml`, so a hostile `url`/`title`/`theme` cannot break out of an attribute or the document.
 
 ## Codegen (`s200/codegen`)
 
-`generateClient(app)` returns the TypeScript source of a self-contained client module derived from the app's **runtime** route table — no build-time plugin, no reflection; the table is the spec. The emitted module's only s200 touch is a types-only `ParamsOf` import; path filling and query-string logic are emitted inline, so the generated file runs anywhere web fetch runs, with no s200 in `node_modules`. Output is deterministic — registration order, no timestamps — so it diffs and commits like hand-written source.
+`generateClient(app)` returns the TypeScript source of a self-contained, **typed** client module derived from the app's **runtime** route table plus its `s200/meta` annotations and `throws` declarations — no build-time plugin, no reflection; the table is the spec. The emitted module has zero s200 imports: params, path filling, query-string and JSON-body logic are emitted inline, so the generated file runs anywhere web fetch runs, with no s200 in `node_modules`. Output is deterministic — registration order, no timestamps — so it diffs and commits like hand-written source.
 
 ```ts
 import { generateClient } from 's200/codegen';
@@ -86,7 +104,14 @@ await writeFile('src/api/client.ts', generateClient(app, { name: 'createUsersCli
 
 `GenerateClientOptions`: `{ name? (default 'createClient'), baseUrl?, fetcherName? (default 'fetcher') }`.
 
-The honest contract: the route table is runtime data, so no request/response body types exist — every generated method returns `Promise<Response>`; read bodies with `.json()`/`.text()`. For compile-time-typed bodies use `createClient` from `s200/client` against the app itself.
+Where the types come from — exactly what exists at runtime:
+
+- **Params** from each pattern: `/users/:id` → `args: { id: string }`, `/posts/:postId?` → `{ postId?: string }`, `*path` wildcards included.
+- **Query** from `meta.query`: `init.query` narrows to the declared keys, all optional (`{ query?: { verbose?: boolean } }`).
+- **Request body** from `meta.body`: `init.body` retypes to the schema's shape and `init` becomes **required** (the route reads a body, the caller must send one). A JSON-shape body is stringified at call time with a default `content-type: application/json` unless one is set — s200/client's rule; strings and structured bodies (streams, blobs, forms, buffers) pass to fetch untouched.
+- **Responses** from `meta.responses` merged with the route's `throws` gates (meta wins a status both declare): one `Branch<S, T>` member per status — a `Response` whose `status` is the branch's literal and whose `json()` resolves to the branch's body type — so `if (res.status === 404)` narrows the body. Throws examples infer structurally, same as the spec emitter.
+
+The honest contract: handlers' own `json()` body brands are compile-time phantoms the runtime table cannot see — anything neither `meta` nor `throws` declares types `unknown`, and routes with no declarations at all keep the bare `Promise<Response>`. For inference straight off the handler types, use `createClient` from `s200/client` against the app itself.
 
 ## Client (`s200/client`)
 
@@ -101,12 +126,16 @@ const user = await (await client.get('/users/:id', { id: '1' })).json();
 
 The client sends plain `fetch` requests (any base URL, any `fetch` implementation) and returns Web Standard `Response`s — it adds nothing to the wire protocol: an s200 client talks to any server that speaks the same patterns.
 
+`ClientOptions` carries `signal` and `timeoutMs` beyond `baseUrl`/`fetch`: `signal` rides every request (a per-call `init.signal` overrides it for that call), and `timeoutMs` opens a **fresh per-request** `AbortSignal.timeout` window — when both are set the effective signal and the timeout are raced via `AbortSignal.any` (manual listener linkage on runtimes without it; the Node floor, 20.3, has it), so one composite signal aborts with whichever fired first.
+
+Without a `baseUrl` the client needs a URL base to resolve against: browsers and edges have `globalThis.location` and relative URLs keep working, but in Node `createClient` **throws at creation time** with a message advising `options.baseUrl` — instead of a confusing per-request `TypeError` from fetch. An injected `fetch` owns URL resolution itself, so the guard fires only when the global `fetch` would be called.
+
 | Function / Type | Meaning |
 | --- | --- |
 | `createClient(app, options?)` | `Client<R>` — eight method namespaces over the app's route log; each call names a registered pattern literal with typed params |
 | `Client<R>` | Eight method namespaces — `get`, `post`, `put`, `patch`, `delete` (with the `del` alias), `head`, `options` — each holding the call signatures of that method's routes; patterns registered under other methods type as `never` |
 | `ClientInit` | `RequestInit & { query?: Record<string, string \| number \| boolean \| readonly (…)[] \| undefined> }` — array values repeat the key, `undefined` is skipped, numbers/booleans stringify |
-| `ClientOptions` | `{ baseUrl?, fetch? }` — base URL prepended to every path; injectable fetch for tests and edge runtimes |
+| `ClientOptions` | `{ baseUrl?, fetch?, signal?, timeoutMs? }` — base URL prepended to every path; injectable fetch for tests and edge runtimes; client-level abort signal; per-request timeout in milliseconds (raced with the signal, default: none) |
 | `ClientResponse<S, T>` | The status-discriminated response union: `res.status` narrows `res.json()`'s type |
 | `BranchResponse<S, T>` | One branch: `{ status: S } & Response` with the body type `T` |
 

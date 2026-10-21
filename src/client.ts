@@ -37,6 +37,18 @@ export type ClientOptions = {
   baseUrl?: string;
   /** Fetch implementation — injectable for tests and edge runtimes. */
   fetch?: typeof fetch;
+  /**
+   * Abort signal applied to every request the client issues; a per-call
+   * `init.signal` overrides it for that call.
+   */
+  signal?: AbortSignal;
+  /**
+   * Per-request timeout in milliseconds — each call gets a fresh
+   * `AbortSignal.timeout` window (per-request, not client-lifetime) raced
+   * with the effective signal via `AbortSignal.any` where the runtime has
+   * it (the Node floor, 20.3, does; older runtimes link manually).
+   */
+  timeoutMs?: number;
 };
 
 /** One route's call signature: params required exactly when the pattern
@@ -304,6 +316,49 @@ const ALL_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 type PathFn = (args: Params | undefined, init: ClientInit | undefined) => Promise<Response>;
 
 /**
+ * Two signals raced as one: `AbortSignal.any` where the runtime has it
+ * (Node >= 20.3 — the floor), manual listener linkage elsewhere. The
+ * composite aborts with the reason of whichever source aborted first.
+ */
+function linkSignals(primary: AbortSignal, timeout: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([primary, timeout]);
+  }
+  const controller = new AbortController();
+  const abort = (source: AbortSignal): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(source.reason);
+    }
+  };
+  if (primary.aborted) {
+    abort(primary);
+  }
+  if (timeout.aborted) {
+    abort(timeout);
+  }
+  primary.addEventListener('abort', () => abort(primary), { once: true });
+  timeout.addEventListener('abort', () => abort(timeout), { once: true });
+  return controller.signal;
+}
+
+/**
+ * Resolves the signal one request rides: the per-call `init.signal` when
+ * given (it overrides the client-level `signal`), else the client-level
+ * `signal`; with `timeoutMs` set, a fresh per-request
+ * `AbortSignal.timeout` races that effective signal.
+ */
+function signalOf(options: ClientOptions): (init: AbortSignal | null | undefined) => AbortSignal | undefined {
+  return (init) => {
+    const effective = init ?? options.signal;
+    if (options.timeoutMs === undefined) {
+      return effective ?? undefined;
+    }
+    const timeout = AbortSignal.timeout(options.timeoutMs);
+    return effective === undefined || effective === null ? timeout : linkSignals(effective, timeout);
+  };
+}
+
+/**
  * Whether a request body is a JSON shape (a plain object or array — the
  * typed `body` of a `jsonBody` route is a JSON shape by contract) rather
  * than one of the Web's structured body types. Checked with `instanceof`
@@ -334,7 +389,8 @@ function buildPathFn(
   pattern: string,
   method: string,
   segments: readonly Segment[],
-  fetcher: typeof fetch
+  fetcher: typeof fetch,
+  resolveSignal: (init: AbortSignal | null | undefined) => AbortSignal | undefined
 ): PathFn {
   return (args, init) => {
     const pieces: string[] = [];
@@ -392,16 +448,17 @@ function buildPathFn(
     // with `content-type: application/json` — a Headers copy, so an
     // explicitly set content-type wins. Strings and structured bodies
     // (streams, blobs, forms, buffers) pass through to fetch untouched.
+    const signal = resolveSignal(rest.signal);
     if (isJsonBody(rest.body)) {
       const headers = new Headers(rest.headers);
       if (!headers.has('content-type')) {
         headers.set('content-type', 'application/json');
       }
-      return fetcher(path, { ...rest, headers, body: JSON.stringify(rest.body), method });
+      return fetcher(path, { ...rest, headers, body: JSON.stringify(rest.body), method, signal });
     }
     // The method group rides every init — a client built from the route
     // table speaks the table's methods (a stray `method` in init loses).
-    return fetcher(path, { ...rest, method });
+    return fetcher(path, { ...rest, method, signal });
   };
 }
 
@@ -422,14 +479,32 @@ function buildPathFn(
  *
  * Dynamic-pattern routes (registered via the `pattern: string` overload)
  * type as untyped calls; `ALL` routes are offered under every method.
+ *
+ * `options.signal` rides every request (a per-call `init.signal` overrides
+ * it), and `options.timeoutMs` opens a fresh per-request
+ * `AbortSignal.timeout` window raced with the effective signal. Without a
+ * `baseUrl` the client needs a URL base it can resolve against: browsers
+ * and edges have `globalThis.location`, but in Node `createClient` without
+ * `baseUrl` (or an injected `fetch`) throws at creation time.
  */
 export function createClient<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
 >(app: App<S, R>, options: ClientOptions = {}): Client<R> {
   const baseUrl = options.baseUrl ?? '';
+  // A relative URL is only resolvable where a base exists: the browser's
+  // `location` or an explicit `baseUrl`. Node's fetch has neither concept
+  // — fail at creation with the remedy, not per-request with fetch's
+  // opaque "Failed to parse URL". An injected fetch owns URL resolution
+  // itself, so the guard fires only when the global fetch would be called.
+  if (baseUrl === '' && options.fetch === undefined && typeof globalThis.location === 'undefined') {
+    throw new Error(
+      `createClient: no baseUrl and no location in this runtime — relative URLs cannot resolve; pass options.baseUrl (e.g. { baseUrl: 'http://localhost:3000' }) or an injected fetch`
+    );
+  }
   const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   const fetcher = options.fetch ?? globalThis.fetch;
+  const resolveSignal = signalOf(options);
   const byMethod = new Map<string, Map<string, { fn: PathFn; hasParams: boolean }>>();
   const compile = (method: string, pattern: string, segments: readonly Segment[]): void => {
     let group = byMethod.get(method);
@@ -447,7 +522,10 @@ export function createClient<
         break;
       }
     }
-    group.set(pattern, { fn: buildPathFn(base, pattern, method, segments, fetcher), hasParams });
+    group.set(pattern, {
+      fn: buildPathFn(base, pattern, method, segments, fetcher, resolveSignal),
+      hasParams,
+    });
   };
   for (const route of app.routes) {
     if (route.method === 'ALL') {

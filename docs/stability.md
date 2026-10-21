@@ -6,11 +6,13 @@ yet. If you build on s200, this is the page to check before upgrading.
 
 ## Frozen surface (the 1.0 contract) {#frozen-surface-the-10-contract}
 
-Everything below is contractual from 1.0 on: it changes only in a major
-release (before 1.0, in a flagged minor — see the
-[semver policy](#semver-policy)). The list is deliberately the surface real
-apps touch; internals (private helpers, chunk layout, undocumented objects)
-stay free to move.
+The core contract below is contractual from 1.0 on: it changes only in a
+major release (before 1.0, in a flagged minor — see the
+[semver policy](#semver-policy)). It is deliberately the surface real apps
+touch; internals (private helpers, chunk layout, undocumented objects)
+stay free to move. Package entries freeze in two tiers — a core list
+together with this contract, and the remaining entries on the looser
+stable tier (see [Battery entries](#battery-entries)).
 
 ### App creation
 
@@ -120,7 +122,9 @@ the client's error branch (no declaration needed). The `throws` gate is the
 declaration channel for branches the type layer cannot see (thrown from
 helpers): it merges the statuses (and body shapes) a route may answer with
 into `s200/client`'s status-discriminated `res.status` / `res.json()` —
-a pure pass-through at runtime.
+a pure pass-through at runtime for request handling (the declaration is
+readable off the gate, which is how `s200/openapi` and `s200/codegen`
+pick up the error branches).
 
 ### Routing semantics
 
@@ -141,25 +145,58 @@ a pure pass-through at runtime.
 
 ### Battery entries
 
-The package entries below are the frozen module map — each independently
-importable, tree-shakable, zero runtime dependencies. New batteries may be
-**added** (a minor), but an existing entry keeps its name and its exported
-identifiers.
+At 1.0 the freeze covers the **core contract above plus the core
+entries** — the module surface real apps build on today. Earlier drafts
+of this page froze the full ~50-entry map; that was walked back
+deliberately: freezing fifty entries before any external usage freezes
+unreviewed API. The remaining entries stay on the stable tier below.
+
+#### Frozen at 1.0: core entries
+
+Each independently importable, tree-shakable, zero runtime dependencies.
+An existing entry keeps its name and its exported identifiers; option
+shapes may gain fields. New batteries may be **added** (a minor).
 
 ```
+s200                (the core barrel: createApp, registrars, respond
+                     helpers, error model, routing)
 s200/node  s200/bun  s200/deno  s200/cloudflare          (adapters)
-s200/cors  s200/logger  s200/route-table  s200/cookies  s200/validate
-s200/rate-limit  s200/compress  s200/streaming  s200/request-id  s200/timeout
-s200/query  s200/websocket  s200/websocket/node  s200/websocket/bun
-s200/etag  s200/secure-headers  s200/auth  s200/accepts  s200/serialize
-s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta  s200/openapi
-s200/trust-proxy  s200/otel  s200/codegen  s200/test  s200/multipart
-s200/session  s200/swagger  s200/upload  s200/dev
-s200/lifecycle  s200/health  s200/config  s200/schedule  s200/version
-s200/shard  s200/shard-dev  s200/executor  s200/gateway  s200/unit-metrics
-s200/events
-s200/als
+s200/cors  s200/logger  s200/cookies  s200/validate  s200/query
+s200/rate-limit  s200/compress  s200/etag  s200/request-id  s200/timeout
+s200/websocket  s200/websocket/node  s200/websocket/bun
+s200/test  s200/dev
 ```
+
+#### Stable, not yet frozen
+
+Every other entry below is stable and semantic-versioned, but its surface
+may still adjust within minors — each change ships a migration note —
+until the entry accrues real-world usage and graduates to the frozen list
+(a promotion, itself a minor). The no-silent-break spirit that applies
+today and at 1.0:
+
+- Entry names and exported identifiers keep working — nothing is renamed
+  or removed under you.
+- Option shapes gain fields; within this tier, existing fields are never
+  silently repurposed or dropped.
+- The behavioral contracts above (the `Ctx` contract, responding,
+  errors, routing semantics) apply across every entry — a battery is
+  middleware over the same core.
+
+```
+s200/route-table  s200/streaming  s200/secure-headers  s200/auth  s200/accepts
+s200/serialize  s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta
+s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
+s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
+s200/config  s200/schedule  s200/version  s200/events  s200/als
+s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
+```
+
+The five `*`-marked sharding entries are **experimental**: their APIs may
+change or be withdrawn in any minor, they are not yet battle-tested in
+production, and the thread-executor fast path depends on Node-internal
+listener-transfer behavior (Node ≥26.6). See
+[Sharding & Scheduling](./guides/sharding.md).
 
 ## Semver policy {#semver-policy}
 
@@ -175,8 +212,12 @@ semantic-release overwrites — versions are never hand-edited.
   change that breaks user code ships with a migration note in its release
   notes. If you need stability before 1.0, pin the exact version.
 - **1.0 and after:** strict semver. The
-  [frozen surface](#frozen-surface-the-10-contract) changes only in majors;
-  new capabilities land as minors, fixes as patches.
+  [frozen surface](#frozen-surface-the-10-contract) — the core contract
+  plus the core entries — changes only in majors. The remaining entries
+  are stable and semantic-versioned but may adjust within minors with
+  migration notes; experimental entries (the sharding layer) may change
+  or be withdrawn in any minor. New capabilities land as minors, fixes as
+  patches.
 - **Deprecation rhythm (post-1.0):** a deprecation is announced by marking
   the API (`@deprecated` JSDoc + README) with a migration guide, stays
   functional for **two minor releases**, and is then removed — removals land
