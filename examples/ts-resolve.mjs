@@ -25,6 +25,11 @@ const PKG_MAP = {
   's200/websocket': 'websocket.ts',
   's200/websocket/node': 'websocket-node.ts',
   's200/websocket/bun': 'websocket-bun.ts',
+  's200/meta': 'meta.ts',
+  's200/openapi': 'openapi.ts',
+  's200/swagger': 'swagger.ts',
+  's200/codegen': 'codegen.ts',
+  's200/test': 'test.ts',
 };
 
 export function resolve(specifier, context, nextResolve) {

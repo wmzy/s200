@@ -93,6 +93,38 @@ export type InferSchema<S extends SerializeSchema> =
               : null;
 
 /**
+ * A `SerializeSchema` as a plain JSON Schema object — the bridge every
+ * schema-exposing consumer (`s200/openapi`, `s200/mcp`) reads. Passes
+ * through exactly the fields a `SerializeSchema` carries at runtime —
+ * `type`, `properties`/`required`, `items`, `nullable` — and nothing
+ * more: the DSL has no `enum`/`format`/`description`/bounds markers to
+ * forward, so none are invented.
+ */
+export function toJsonSchema(schema: SerializeSchema): Record<string, unknown> {
+  switch (schema.type) {
+    case 'object': {
+      const properties: Record<string, unknown> = {};
+      for (const [key, sub] of Object.entries(schema.properties)) {
+        properties[key] = toJsonSchema(sub);
+      }
+      return {
+        type: 'object',
+        properties,
+        ...(schema.required !== undefined && schema.required.length > 0
+          ? { required: schema.required }
+          : {}),
+      };
+    }
+    case 'array':
+      return { type: 'array', items: toJsonSchema(schema.items) };
+    default:
+      return schema.nullable === true
+        ? { type: [schema.type, 'null'] }
+        : { type: schema.type };
+  }
+}
+
+/**
  * Compiles a schema into a serializer. The returned function emits the
  * declared keys in schema order and drops anything the schema does not
  * declare. Two codegen shapes: all-required objects become one straight
@@ -330,6 +362,98 @@ export function compileValidator(
     checkValue(schema, data, '', issues);
     return issues;
   };
+}
+
+/** One closed-schema violation: `path` walks from the root (object keys
+ * and array indices — `['items', 1, 'name']`; the root itself is `[]`)
+ * and `message` names the violated expectation. */
+export type SchemaIssue = {
+  readonly path: readonly PropertyKey[];
+  readonly message: string;
+};
+
+/** Recursive checker behind {@link checkSchema}: reports into `issues` and
+ * returns — one issue per violated node, in schema traversal order. Never
+ * throws: it reads, it does not parse. Where it differs from
+ * {@link checkValue}: undeclared object keys are violations, reported
+ * after the declared checks in document order. */
+function collectIssues(
+  schema: SerializeSchema,
+  data: unknown,
+  path: readonly PropertyKey[],
+  issues: SchemaIssue[]
+): void {
+  switch (schema.type) {
+    case 'object': {
+      if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+        issues.push({ path, message: `expected object, got ${typeOf(data)}` });
+        return;
+      }
+      const record = data as Record<string, unknown>;
+      for (const key of schema.required ?? []) {
+        // `undefined` counts as missing — the serializer's own "absent"
+        // reading of an optional key, applied to a required one.
+        if (record[key] === undefined) {
+          issues.push({ path: [...path, key], message: 'required' });
+        }
+      }
+      for (const [key, sub] of Object.entries(schema.properties)) {
+        const value = record[key];
+        if (value === undefined) continue;
+        collectIssues(sub, value, [...path, key], issues);
+      }
+      // The closed-shape contract: serialize drops undeclared keys on
+      // output, so an undeclared key on input is a violation, not noise.
+      for (const key of Object.keys(record)) {
+        if (!Object.hasOwn(schema.properties, key)) {
+          issues.push({ path: [...path, key], message: 'undeclared key' });
+        }
+      }
+      return;
+    }
+    case 'array': {
+      if (!Array.isArray(data)) {
+        issues.push({ path, message: `expected array, got ${typeOf(data)}` });
+        return;
+      }
+      for (let i = 0; i < data.length; i++) {
+        collectIssues(schema.items, data[i], [...path, i], issues);
+      }
+      return;
+    }
+    default: {
+      // Nullable first: `null` satisfies the widened primitive before any
+      // type check runs.
+      if (schema.nullable === true && data === null) return;
+      if (!primitiveOk(schema.type, data)) {
+        issues.push({
+          path,
+          message: `expected ${schema.type}, got ${typeOf(data)}`,
+        });
+      }
+    }
+  }
+}
+
+/**
+ * The closed-shape twin of {@link compileValidator}: checks `value`
+ * against the schema in one pass and returns every violation as a
+ * {@link SchemaIssue} (an empty list means conforming). Coverage is the
+ * same DSL subset — `type`, `properties`/`required`, `items`,
+ * `nullable` — with one deliberate difference: **undeclared object keys
+ * are violations** (`additionalProperties: false` reading, matching what
+ * `serialize` emits on output), where `compileValidator` ignores them
+ * (the request-gate reading — clients send extra keys all the time).
+ * `path` is the key walk from the root (`['items', 1, 'name']`, `[]` at
+ * the root), not a dot-joined string. Never throws or rewrites.
+ */
+export function checkSchema(
+  schema: SerializeSchema,
+  value: unknown
+): readonly SchemaIssue[] {
+  const issues: SchemaIssue[] = [];
+  collectIssues(schema, value, [], issues);
+  return issues;
 }
 
 /**

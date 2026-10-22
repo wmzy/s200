@@ -70,7 +70,7 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | `openapiJson(ctx, app, options?)` | 响应助手：spec 的 JSON 响应（`info` 字段回落到 `describeApp`；`servers`/`securitySchemes` 原样透传） |
 | `withRouteValidation(app)` | 纯数据变换（mount 家族）：只重建带 `body` 或 `query` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 |
 
-`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名首个违规路径（`{"error":"body.tags.1: expected string, got number"}`）；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。spec 与闸门共享一个来源：标注被重新挂回重建的路由。
+`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名首个违规路径（`{"error":"body.tags.1: expected string, got number"}`）；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。spec 与闸门共享一个来源：标注被重新挂回重建的路由。响应侧有同样的孪生 —— [`s200/response-check`](/zh/api/response-check) 在回卷时用 `responses[status].schema` 检查已物化的响应。
 
 ## Swagger UI（`s200/swagger`）
 

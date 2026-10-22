@@ -20,6 +20,7 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 | `serialize<S>(schema)` | 编译 `(value: InferSchema<S>) => string` —— 按模式顺序输出声明的键，丢弃未声明的 |
 | `jsonRaw(ctx, json, init?)` | 写入已序列化的 JSON 串：`content-type: application/json`、精确 `content-length` |
 | `compileValidator(schema)` | 读取侧孪生：`(data) => readonly ValidationIssue[]` —— 空列表即合规；绝不抛错或改写 |
+| `checkSchema(schema, value)` | 闭形状孪生：`(schema, value) => readonly SchemaIssue[]` —— 同一子集，但未声明的键就是违规；`path` 是键步进（`['items', 1, 'name']`，根为 `[]`），不是字符串 |
 
 `SerializeSchema`（子集）：
 
@@ -36,6 +37,7 @@ type SerializeSchema =
 - 价值在声明的形状，而非原始速度：内部字段绝不会从序列化泄漏。现代引擎的 `JSON.stringify` 在典型负载上仍有竞争力 —— 在形状契约重要时使用，而非当加速黑客。
 - 它是序列化形状而非验证器：不检查类型不匹配，`NaN`/`Infinity` 序列化为 `null`（JSON 语义）。
 - `compileValidator` 一对一镜像该子集：类型不匹配在违规节点报告，`nullable` 先放行 `null`，缺失的 `required` 键在自己的路径报告，多余键被忽略。这正是 `s200/openapi` 的 `withRouteValidation` 使用的验证器。
+- `checkSchema` 是它的闭形状孪生（`additionalProperties: false`，与 `serialize` 输出侧一致 —— 未声明的键即违规），报告 `SchemaIssue`（`{ path: readonly PropertyKey[]; message }`）。这是 `s200/response-check` 对响应 body 跑的检查器。
 
 `ValidationIssue`：`{ path: string; message: string }` —— `path` 点连接模式相对位置（`'items.2.name'`；根为 `''`）。
 

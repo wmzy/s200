@@ -1,12 +1,15 @@
 # Benchmarks
 
-Two benchmarks, both runnable locally and both honest about what they measure:
+Three benchmarks, all runnable locally and all honest about what they measure:
 
 - `pnpm bench` — router dispatch in isolation (`scripts/bench-router.mjs`): the
   cost of matching a pathname against a route table, out of context.
 - `pnpm bench:http` — whole-request throughput (`scripts/bench-http.mjs`):
   a keep-alive HTTP client against each framework's real server, measuring
   everything from socket accept to response drain.
+- `pnpm bench:memory` — memory & startup (`scripts/bench-memory.mjs`):
+  time to first response in a fresh process, steady-state RSS after a
+  warmup load, and heap bytes retained per registered route.
 
 ## Whole-request throughput
 
@@ -102,6 +105,121 @@ iterations and are stable across rounds.)
 matching cost tracks URL depth, not route count. The residual linear case is
 a table with no static segments at all (`/:a/:b/:c`).
 
+## Memory & startup (2026-10-21)
+
+`pnpm bench:memory` (`scripts/bench-memory.mjs`) measures the three axes the
+throughput bench never touched: how fast a fresh process serves its first
+response, how much memory a warmed server holds, and how much heap one
+registered route retains. Every cell is its own freshly spawned child
+process; s200 children import the built core (`dist/`), the others import
+their packages the way any user would. Re-run with
+`node scripts/bench-memory.mjs` (env knobs: `COLD_RUNS`, `RSS_RUNS`,
+`PER_ROUTE_RUNS`, `ROUTES`, `WARMUP`).
+
+Machine: AMD Ryzen 7 8745HS w/ Radeon 780M Graphics, Fedora 42
+(linux 6.19.14), Node v26.10.0, 2026-10-21 — medians of 7/3/3 child runs.
+
+### A · cold start
+
+ms from `spawn` to the first 200 on `GET /` — deliberately includes node
+boot + module loading + listen + first response, which is what "time to
+first response" means for a fresh process (serverless cold start shape):
+
+| framework | ms |
+| --------- | --: |
+| s200      | 71.9 |
+| hono      | 81.3 |
+| express   | 93.1 |
+| fastify   | 102.7 |
+| elysia    | 138.6 |
+
+The two-route entry is identical for every framework. s200 and hono are
+the two fastest, a handful of ms apart (the gap wobbled 2–9 ms across the
+observed runs; the s200 child imports one small built module graph);
+elysia pays the most for its import (its compiler machinery loads
+with the framework). These are tens-of-ms differences: decisive for
+per-request serverless spawns, irrelevant for a long-running daemon.
+Run-to-run wobble across five observed runs: s200/hono/fastify/elysia
+medians stayed within ~±5%; **express is bimodal on this machine**
+(~90–134 ms, page-cache dependent) — read its cell as a range, not a
+point.
+
+### B · steady-state RSS
+
+VmRSS read from `/proc/<pid>/status` after a 5000-request keep-alive
+warmup (concurrency 8) on the same two-route entry, once the last response
+has drained. The warmup column is that load's throughput, kept for
+context — the canonical throughput table lives above:
+
+| framework | RSS (MB) | warmup (req/s) |
+| --------- | -------: | -------------: |
+| s200      | 127.7    | 11560          |
+| hono      | 99.1     | 17338          |
+| express   | 88.5     | 17251          |
+| fastify   | 94.0     | 24664          |
+| elysia    | 97.1     | 23665          |
+
+hono/express/fastify/elysia cluster at 88–97 MB; s200 reads ~127 MB after
+the same load. Two one-off probes (not part of the script) pin down what
+that delta is and is not:
+
+- **Not collectable garbage** — forcing a full GC in the warmed child (via a
+  temporary `--expose-gc` probe route) leaves s200 at ~128 MB and hono at
+  ~96 MB, i.e. the pages stay held either way.
+- **Not an unbounded leak** — driving one s200 child to 5k / 20k / 50k
+  requests (forced GC before each read) gives 127.3 → 158.5 → 158.8 MB:
+  the heap grows under allocation pressure, then goes flat from 20k on.
+  The same curve for hono is 99.4 → 101.0 → 101.1 MB.
+
+The honest reading: s200's default path materializes a platform
+`Request`/`Response` per request plus per-request abort plumbing and the
+state/context bag, so its allocation rate under load is higher and V8 sizes
+the young generation larger without returning the pages. The B-table
+number is therefore load-history-sensitive — it is the RSS at exactly
+5000 requests, and a s200 server driven harder settles near ~159 MB
+(where hono stays ~101 MB). Neither number is wrong; pick the one that
+matches your traffic shape.
+
+### C · heap per route
+
+Bytes of heap retained per registered route: a `--expose-gc` child builds
+the app, GCs twice, records `heapUsed`, registers `ROUTES` (500) routes of
+the shape `/res<i>/:id` → JSON, GCs twice again, and reports the
+`heapUsed` delta ÷ N. No listen, no requests — this is registration-time
+retention only:
+
+| framework | B/route |
+| --------- | ------: |
+| s200      | 538.7 |
+| hono      | 343.8 |
+| express   | 2144.9 |
+| fastify   | 13953.6 |
+| elysia    | 1243.4 |
+
+hono keeps a plain route-array entry (~344 B); s200's trie node + route
+record + param metadata lands at ~539 B; express stores a layer with a
+compiled path-to-regexp (~2.1 KB); fastify retains the most per route
+(~14 KB — its route options, hook plumbing, and schema machinery are
+per-route by design); elysia sits at ~1.2 KB at registration. Caveat:
+any work a framework defers past registration (compiling handlers at
+listen, schema finalization, first-request JIT) is outside this number,
+so treat C as the *registration* axis, not total per-route cost at serve
+time.
+
+### Caveats
+
+- Same single-machine, single-process-per-cell discipline as the
+  throughput bench; numbers are snapshots, not guarantees.
+- Scenario A includes the ~2 ms polling granularity of the readiness
+  probe, on top of module loading (which is the point).
+- Scenario B is linux-only (`/proc/<pid>/status`; the script prints an
+  honest N/A elsewhere), read once after the warmup drains — GC noise is
+  a few hundred kB run to run, and as shown above the reading depends on
+  how much load preceded it.
+- Scenario C is post-GC retained heap in the child; forced-GC deltas on
+  V8 can leave a few hundred bytes per route of slack either way at
+  N=500.
+
 ## Methodology caveats
 
 - Same machine, same client (`node:http` keep-alive agent), same payloads,
@@ -111,13 +229,22 @@ a table with no static segments at all (`/:a/:b/:c`).
   patching contaminates another's measurement.
 - The `hello`/`param` rows are two-route apps with zero middlewares: they
   measure dispatch + adapter floor, not middleware-heavy workloads. The
-  later `mw` scenario (see the last section) covers the middleware side;
-  those rows leave `hello`/`param` middleware-free. Add your own routes to
-  the scripts to model your traffic.
+  later `mw` scenario (see the middleware-heavy entry under History below)
+  covers the middleware side; those rows leave `hello`/`param`
+  middleware-free. Add your own routes to the scripts to model your
+  traffic.
 - Not a TechEmpower-style harness (no multi-core contention modeling, no
   kernel tuning). Use it for relative comparison, not capacity planning.
 
-## 2026-09-29 update (LightHeaders + default disconnect-abort)
+## History
+
+The sections below are chronological notes from earlier working sessions,
+kept because they record how the numbers moved as features landed and why
+the current tables look the way they do. The sections above are the
+canonical runs; when a note below and a canonical table disagree, the
+canonical table wins (the notes describe the dist of their day).
+
+### 2026-09-29 update (LightHeaders + default disconnect-abort)
 
 Two later changes moved the s200 rows on a different machine (Node 26,
 same-session before/after, so relative deltas hold even though absolute
@@ -136,7 +263,7 @@ numbers are not comparable to the reference table above):
   pays its own disconnect policy, so treat cross-framework deltas measured
   before this change as one policy cheaper.
 
-## 2026-09-29 addendum (light-mode coverage extension)
+### 2026-09-29 addendum (light-mode coverage extension)
 
 The light path's surface coverage was extended and pinned by tests —
 plain `stream` responses, `compress` over streamed light bodies, all
@@ -159,7 +286,7 @@ streamed static file advertised `content-length: 0` (both modes) —
 `serveStream` now lets the stat-derived size survive (`handle`'s HEAD
 rewrite strips the body afterward).
 
-## 2026-09-30 update (lazy request headers on the light path)
+### 2026-09-30 update (lazy request headers on the light path)
 
 The light path stopped paying for headers nobody reads: `LightHeaders` now
 builds its index **lazily** — the node adapter hands it `req.rawHeaders`
@@ -186,7 +313,7 @@ same-condition A/B runs (10 pairs, unchanged `s200` row as drift control):
   there too);
 - light-vs-normal ratio holds at **~1.43×** on both `hello` and `mw`.
 
-## Middleware-heavy scenario (2026-09-30)
+### Middleware-heavy scenario (2026-09-30)
 
 `scripts/bench-http.mjs` grew a third scenario, `mw` (`--only mw` runs it
 alone): the same `{"message":"hello"}` JSON route as `hello`, but reached
@@ -222,7 +349,7 @@ lower):
 reference run). Individual `hello` cells wobble up to ~±10% run to run, so
 read single-cell deltas as approximate and the ordering as the signal.
 
-### What it measures — and what it does not
+#### What it measures — and what it does not
 
 This scenario measures the **per-request cost of unwinding a five-link
 chain**: chain dispatch, one request-header read and one response-header

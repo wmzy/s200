@@ -20,6 +20,7 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 | `serialize<S>(schema)` | Compiles `(value: InferSchema<S>) => string` — emits the declared keys in schema order, drops undeclared ones |
 | `jsonRaw(ctx, json, init?)` | Writes an already-serialized JSON string: `content-type: application/json`, exact `content-length` |
 | `compileValidator(schema)` | The read-side twin: `(data) => readonly ValidationIssue[]` — an empty list means conforming; never throws or rewrites |
+| `checkSchema(schema, value)` | The closed-shape twin: `(schema, value) => readonly SchemaIssue[]` — same subset, but undeclared keys ARE violations; `path` is the key walk (`['items', 1, 'name']`, `[]` at the root), not a string |
 
 `SerializeSchema` (the subset):
 
@@ -36,6 +37,7 @@ type SerializeSchema =
 - The payoff is the declared shape, not raw speed: an internal field can never leak through serialization. Modern engines' `JSON.stringify` stays competitive on typical payloads — use it when the shape contract matters, not as a speed hack.
 - It is a serialization shape, not a validator: type mismatches are not checked, and `NaN`/`Infinity` serialize as `null` (JSON semantics).
 - `compileValidator` mirrors the subset one-for-one: type mismatches report at the offending node, `nullable` admits `null` first, missing `required` keys report at their own path, extra keys are ignored. This is the validator `s200/openapi`'s `withRouteValidation` uses.
+- `checkSchema` is its closed-shape twin (`additionalProperties: false`, matching what `serialize` emits on output — undeclared keys are violations), reporting `SchemaIssue` (`{ path: readonly PropertyKey[]; message }`). This is the checker `s200/response-check` runs against response bodies.
 
 `ValidationIssue`: `{ path: string; message: string }` — `path` dot-joins the schema-relative location (`'items.2.name'`; the root is `''`).
 

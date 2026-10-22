@@ -239,6 +239,16 @@
         "default": "./dist/serialize.cjs"
       }
     },
+    "./response-check": {
+      "import": {
+        "types": "./dist/types/response-check.d.mts",
+        "default": "./dist/response-check.mjs"
+      },
+      "require": {
+        "types": "./dist/types/response-check.d.ts",
+        "default": "./dist/response-check.cjs"
+      }
+    },
     "./client": {
       "import": {
         "types": "./dist/types/client.d.mts",
@@ -317,6 +327,36 @@
       "require": {
         "types": "./dist/types/cloudflare.d.ts",
         "default": "./dist/cloudflare.cjs"
+      }
+    },
+    "./aws-lambda": {
+      "import": {
+        "types": "./dist/types/aws-lambda.d.mts",
+        "default": "./dist/aws-lambda.mjs"
+      },
+      "require": {
+        "types": "./dist/types/aws-lambda.d.ts",
+        "default": "./dist/aws-lambda.cjs"
+      }
+    },
+    "./vercel": {
+      "import": {
+        "types": "./dist/types/vercel.d.mts",
+        "default": "./dist/vercel.mjs"
+      },
+      "require": {
+        "types": "./dist/types/vercel.d.ts",
+        "default": "./dist/vercel.cjs"
+      }
+    },
+    "./mcp": {
+      "import": {
+        "types": "./dist/types/mcp.d.mts",
+        "default": "./dist/mcp.mjs"
+      },
+      "require": {
+        "types": "./dist/types/mcp.d.ts",
+        "default": "./dist/mcp.cjs"
       }
     },
     "./trust-proxy": {
@@ -542,6 +582,7 @@
     "size": "size-limit",
     "bench": "pnpm build && node scripts/bench-router.mjs",
     "bench:http": "pnpm build && node scripts/bench-http.mjs",
+    "bench:memory": "pnpm build && node scripts/bench-memory.mjs",
     "prepublish:jsr": "node scripts/prep-jsr.mjs",
     "publish:jsr": "pnpm build && pnpm prepublish:jsr && npx jsr publish",
     "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
@@ -639,7 +680,31 @@
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
-      "limit": "2.8 KB"
+      "limit": "2.95 KB"
+    },
+    {
+      "name": "response-check battery (min+gz)",
+      "path": "dist/response-check.mjs",
+      "gzip": true,
+      "limit": "2.85 KB"
+    },
+    {
+      "name": "aws-lambda adapter (min+gz)",
+      "path": "dist/aws-lambda.mjs",
+      "gzip": true,
+      "limit": "4.1 KB"
+    },
+    {
+      "name": "vercel adapter (min+gz)",
+      "path": "dist/vercel.mjs",
+      "gzip": true,
+      "limit": "3.8 KB"
+    },
+    {
+      "name": "mcp battery (min+gz)",
+      "path": "dist/mcp.mjs",
+      "gzip": true,
+      "limit": "5.1 KB"
     },
     {
       "name": "openapi battery: meta + openapi (min+gz)",

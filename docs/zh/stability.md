@@ -51,7 +51,7 @@ const app = createApp(options?);
 ### `Ctx` 契约
 
 ```ts
-type Ctx = { req, url, params, query, state, signal, res };
+type Ctx = { req, url, params, query, state, signal, route, res };
 ```
 
 - **`params` 已预先解码** —— 捕获的值以 percent 解码后的形态到达处理器
@@ -68,6 +68,11 @@ type Ctx = { req, url, params, query, state, signal, res };
   回退，**或映射后的错误响应**：链内的错误边界会在回卷之前映射抛出的错误，
   因此即使是 500，中间件也能观察（并可以覆盖）真实的响应。在任何内容写入
   之前，`res` 为 `undefined`。
+- **`route` 是匹配到的路由（引用相等）** —— 应用路由表里的那个对象本体
+  （`ctx.route === app.routes[i]`）；没有任何路由的 handler 运行过
+  （404/405 回退）时为 `undefined`。只读；它是回卷期按路由查找的锚点
+  （元数据电池以它为键，例如 `s200/response-check` 经 `getRouteMeta`
+  查 schema）。
 - **`onFinish(ctx, fn)`** —— 注册每请求一次的回调（收 `{ aborted }`）：响应
   完整写完为 `false`，连接先行结束为 `true`（各运行时的触发点见适配器页）。
 
@@ -168,6 +173,7 @@ s200/serialize  s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta
 s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
 s200/config  s200/schedule  s200/version  s200/events  s200/als
+s200/response-check  s200/aws-lambda  s200/vercel  s200/mcp
 s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
 ```
 

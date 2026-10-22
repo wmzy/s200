@@ -55,7 +55,7 @@ function-shaped plugins). The behavioral contracts they carry:
 ### The `Ctx` contract
 
 ```ts
-type Ctx = { req, url, params, query, state, signal, res };
+type Ctx = { req, url, params, query, state, signal, route, res };
 ```
 
 - **`params` are pre-decoded** — captured values reach handlers
@@ -74,6 +74,11 @@ type Ctx = { req, url, params, query, state, signal, res };
   response**: an error boundary inside the chain maps thrown errors before
   the unwind, so middlewares observe (and may overwrite) the real response
   even for 500s. Before anything is written, `res` is `undefined`.
+- **`route` is the matched route by reference** — the exact object from the
+  app's route table (`ctx.route === app.routes[i]`), `undefined` when no
+  route's handler ran (404/405 fallbacks). Read-only; the anchor for
+  per-route lookups on the unwind (metadata batteries key off it, e.g.
+  `s200/response-check`'s schema lookup via `getRouteMeta`).
 - **`onFinish(ctx, fn)`** — registers a once-per-request callback receiving
   `{ aborted }`: `false` after the response is fully written, `true` when
   the connection ends first (see the adapters' pages for the per-runtime
@@ -189,6 +194,7 @@ s200/serialize  s200/client  s200/csrf  s200/jwt  s200/cache  s200/meta
 s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
 s200/config  s200/schedule  s200/version  s200/events  s200/als
+s200/response-check  s200/aws-lambda  s200/vercel  s200/mcp
 s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
 ```
 

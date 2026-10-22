@@ -40,7 +40,7 @@ import { describeRoute, getAppMeta, getRouteMeta, type RouteMeta } from './meta'
 import { parseQuery } from './query';
 import { json } from './respond';
 import { createRoute } from './router';
-import { compileValidator, type SerializeSchema, type ValidationIssue } from './serialize';
+import { compileValidator, toJsonSchema, type ValidationIssue } from './serialize';
 
 /**
  * One named security scheme — OpenAPI 3.1's `Security Scheme Object`
@@ -90,35 +90,6 @@ export type OpenApiDocument = {
   };
   readonly paths: Record<string, Record<string, unknown>>;
 };
-
-/** A `SerializeSchema` as a JSON Schema (OpenAPI 3.1's schema dialect).
- * Passes through exactly the fields a `SerializeSchema` carries at
- * runtime — `type`, `properties`/`required`, `items`, `nullable` — and
- * nothing more: the DSL has no `enum`/`format`/`description`/bounds
- * markers to forward, so none are invented. */
-function toJsonSchema(schema: SerializeSchema): Record<string, unknown> {
-  switch (schema.type) {
-    case 'object': {
-      const properties: Record<string, unknown> = {};
-      for (const [key, sub] of Object.entries(schema.properties)) {
-        properties[key] = toJsonSchema(sub);
-      }
-      return {
-        type: 'object',
-        properties,
-        ...(schema.required !== undefined && schema.required.length > 0
-          ? { required: schema.required }
-          : {}),
-      };
-    }
-    case 'array':
-      return { type: 'array', items: toJsonSchema(schema.items) };
-    default:
-      return schema.nullable === true
-        ? { type: [schema.type, 'null'] }
-        : { type: schema.type };
-  }
-}
 
 /** `/users/:id/*path` → `/users/{id}/{path}` — OpenAPI's path templating. */
 function openapiPath(pattern: string): string {

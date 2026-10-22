@@ -14,7 +14,7 @@ barrel 还再导出[响应助手、请求体读取与 `serveStatic`](/zh/api/res
 | `Next` | `() => Promise<void>` —— 洋葱的内层 |
 | `Middleware<S>` | `(ctx: Ctx<Params, S>, next: Next) => Promise<void> \| void` |
 | `Handler<P, S, O>` | `(ctx: Ctx<P, S>) => O \| Promise<O>` —— 可返回 `Response`（收养为 `ctx.res`）、`JsonResponse`（带品牌）或空 |
-| `Ctx<P, S>` | `{ req, url, params, query, state, signal, res? }` —— 每请求的可变单元 |
+| `Ctx<P, S>` | `{ req, url, params, query, state, signal, route, res? }` —— 每请求的可变单元；`route` 是匹配到的路由本体（404/405 回退时为 `undefined`） |
 | `Segment` | `{ _tag: 'static'; value } \| { _tag: 'param'; name; optional } \| { _tag: 'wildcard'; name }` |
 | `RouteDef` | `{ method, pattern, … }` —— 一次注册的编译期签名 |
 | `Registrar<M>` | 每个方法注册器（`get`、`post`、…）共享的签名：字面量模式与动态模式两个重载，追加一个 `RouteDef` |

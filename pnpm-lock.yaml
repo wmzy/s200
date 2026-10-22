@@ -85,6 +85,12 @@ importers:
         specifier: ^5.0.0
         version: 5.0.1(@types/node@26.6.1)(@vitest/coverage-v8@5.0.1)(vite@8.3.0(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))
 
+  examples/crud-openapi:
+    dependencies:
+      s200:
+        specifier: workspace:*
+        version: link:../..
+
   examples/db-crud:
     dependencies:
       s200:

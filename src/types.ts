@@ -87,6 +87,12 @@ export type Handler<P extends Params = Params, S extends State = State, O = unkn
  * middlewares may swap it on the way in and restore it on unwind (e.g. a
  * timeout battery narrows it with `AbortSignal.any`). Readers race it —
  * `await fetch(url, { signal: ctx.signal })` — instead of polling.
+ *
+ * `route` is the matched route — the exact object from the app's route
+ * table, identity and all (`ctx.route === app.routes[i]`); `undefined`
+ * when no route's handler ran (404/405 fallbacks). Read-only: it anchors
+ * per-route lookups on the unwind (metadata batteries key off it, e.g.
+ * `getRouteMeta(ctx.route)` from `s200/meta`).
  */
 export type Ctx<P extends Params = Params, S extends State = State> = {
   readonly req: Request;
@@ -95,6 +101,7 @@ export type Ctx<P extends Params = Params, S extends State = State> = {
   query: URLSearchParams;
   state: S;
   signal: AbortSignal;
+  readonly route: Route | undefined;
   res: Response | undefined;
 };
 

@@ -100,6 +100,7 @@ describe('setCookie', function () {
       query: new URLSearchParams(),
       state: {},
       signal: neverSignal(),
+      route: undefined,
       res: new Response('ok'),
     } satisfies Ctx;
     (() => setCookie(ctx, 'bad name', 'v')).should.throw(/not an RFC 6265 token/);

@@ -64,6 +64,10 @@ The full API documentation lives on the docs site — [wmzy.github.io/s200](http
 - **Reference**: [Stability & contracts](https://wmzy.github.io/s200/stability) · [Benchmarks](https://wmzy.github.io/s200/benchmarks) · [Comparison](https://wmzy.github.io/s200/comparison) · [Migration: from Express](https://wmzy.github.io/s200/migration-from-express) / [from Koa](https://wmzy.github.io/s200/migration-from-koa) / [from Hono](https://wmzy.github.io/s200/migration-from-hono)
 - The Markdown sources live in [`docs/`](docs/) (English) and [`docs/zh/`](docs/zh/) (Chinese); the site includes them verbatim.
 
+## Community
+
+Bugs go to [GitHub Issues](https://github.com/wmzy/s200/issues) — include the runtime and a minimal repro. Ideas, questions, and usage discussion belong in [GitHub Discussions](https://github.com/wmzy/s200/discussions).
+
 ## Stability & versioning
 
 s200 is heading to 1.0 with an explicit contract: the surface real apps touch — `createApp` options, the registrars, the `Ctx` guarantees (pre-decoded params, cached `url`, disconnect-aware `signal`, per-request `state`, always-materialized `res`), the respond helpers and their `content-length` contract, the error model (`httpError`/`isHttpError`/`toErrorResponse` + the `throws` gate), routing semantics (first registration wins, `HEAD`→`GET`, `405`+`Allow`, strict trailing slashes), and a core set of battery entries (the four adapters, `s200/test`, `s200/dev`, and the everyday middleware: cors, logger, cookies, validate, query, rate-limit, compress, etag, request-id, timeout, websocket) — freezes at 1.0 and changes only in majors after that. The remaining entries stay stable and semantic-versioned, but their surface may adjust within minors (with migration notes) until they accrue real-world usage; the sharding layer is experimental. Releases are automated by semantic-release over conventional commits; before 1.0 the 0.x allowance applies (any minor may break, with migration notes), after 1.0 deprecations run the mark → migration guide → two minors rhythm. What is honestly **not** frozen yet: light-mode details, the JSR publishing flow, and the codegen output format.
@@ -73,7 +77,7 @@ The full frozen-surface list and policy: [docs/stability.md](docs/stability.md).
 ## Development
 
 ```sh
-pnpm build                 # vite lib build (es + cjs, 50 entries) + d.ts/d.mts emission
+pnpm build                 # vite lib build (es + cjs, every entry tree-shaken) + d.ts/d.mts emission
 pnpm test                  # vitest single run (add --maxWorkers=4 to cap concurrency)
 pnpm start                 # vitest watch
 pnpm lint / lint:ci
@@ -117,7 +121,7 @@ preview stay rooted at `/`. Available in English and
 [简体中文](/zh/) — `docs/` holds the English source of truth and `docs/zh/`
 the Chinese translation, included verbatim into `docs-site/`.
 
-Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms), `upload-app` (streaming multipart uploads with `s200/upload`): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
+Runnable examples live in [examples/](examples/) — `rest-jwt` (JWT-gated REST API + typed client), `sse-dashboard` (SSE ticker + static page), `ws-chat` (websocket rooms), `upload-app` (streaming multipart uploads with `s200/upload`), `crud-openapi` (annotated CRUD with OpenAPI docs + generated client — the data + functions story end to end): `pnpm --filter @s200-example/rest-jwt smoke` and friends.
 
 See [docs/benchmarks.md](docs/benchmarks.md) for benchmark numbers and methodology, [docs/comparison.md](docs/comparison.md) for how s200 stacks up against the alternatives (Hono, Express, Fastify, Koa, Elysia), and the [migration guides](docs/) when coming from Express, Koa, or Hono.
 

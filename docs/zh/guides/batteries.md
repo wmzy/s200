@@ -25,10 +25,12 @@ import { secureHeaders } from 's200/secure-headers';
 import { basicAuth, bearerAuth } from 's200/auth';
 import { accepts } from 's200/accepts';
 import { serialize, jsonRaw } from 's200/serialize';
+import { responseCheck } from 's200/response-check';
 import { createClient } from 's200/client';
 import { createCsrf } from 's200/csrf';
 import { describeRoute, describeApp } from 's200/meta';
 import { openapiSpec, openapiJson } from 's200/openapi';
+import { toolManifest, createMcpHandler } from 's200/mcp';
 import { signJwt, verifyJwt, jwtAuth } from 's200/jwt';
 import { cache } from 's200/cache';
 import { trustProxy } from 's200/trust-proxy';
@@ -102,6 +104,18 @@ get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
 import { swaggerUi } from 's200/swagger';
 get(app, '/docs', (ctx) => swaggerUi(ctx, { url: '/openapi.json', title: 'Users API' }));
 ```
+
+## MCP
+
+路由表也是工具清单：同一套 `describeRoute` 标注编译成 MCP tool 定义（`toolManifest` —— 输入直接出自 `SerializeSchema` DSL），`createMcpHandler` 应答无状态 JSON-RPC 子集（`initialize`/`tools/list`/`tools/call`，通知 → `202`）。每次调用经 `handle` 真实往返，因此 auth、限流与校验门在每次工具调用时照常运行。零依赖、无会话、无 SSE 流、不发 `Mcp-Session-Id`；批次数组被拒绝（`-32600` —— 规范在 `2025-06-18` 移除了批处理）：
+
+```ts
+import { createMcpHandler } from 's200/mcp';
+const mcpHandler = createMcpHandler(app);
+post(app, '/mcp', (ctx) => mcpHandler(ctx.req));
+```
+
+未标注的路由默认不出现 —— `toolManifest(app, { includeUnannotated: true })` 一并暴露。Tool 名遵循已文档化的 slug 规则（`GET /users/:id` → `get_users__id`）；完整契约与 `@modelcontextprotocol/sdk` 逃逸口见 [MCP API 页](/zh/api/mcp)。
 
 ## Cookies
 
@@ -296,6 +310,20 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 ```
 
 它是序列化形状，不是验证器：类型不匹配不检查，`NaN`/`Infinity` 序列化为 `null`（JSON 语义）。
+
+## 响应契约校验
+
+OpenAPI 注解在响应侧的运行时孪生：`responseCheck(app)` 把 `describeRoute` 的 `responses[status].schema` 变成服务器真正运行的检查，在回卷时对着已物化的响应执行 —— 不匹配时应答 `500 {"error":"Response schema mismatch"}`（走正常错误映射，含 `onError`），而不是让说谎的 body 发出去。只检查 JSON 字节背书 body；流式响应跳过、绝不缓冲；未声明的键即违规（`serialize` 输出侧的闭形状语义）：
+
+```ts
+use(app, responseCheck(app));                     // fail：不匹配 → 500
+use(app, responseCheck(app, {
+  onMismatch: 'report',                           // 保留响应……
+  onIssue: (issues, ctx) => log.warn('drift', { path: ctx.url.pathname, issues }),
+}));
+```
+
+`details: true` 把 issue 路径附到 500 body 上 —— 它指名内部结构，别带进生产。完整的跳过/检查契约见 [API 页](/api/response-check)。
 
 ## Compress
 

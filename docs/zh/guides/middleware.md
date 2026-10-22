@@ -38,7 +38,7 @@ get(app, '/me', (ctx) => json(ctx, ctx.state.user));
 
 ## 上下文字段
 
-`ctx.url` 是已解析的请求 URL（复用它 —— 无需重复解析）。`ctx.signal` 是请求的协作取消 `AbortSignal`。在 node 适配器中，客户端请求中途断开时它会中止（Deno/Cloudflare 自动传递平台的断开信号），`timeout` 在截止时间中止它，长时间运行的工作应与之竞态（请求体读取器就是这样做的）。想要极限吞吐的应用可以传 `abortOnDisconnect: false` —— 共享一个永不中止的信号，没有每请求的 `AbortController`，在最小 hello-path 应用上值得大约 8%。中间件可以在进入时交换信号（`AbortSignal.any([...])`），并在 unwind 时恢复。`await next()` settle 之后，`ctx.res` 总是已物化 —— 处理器的响应、404/405/500 回退、**或错误响应**：链内的错误边界在 unwind 之前映射抛出的错误，因此中间件能观察（并可覆盖）真实响应，即使 500 也一样。这正是 logger/CORS/request-id 能盖上错误响应的原因。
+`ctx.url` 是已解析的请求 URL（复用它 —— 无需重复解析）。`ctx.signal` 是请求的协作取消 `AbortSignal`。在 node 适配器中，客户端请求中途断开时它会中止（Deno/Cloudflare 自动传递平台的断开信号），`timeout` 在截止时间中止它，长时间运行的工作应与之竞态（请求体读取器就是这样做的）。想要极限吞吐的应用可以传 `abortOnDisconnect: false` —— 共享一个永不中止的信号，没有每请求的 `AbortController`，在最小 hello-path 应用上值得大约 8%。中间件可以在进入时交换信号（`AbortSignal.any([...])`），并在 unwind 时恢复。`await next()` settle 之后，`ctx.res` 总是已物化 —— 处理器的响应、404/405/500 回退、**或错误响应**：链内的错误边界在 unwind 之前映射抛出的错误，因此中间件能观察（并可覆盖）真实响应，即使 500 也一样。这正是 logger/CORS/request-id 能盖上错误响应的原因。`ctx.route` 是匹配到的路由对象本体（404/405 回退时为 `undefined`）—— 只读，是回卷期按路由查找的锚点（`s200/response-check` 的 schema 查找就以它为键）。
 
 ## 路由级中间件
 

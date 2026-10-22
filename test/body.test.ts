@@ -25,6 +25,7 @@ function makeCtx(body: BodyInit | null, headers?: Record<string, string>): Ctx {
     query: new URLSearchParams(),
     state: {},
     signal: neverSignal(),
+    route: undefined,
     res: undefined,
   };
 }

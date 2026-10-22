@@ -207,7 +207,9 @@ export function matchWebSocket(
 /**
  * Builds the request-shaped context adapters hand to handlers: the same
  * `params`/`query`/`url`/`state` surface as HTTP handlers, minus a
- * response (`res` stays `undefined` — a socket answers, not a Response).
+ * response (`res` stays `undefined` — a socket answers, not a Response)
+ * and minus the matched `route` (the ws registry's route is a different
+ * shape than the core `Route`).
  */
 export function createWsCtx(req: Request, url: URL, params: Params): Ctx {
   return {
@@ -220,6 +222,9 @@ export function createWsCtx(req: Request, url: URL, params: Params): Ctx {
     // live socket that is the disconnect signal; otherwise the shared
     // never-aborted default.
     signal: requestSignal(req) ?? neverSignal(),
+    // No HTTP route matched — an upgrade is answered by a socket, and the
+    // ws registry's route is a different shape than the core `Route`.
+    route: undefined,
     res: undefined,
   };
 }

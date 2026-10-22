@@ -54,6 +54,43 @@ jobs:
       - run: pnpm --filter @s200-example/ws-chat smoke
       - run: pnpm --filter @s200-example/upload-app smoke
       - run: pnpm --filter @s200-example/db-crud smoke
+      - run: pnpm --filter @s200-example/crud-openapi smoke
+
+  # Floor-runtime gate: `engines` declares node >= 20.3, but the toolchain
+  # (vite/vitest) may itself need newer node — that says nothing about the
+  # published package's floor. So the floor job never runs the toolchain on
+  # the old node: everything installs and builds under node 22, then a
+  # SECOND setup-node (no cache) puts the matrix version first on PATH and
+  # only scripts/smoke-floor.mjs runs under it — a dependency-free script
+  # (node stdlib + dist/ artifacts only) that serves the built package end
+  # to end, proving the artifacts honor the declared minimum.
+  floor:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20.3', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      # Toolchain runs here: install/build on node 22.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      # Second setup-node PREPENDS the floor node to PATH (cache omitted —
+      # the pnpm store was already primed by the node 22 step above).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - run: node scripts/smoke-floor.mjs
 
   # Deno runtime gate: the core is plain Web Standard code, so the same
   # built dist must also serve through Deno.serve — smoke-deno.mjs writes

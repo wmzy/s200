@@ -14,7 +14,7 @@ The barrel also re-exports the [response helpers, body readers, and `serveStatic
 | `Next` | `() => Promise<void>` — the onion's inner layer |
 | `Middleware<S>` | `(ctx: Ctx<Params, S>, next: Next) => Promise<void> \| void` |
 | `Handler<P, S, O>` | `(ctx: Ctx<P, S>) => O \| Promise<O>` — may return a `Response` (adopted as `ctx.res`), `JsonResponse` (branded), or nothing |
-| `Ctx<P, S>` | `{ req, url, params, query, state, signal, res? }` — the per-request unit of mutation |
+| `Ctx<P, S>` | `{ req, url, params, query, state, signal, route, res? }` — the per-request unit of mutation; `route` is the matched route by reference (`undefined` on 404/405 fallbacks) |
 | `Segment` | `{ _tag: 'static'; value } \| { _tag: 'param'; name; optional } \| { _tag: 'wildcard'; name }` |
 | `RouteDef` | `{ method, pattern, … }` — one registration's compile-time signature |
 | `Registrar<M>` | The shared signature of every method registrar (`get`, `post`, …): literal-pattern and dynamic-pattern overloads appending one `RouteDef` |

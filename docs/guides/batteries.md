@@ -25,10 +25,12 @@ import { secureHeaders } from 's200/secure-headers';
 import { basicAuth, bearerAuth } from 's200/auth';
 import { accepts } from 's200/accepts';
 import { serialize, jsonRaw } from 's200/serialize';
+import { responseCheck } from 's200/response-check';
 import { createClient } from 's200/client';
 import { createCsrf } from 's200/csrf';
 import { describeRoute, describeApp } from 's200/meta';
 import { openapiSpec, openapiJson } from 's200/openapi';
+import { toolManifest, createMcpHandler } from 's200/mcp';
 import { signJwt, verifyJwt, jwtAuth } from 's200/jwt';
 import { cache } from 's200/cache';
 import { trustProxy } from 's200/trust-proxy';
@@ -102,6 +104,18 @@ Pair the spec with a documentation UI — `swaggerUi` serves the Scalar API Refe
 import { swaggerUi } from 's200/swagger';
 get(app, '/docs', (ctx) => swaggerUi(ctx, { url: '/openapi.json', title: 'Users API' }));
 ```
+
+## MCP
+
+The route table is also the tool list: the same `describeRoute` annotations compile into MCP tool definitions (`toolManifest` — inputs straight from the `SerializeSchema` DSL), and `createMcpHandler` answers the stateless JSON-RPC subset (`initialize`/`tools/list`/`tools/call`, notifications → `202`). Every call round-trips through `handle`, so auth, rate limits, and validation gates still run per tool invocation. Zero dependencies, no sessions, no SSE stream, no `Mcp-Session-Id`; batch arrays are rejected (`-32600` — the spec removed batching in `2025-06-18`):
+
+```ts
+import { createMcpHandler } from 's200/mcp';
+const mcpHandler = createMcpHandler(app);
+post(app, '/mcp', (ctx) => mcpHandler(ctx.req));
+```
+
+Unannotated routes stay out by default — `toolManifest(app, { includeUnannotated: true })` exposes them too. Tool names follow a documented slug rule (`GET /users/:id` → `get_users__id`); see the [MCP API page](/api/mcp) for the full contract and the `@modelcontextprotocol/sdk` escape hatch.
 
 ## Cookies
 
@@ -296,6 +310,20 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 ```
 
 It is a serialization shape, not a validator: type mismatches are not checked, and `NaN`/`Infinity` serialize as `null` (JSON semantics).
+
+## Response check
+
+The response-side runtime twin of the OpenAPI annotations: `responseCheck(app)` turns `describeRoute`'s `responses[status].schema` into checks the server actually runs, on the unwind, against the materialized response — a mismatch answers `500 {"error":"Response schema mismatch"}` (normal error mapping, `onError` included) instead of letting a lying body ship. JSON byte-backed bodies only; streamed responses are skipped, never buffered; undeclared keys violate (the closed shape `serialize` enforces on output):
+
+```ts
+use(app, responseCheck(app));                     // fail: mismatch → 500
+use(app, responseCheck(app, {
+  onMismatch: 'report',                           // keep the response…
+  onIssue: (issues, ctx) => log.warn('drift', { path: ctx.url.pathname, issues }),
+}));
+```
+
+`details: true` attaches the issue paths to the 500 body — it names internal structure, so keep it out of production. See [the API page](/api/response-check) for the full skip/check contract.
 
 ## Compress
 

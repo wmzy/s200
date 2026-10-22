@@ -29,6 +29,7 @@ const ctx: Ctx = {
   query: new URLSearchParams(),
   state: {},
   signal: new AbortController().signal,
+  route: undefined,
   res: undefined,
 };
 

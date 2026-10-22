@@ -32,6 +32,7 @@ function makeCtx(body: BodyInit | null, signal?: AbortSignal): Ctx {
     query: new URLSearchParams(),
     state: {},
     signal: signal ?? neverSignal(),
+    route: undefined,
     res: undefined,
   };
 }

@@ -70,7 +70,7 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | `openapiJson(ctx, app, options?)` | Response helper: the spec as a JSON response (`info` fields fall back to `describeApp`; `servers`/`securitySchemes` pass through verbatim) |
 | `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` |
 
-`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming the first offending path (`{"error":"body.tags.1: expected string, got number"}`); valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes.
+`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming the first offending path (`{"error":"body.tags.1: expected string, got number"}`); valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes. The response side has the same twin — [`s200/response-check`](/api/response-check) runs `responses[status].schema` against the materialized response on the unwind.
 
 ## Swagger UI (`s200/swagger`)
 
