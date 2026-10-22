@@ -52,8 +52,8 @@ dev options:
   --watch   extra directory to watch for reloads (repeatable; the entry's
             directory is always watched)
   --env-file  dotenv-style file loaded into process.env before the entry
-            loads (repeatable; overrides existing variables, like node
-            --env-file)
+            loads (repeatable; existing environment variables win, like
+            node --env-file)
   --no-hints   disable the 404 route-hints middleware (on by default)
   --overlay    enable the browser error overlay (off by default)
 
@@ -236,21 +236,37 @@ let reloadEpoch = 0;
 /** True when this Node offers `module.registerHooks` (>= 22.15). */
 const canBustGraph = typeof nodeModule.registerHooks === 'function';
 
+/**
+ * The epoch-stamped URL for one resolved module URL, or `undefined` when
+ * it must keep its plain URL. Only file URLs under one of `roots` are
+ * re-evaluated; `node_modules` never is — the watcher ignores it, and
+ * stamping would re-evaluate (and re-instantiate) every dependency on
+ * each reload. An already-stamped URL is left alone so a resolution pass
+ * cannot stamp twice.
+ */
+export function stampGraphUrl(
+  url: string,
+  roots: readonly string[] = watchRoots
+): string | undefined {
+  if (
+    !url.startsWith('file:') ||
+    url.includes(`${EPOCH_KEY}=`) ||
+    url.includes('/node_modules/') ||
+    !roots.some((root) => url.startsWith(root))
+  ) {
+    return undefined;
+  }
+  return `${url}${url.includes('?') ? '&' : '?'}${EPOCH_KEY}=${reloadEpoch}`;
+}
+
 if (canBustGraph) {
   nodeModule.registerHooks({
     resolve(specifier, context, nextResolve) {
       const resolved = nextResolve(specifier, context);
       const url = resolved?.url;
-      if (
-        typeof url === 'string' &&
-        url.startsWith('file:') &&
-        !url.includes(`${EPOCH_KEY}=`) &&
-        watchRoots.some((root) => url.startsWith(root))
-      ) {
-        return {
-          ...resolved,
-          url: `${url}${url.includes('?') ? '&' : '?'}${EPOCH_KEY}=${reloadEpoch}`,
-        };
+      const stamped = typeof url === 'string' ? stampGraphUrl(url) : undefined;
+      if (stamped !== undefined) {
+        return { ...resolved, url: stamped };
       }
       return resolved;
     },
@@ -342,9 +358,10 @@ function parseEnvSource(source: string): readonly (readonly [string, string])[] 
 /**
  * Loads `--env-file` files into `process.env` BEFORE the entry module
  * graph is imported — callers place it ahead of the first `load()`. A
- * missing/unreadable file is a hard error naming the path. Loaded values
- * OVERRIDE variables already present in `process.env` — the same
- * precedence as `node --env-file`.
+ * missing/unreadable file is a hard error naming the path. Variables
+ * already present in `process.env` WIN over the file — the same
+ * precedence as `node --env-file` (`--env-file-if-exists` aside): the
+ * ambient environment is never overwritten by a dotenv file.
  */
 function loadEnvFiles(paths: readonly string[]): void {
   for (const file of paths) {
@@ -355,7 +372,10 @@ function loadEnvFiles(paths: readonly string[]): void {
       throw new Error(`s200 dev: --env-file: cannot read "${file}"\n${USAGE}`);
     }
     for (const [key, value] of parseEnvSource(source)) {
-      process.env[key] = value;
+      // Prototype-safe: `Object.hasOwn`, not a truthiness/`in` check.
+      if (!Object.hasOwn(process.env, key)) {
+        process.env[key] = value;
+      }
     }
   }
 }

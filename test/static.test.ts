@@ -766,4 +766,32 @@ describe('serveStatic realPath guard', () => {
     const res = await handle(app, new Request('http://localhost/docs'));
     (await res.text()).should.equal('fell-through');
   });
+
+  it('serves the SPA shell for a miss the guard approves', async () => {
+    const { app } = makeApp(
+      { 'index.html': '<html>spa</html>' },
+      {
+        spa: true,
+        // The guard contract: null means "escapes the root". A missing
+        // path is a miss, not an escape, so the SPA fallback must run.
+        realPath: async (path) => (path === 'escape' ? null : path),
+      },
+    );
+    const served = await handle(
+      app,
+      new Request('http://localhost/some/route', {
+        headers: { accept: 'text/html' },
+      }),
+    );
+    served.status.should.equal(200);
+    (await served.text()).should.equal('<html>spa</html>');
+    // An escaping path still never reaches the shell.
+    const escaped = await handle(
+      app,
+      new Request('http://localhost/escape', {
+        headers: { accept: 'text/html' },
+      }),
+    );
+    escaped.status.should.equal(404);
+  });
 });

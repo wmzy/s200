@@ -41,7 +41,7 @@ describeRoute(app, 'GET', '/users/:id', {
 
 ## OpenAPI (`s200/openapi`)
 
-The OpenAPI 3.1 document comes out of the route table directly — no code generation, no execution, no schema library. Every route becomes a path item; `RouteMeta` annotations fill in summaries, query/body schemas, security requirements, and response shapes. Unannotated routes still appear with their params and a bare 200. Error branches declared by `throws` gates on a route's chain become error `responses` too (see below). `ALL` routes are skipped (no single method to document) with one `console.warn` per distinct pattern per build — `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`; dynamic-pattern routes emit with their pattern verbatim.
+The OpenAPI 3.1 document comes out of the route table directly — no code generation, no execution, no schema library. Every route becomes a path item; `RouteMeta` annotations fill in summaries, query/body schemas, security requirements, and response shapes. Unannotated routes still appear with their params and a bare 200. Error branches declared by `throws` gates on a route's chain become error `responses` too (see below). `ALL` routes are skipped (no single method to document) with one `console.warn` per distinct pattern per app (deduped for the process lifetime) — `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`; dynamic-pattern routes emit with their pattern verbatim.
 
 ```ts
 import { openapiJson } from 's200/openapi';
@@ -139,7 +139,7 @@ Without a `baseUrl` the client needs a URL base to resolve against: browsers and
 | `ClientResponse<S, T>` | The status-discriminated response union: `res.status` narrows `res.json()`'s type |
 | `BranchResponse<S, T>` | One branch: `{ status: S } & Response` with the body type `T` |
 
-Route call signatures: params are **required** exactly when the pattern captures them (`:id`), **optional** when declared (`:id?`), absent for plain patterns (the `init` moves up one position). Input phantoms ride the same signature: a `jsonBody` gate types (and demands) `init.body`, a `bodyShape<T>()` gate demands `init.body` as its declared structured type (a `FormData` upload rides to fetch untouched — no JSON stringifying), a `queryParams` gate narrows `init.query`, a `requiresHeaders` gate demands `init.headers` as a `Record<string, string>` with the declared keys required (extra keys still allowed); error branches from `throws` gates and returned `httpError` values name the error statuses in the response union.
+Route call signatures: params are **required** exactly when the pattern captures them (`:id`), **optional** when declared (`:id?`), absent for plain patterns (the `init` moves up one position). Input phantoms ride the same signature: a `jsonBody` gate types (and demands) `init.body`, a `bodyShape<T>()` gate demands `init.body` as its declared structured type (the client encodes from the runtime value: a plain object/array is JSON-stringified with a default `content-type: application/json`; `FormData`/`Blob`/streams ride to fetch untouched), a `queryParams` gate narrows `init.query`, a `requiresHeaders` gate demands `init.headers` as a `Record<string, string>` with the declared keys required (extra keys still allowed); error branches from `throws` gates and returned `httpError` values name the error statuses in the response union.
 
 ## Test (`s200/test`)
 

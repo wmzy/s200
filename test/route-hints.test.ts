@@ -3,7 +3,7 @@ import { describe, it } from 'vitest';
 import { all, createApp, get, post, use } from '../src/app';
 import { routeHints } from '../src/dev';
 import { httpError } from '../src/errors';
-import { json, text } from '../src/respond';
+import { json, text, utf8Length } from '../src/respond';
 import { request } from '../src/test';
 
 /** The decorated body shape routeHints ships (never both hint and routes). */
@@ -21,6 +21,24 @@ describe('routeHints', () => {
     res.status.should.equal(404);
     (res.headers.get('content-type') ?? '').should.equal('application/json');
     (await bodyOf(res)).should.deep.equal({
+      error: 'Not Found',
+      hint: 'did you mean GET /users/:id?',
+    });
+  });
+
+  it('rebuilds the decorated 404 with a content-length matching the new body', async () => {
+    const app = createApp();
+    use(app, routeHints(app));
+    get(app, '/users/:id', (ctx) => text(ctx, 'user'));
+
+    const res = await request(app, '/users');
+    const body = await res.text();
+    res.status.should.equal(404);
+    // The default 404's 21-byte content-length must not survive onto the
+    // larger decorated body: on the wire the client would read a truncated,
+    // invalid JSON body and keep-alive framing would desynchronise.
+    (res.headers.get('content-length') ?? '').should.equal(String(utf8Length(body)));
+    (JSON.parse(body) as HintsBody).should.deep.equal({
       error: 'Not Found',
       hint: 'did you mean GET /users/:id?',
     });

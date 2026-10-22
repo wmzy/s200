@@ -129,14 +129,23 @@ function descriptionOf(meta: RouteMeta | undefined, route: Route): { description
  * 3. the body annotation — an object schema flattens its `properties`
  *    and `required` into the top level; any other shape nests under a
  *    required `body` key.
+ *
+ * `required` is deduplicated in first-seen order (path params before
+ * body names): a name declared by both — `PUT /users/:id` whose body
+ * also requires `id` — appears once, since JSON Schema requires
+ * `required` entries to be unique.
  */
 function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['inputSchema'] {
   const properties: Record<string, JsonSchema> = {};
-  const required: string[] = [];
+  // Insertion-ordered: path params first, then the body's names. A `Set`
+  // keeps each name once — `required` is a JSON Schema array with
+  // `uniqueItems`, so a body property that repeats a path parameter's
+  // name must not appear twice.
+  const required = new Set<string>();
   for (const segment of route.segments) {
     if (segment._tag === 'static') continue;
     properties[segment.name] = { type: 'string' };
-    if (segment._tag === 'wildcard' || !segment.optional) required.push(segment.name);
+    if (segment._tag === 'wildcard' || !segment.optional) required.add(segment.name);
   }
   if (meta?.query !== undefined) {
     for (const [name, schema] of Object.entries(meta.query)) {
@@ -148,12 +157,14 @@ function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['in
     for (const [name, schema] of Object.entries(body.properties)) {
       properties[name] = toJsonSchema(schema);
     }
-    required.push(...(body.required ?? []));
+    for (const name of body.required ?? []) required.add(name);
   } else if (body !== undefined) {
     properties.body = toJsonSchema(body);
-    required.push('body');
+    required.add('body');
   }
-  return required.length > 0 ? { type: 'object', properties, required } : { type: 'object', properties };
+  return required.size > 0
+    ? { type: 'object', properties, required: [...required] }
+    : { type: 'object', properties };
 }
 
 /**

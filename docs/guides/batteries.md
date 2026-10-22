@@ -487,7 +487,7 @@ const rows = await probeApp(app);        // [{ method: 'GET', pattern: '/users/:
 
 ## Codegen
 
-`s200/codegen`'s `generateClient(app)` emits a standalone TypeScript client module from the runtime route table (the `data` in data + functions): one typed method per route with `ParamsOf<'…'>` args, a self-contained path-fill/query helper, methods baked in — dependency-light (only a types-only `ParamsOf` import). Response bodies stay `Response` (runtime data carries no body types — use `s200/client` when compile-time types exist); useful for handing consumers of any stack a typed caller without shipping s200:
+`s200/codegen`'s `generateClient(app)` emits a standalone TypeScript client module from the runtime route table (the `data` in data + functions): one typed method per route, a self-contained path-fill/query helper, methods baked in — and no imports at all (the module declares its own `ClientInit`, path filler and query helper, so it stays dependency-free). Params come from each pattern; `init.query` and `init.body` come from the `s200/meta` annotations, and the response type from `meta.responses` merged with the `throws()` gates — a route that declares neither keeps the bare `Promise<Response>`; useful for handing consumers of any stack a typed caller without shipping s200:
 
 ```ts
 import { generateClient } from 's200/codegen';

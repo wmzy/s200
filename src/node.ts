@@ -5,13 +5,14 @@ import type { StaticFileInfo } from './static';
 
 import { once } from 'node:events';
 import { constants, createReadStream } from 'node:fs';
-import { access, readFile, realpath, stat } from 'node:fs/promises';
+import { access, lstat, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import {
   createSecureServer,
   type Http2SecureServer,
   type Http2ServerRequest,
   type Http2ServerResponse,
+  type Http2Session,
   type IncomingHttpHeaders,
 } from 'node:http2';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
@@ -228,6 +229,16 @@ export async function serve(
     };
     server.on('upgrade', wrappedUpgrade);
   }
+  // HTTP/2 has no closeAllConnections(): a session outlives the response
+  // that used it and server.close()'s callback waits for every session, so
+  // the grace hard-kill needs its own registry to be a real bound there.
+  const sessions = new Set<Http2Session>();
+  if (options.https?.http2 === true) {
+    (server as Http2SecureServer).on('session', (session) => {
+      sessions.add(session);
+      session.once('close', () => sessions.delete(session));
+    });
+  }
   if (options.clientError !== undefined) {
     // Without a listener node's own default applies (the offending
     // socket is destroyed). http2 never emits 'clientError' — wiring it
@@ -246,7 +257,7 @@ export async function serve(
     server,
     url: `${scheme}://127.0.0.1:${port}`,
     port,
-    close: () => closeServer(server, upgraded, closeGraceMs),
+    close: () => closeServer(server, upgraded, sessions, closeGraceMs),
   };
 }
 
@@ -263,17 +274,29 @@ const reapCadenceMs = (graceMs: number): number =>
 function closeServer(
   server: NodeServerKind,
   upgraded: Set<Duplex> | undefined,
+  sessions: ReadonlySet<Http2Session>,
   graceMs: number
 ): Promise<void> {
   // closeAllConnections() cannot reach sockets taken over by 'upgrade'
-  // (websockets) — destroy them from the registry. HTTP/2 servers close
-  // their sessions via close() — no such method there.
+  // (websockets) and HTTP/2 has no such method — the hard-kill destroys
+  // both registries, so the budget bounds http2 sessions too.
   const hardKill = (): void => {
     (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+    for (const session of sessions) {
+      session.destroy();
+    }
     if (upgraded !== undefined) {
       for (const socket of upgraded) {
         socket.destroy();
       }
+    }
+  };
+  // Graceful half for HTTP/2: a persistent session would otherwise hold
+  // server.close() open until the client leaves — ask each one to go away
+  // (GOAWAY; in-flight streams still finish, idle sessions end at once).
+  const closeSessions = (): void => {
+    for (const session of sessions) {
+      session.close();
     }
   };
   // 0 = hard-kill immediately: in-flight responses die.
@@ -312,6 +335,7 @@ function closeServer(
     const deadline = setTimeout(hardKill, graceMs);
     try {
       server.close((error) => finish(error));
+      closeSessions();
     } catch (error) {
       // A server refusing a second close() is already drained.
       finish(error as Error);
@@ -587,6 +611,9 @@ export function createFileReader(
     const file = join(root, path);
     if (stream) {
       try {
+        // A directory passes access(R_OK), but its stream errors after the
+        // response has started — read it as a miss like the buffered path.
+        if ((await stat(file)).isDirectory()) return null;
         await access(file, constants.R_OK);
       } catch {
         return null;
@@ -626,12 +653,17 @@ export function createFileReader(
  * File metadata for {@link serveStatic}'s `stat` injection: size + mtimeMs
  * (powers ETag/Last-Modified/304 and content-length for streamed
  * responses). Directories read as missing — the static layer handles them
- * via its directory-index/redirect logic instead.
+ * via its directory-index/redirect logic instead. Containment matches
+ * {@link createFileReader}: a real path outside `root` (a symlink pointing
+ * elsewhere) reads as missing, so the `Range` path cannot stat its way
+ * around the guard.
  */
 export function createFileStat(
   root: string
 ): (path: string) => Promise<StaticFileInfo | null> {
+  const guard = createRealPathGuard(root);
   return async (path: string): Promise<StaticFileInfo | null> => {
+    if ((await guard(path)) === null) return null;
     try {
       const info = await stat(join(root, path));
       if (info.isDirectory()) {
@@ -651,7 +683,10 @@ export function createFileStat(
 /**
  * Streamed byte-range reader for {@link serveStatic}'s `readRange`
  * injection: `createReadStream` slices `[start, end]` without buffering the
- * whole file — the memory-safe Range path for large media.
+ * whole file — the memory-safe Range path for large media. Containment and
+ * the directory check match {@link createFileReader}: an escaping symlink
+ * or a directory reads as missing instead of starting a `206` that then
+ * dies mid-stream and resets the connection.
  */
 export function createFileRangeReader(
   root: string
@@ -660,16 +695,22 @@ export function createFileRangeReader(
   start: number,
   end: number
 ) => Promise<ReadableStream<Uint8Array> | null> {
+  const guard = createRealPathGuard(root);
   return async (
     path: string,
     start: number,
     end: number
   ): Promise<ReadableStream<Uint8Array> | null> => {
+    if ((await guard(path)) === null) return null;
     const file = join(root, path);
     try {
-      await access(file, constants.R_OK);
-    } catch {
-      return null;
+      if ((await stat(file)).isDirectory()) return null;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+        return null;
+      }
+      throw error;
     }
     return Readable.toWeb(
       createReadStream(file, { start, end })
@@ -678,20 +719,46 @@ export function createFileRangeReader(
 }
 
 /**
+ * Existence probe for the shared containment guard: only a genuinely
+ * absent entry answers `'missing'`; a dangling symlink or an unreadable
+ * path counts as existing, so the guard refuses instead of authorizing a
+ * miss. The algorithm itself lives in {@link createRealPathGuardWith} and
+ * is shared verbatim with the Bun adapter.
+ */
+async function nodeExists(path: string): Promise<'exists' | 'missing'> {
+  try {
+    await lstat(path);
+    return 'exists';
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'exists';
+  }
+}
+
+/**
  * Symlink escape guard for {@link serveStatic}'s `realPath` injection:
- * resolves the file's real path and returns `null` whenever it does not
- * exist or lands outside `root` — so a symlink inside the root pointing
- * elsewhere falls through instead of being served. The root's own real
- * path is resolved once and cached; each request still costs one realpath
- * syscall. Lexical `..` checks hold without it, but symlinks inside the
- * root are trusted. {@link createFileReader} applies this guard by
- * default; inject this directly only when composing a custom reader (or
- * adapter surfaces) that cannot go through it.
+ * resolves the file's real path and returns `null` whenever it lands
+ * outside `root` — so a symlink inside the root pointing elsewhere falls
+ * through instead of being served. A lookup that merely has no file is NOT
+ * an escape: when the target cannot be resolved because it does not exist,
+ * its nearest existing ancestor decides, and an in-root ancestor yields
+ * the resolved (nonexistent) path. Callers can then treat that lookup as a
+ * plain miss — `serveStatic` still runs its directory-redirect/SPA
+ * fallbacks — while an escaping real path stays a refusal. The root's own
+ * real path is resolved once and cached; an existing lookup still costs
+ * one realpath syscall. Lexical `..` checks hold without it, but symlinks
+ * inside the root are trusted. {@link createFileReader},
+ * {@link createFileStat} and {@link createFileRangeReader} apply this
+ * guard by default; inject this directly only when composing a custom
+ * reader (or adapter surfaces) that cannot go through them. The algorithm
+ * lives in `fs-containment` and is shared verbatim with `s200/bun`.
  */
 export function createRealPathGuard(
   root: string
 ): (path: string) => Promise<string | null> {
-  return createRealPathGuardWith(root, (path) =>
-    realpath(path).catch(() => null)
+  return createRealPathGuardWith(
+    root,
+    (path) => realpath(path).catch(() => null),
+    nodeExists
   );
 }

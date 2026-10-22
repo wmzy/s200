@@ -5,8 +5,18 @@ import { createHash } from 'node:crypto';
 
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
+import {
+  createFileRangeReader as createBunFileRangeReader,
+  createFileStat as createBunFileStat,
+  createRealPathGuard as createBunRealPathGuard,
+} from '../src/bun';
 import { all, createApp, get, handle, text, use } from '../src/index';
-import { createFileReader, createFileStat, createFileRangeReader } from '../src/node';
+import {
+  createFileRangeReader,
+  createFileReader,
+  createFileStat,
+  createRealPathGuard,
+} from '../src/node';
 import { serveStatic } from '../src/static';
 
 /**
@@ -145,6 +155,111 @@ describe('serveStatic over the real filesystem', () => {
       const res = await handle(app, new Request('http://localhost/passwd'));
       res.status.should.equal(200);
       (await res.text()).should.match(/^root:/);
+    });
+
+    it('refuses a Range read through an escaping symlink', async () => {
+      await symlink(join(dir, 'secret.txt'), join(publicDir, 'leak.txt'));
+      await symlink('ok.txt', join(publicDir, 'inside.txt'));
+      // No catch-all route: an escaping lookup must answer 404 here.
+      const app = createApp();
+      use(
+        app,
+        serveStatic({
+          read: createFileReader(publicDir),
+          stat: createFileStat(publicDir),
+          readRange: createFileRangeReader(publicDir),
+        }),
+      );
+      const plain = await handle(app, new Request('http://localhost/leak.txt'));
+      plain.status.should.equal(404);
+      const ranged = await handle(
+        app,
+        new Request('http://localhost/leak.txt', {
+          headers: { range: 'bytes=0-2' },
+        }),
+      );
+      ranged.status.should.equal(404);
+      (await ranged.text()).should.not.contain('TOP');
+      // The same composition still serves an in-root symlink by range.
+      const inside = await handle(
+        app,
+        new Request('http://localhost/inside.txt', {
+          headers: { range: 'bytes=0-2' },
+        }),
+      );
+      inside.status.should.equal(206);
+      (await inside.text()).should.equal('pub');
+    });
+  });
+
+  describe('bun adapter containment parity', () => {
+    it('shares the guard contract with the node adapter', async () => {
+      const guard = createBunRealPathGuard(publicDir);
+      (await guard('ok.txt') === null).should.be.false;
+      // A plain miss is not an escape (the SPA fallback relies on it).
+      (await guard('missing.txt') === null).should.be.false;
+      await symlink(join(dir, 'secret.txt'), join(publicDir, 'leak.txt'));
+      (await guard('leak.txt') === null).should.be.true;
+      // A missing file under an escaping symlinked directory still escapes.
+      await symlink(join(dir), join(publicDir, 'out-dir'));
+      (await guard('out-dir/missing.txt') === null).should.be.true;
+    });
+
+    it('guards stat and range reads and rejects directories', async () => {
+      await mkdir(join(publicDir, 'docs'));
+      await symlink(join(dir, 'secret.txt'), join(publicDir, 'leak.txt'));
+      const statFile = createBunFileStat(publicDir);
+      const readRange = createBunFileRangeReader(publicDir);
+      // Escaping symlinks are refused on both non-read paths.
+      (await statFile('leak.txt') === null).should.be.true;
+      (await readRange('leak.txt', 0, 2) === null).should.be.true;
+      // Directories miss before a Bun.file body can start and fail.
+      (await statFile('docs') === null).should.be.true;
+      (await readRange('docs', 0, 1) === null).should.be.true;
+    });
+  });
+
+  describe('SPA fallback with an injected realPath guard', () => {
+    function makeSpaApp(): ReturnType<typeof createApp> {
+      const app = createApp();
+      use(
+        app,
+        serveStatic({
+          read: createFileReader(publicDir),
+          stat: createFileStat(publicDir),
+          readRange: createFileRangeReader(publicDir),
+          realPath: createRealPathGuard(publicDir),
+          spa: true,
+        }),
+      );
+      return app;
+    }
+
+    it('serves the index shell for a missing in-root navigation', async () => {
+      await writeFile(join(publicDir, 'index.html'), '<html>shell</html>');
+      const app = makeSpaApp();
+      const res = await handle(
+        app,
+        new Request('http://localhost/some/route', {
+          headers: { accept: 'text/html' },
+        }),
+      );
+      res.status.should.equal(200);
+      (await res.text()).should.equal('<html>shell</html>');
+    });
+
+    it('does not serve the shell for an escaping path', async () => {
+      await writeFile(join(publicDir, 'index.html'), '<html>shell</html>');
+      await symlink(join(dir, 'secret.txt'), join(publicDir, 'leak.txt'));
+      const app = makeSpaApp();
+      const res = await handle(
+        app,
+        new Request('http://localhost/leak.txt', {
+          headers: { accept: 'text/html' },
+        }),
+      );
+      res.status.should.equal(404);
+      (await res.text()).should.not.contain('shell');
     });
   });
 

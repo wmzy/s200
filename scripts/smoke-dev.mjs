@@ -203,8 +203,13 @@ try {
     'v20.3.0 should be unsupported'
   );
 } finally {
-  child.kill('SIGTERM');
-  await new Promise((resolve) => child.once('exit', resolve));
+  // A failed boot (the checks above throw or report FAIL after the child
+  // is already gone) must not await an 'exit' that fired before this
+  // listener existed — that hangs the CI job to its timeout.
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGTERM');
+    await new Promise((resolve) => child.once('exit', resolve));
+  }
 }
 
 // --no-hints: the same miss stays the plain default 404 body.
@@ -235,8 +240,11 @@ try {
     }
     check('--no-hints leaves the default 404 untouched', plain, noHintsOut);
   } finally {
-    noHints.kill('SIGTERM');
-    await new Promise((resolve) => noHints.once('exit', resolve));
+    // Same already-exited guard as the main child above.
+    if (noHints.exitCode === null && noHints.signalCode === null) {
+      noHints.kill('SIGTERM');
+      await new Promise((resolve) => noHints.once('exit', resolve));
+    }
   }
 }
 

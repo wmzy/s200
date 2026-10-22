@@ -41,7 +41,7 @@ describeRoute(app, 'GET', '/users/:id', {
 
 ## OpenAPI（`s200/openapi`）
 
-OpenAPI 3.1 文档直接从路由表生成 —— 无代码生成、无执行、无模式库。每个路由变成一个 path item；`RouteMeta` 标注填充摘要、查询/体模式、安全要求与响应形状。未标注的路由仍以参数加裸 200 出现。路由链上 `throws` 闸门声明的错误分支同样变成错误 `responses`（见下）。`ALL` 路由被跳过（无单一方法可文档化），且每次构建对每个不同 pattern 警告一次 `console.warn` —— `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`；动态模式路由按原样输出。
+OpenAPI 3.1 文档直接从路由表生成 —— 无代码生成、无执行、无模式库。每个路由变成一个 path item；`RouteMeta` 标注填充摘要、查询/体模式、安全要求与响应形状。未标注的路由仍以参数加裸 200 出现。路由链上 `throws` 闸门声明的错误分支同样变成错误 `responses`（见下）。`ALL` 路由被跳过（无单一方法可文档化），且对每个 app 的每个不同 pattern 只警告一次 `console.warn`（进程内去重）—— `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`；动态模式路由按原样输出。
 
 ```ts
 import { openapiJson } from 's200/openapi';
@@ -139,7 +139,7 @@ const user = await (await client.get('/users/:id', { id: '1' })).json();
 | `ClientResponse<S, T>` | 状态判别响应联合：`res.status` 收窄 `res.json()` 的类型 |
 | `BranchResponse<S, T>` | 一个分支：`{ status: S } & Response`，体类型 `T` |
 
-路由调用签名：参数在模式捕获时（`:id`）**必填**、在模式声明时（`:id?`）**可选**、纯模式则无（`init` 前移一位）。输入幻影走同一签名：`jsonBody` 闸门类型化（并要求）`init.body`，`bodyShape<T>()` 闸门把 `init.body` 要求为声明的结构化类型（`FormData` 上传原样传给 fetch —— 不做 JSON 字符串化），`queryParams` 闸门收窄 `init.query`，`requiresHeaders` 闸门把 `init.headers` 要求为声明键必填的 `Record<string, string>`（额外键仍允许）；`throws` 闸门与返回的 `httpError` 值的错误分支在响应联合中点名错误状态。
+路由调用签名：参数在模式捕获时（`:id`）**必填**、在模式声明时（`:id?`）**可选**、纯模式则无（`init` 前移一位）。输入幻影走同一签名：`jsonBody` 闸门类型化（并要求）`init.body`，`bodyShape<T>()` 闸门把 `init.body` 要求为声明的结构化类型（客户端按运行时的值编码：普通对象/数组会被 JSON 序列化并带上默认 `content-type: application/json`；`FormData`/`Blob`/流则原样传给 fetch），`queryParams` 闸门收窄 `init.query`，`requiresHeaders` 闸门把 `init.headers` 要求为声明键必填的 `Record<string, string>`（额外键仍允许）；`throws` 闸门与返回的 `httpError` 值的错误分支在响应联合中点名错误状态。
 
 ## 测试（`s200/test`）
 

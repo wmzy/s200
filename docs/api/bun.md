@@ -31,11 +31,13 @@ Note: Bun does not reliably abort `request.signal` on client disconnect, so the 
 
 ## Filesystem injectors for `serveStatic`
 
-Backed by `Bun.file` — the same injection surface as the Node adapter (see [`s200/node`](/api/node#filesystem-injectors-for-servestatic)):
+Backed by `Bun.file` for content and `node:fs` (`statSync`/`lstatSync`/`realpathSync`, all implemented by Bun) for metadata and the containment checks — the same injection surface and contract as the Node adapter (see [`s200/node`](/api/node#filesystem-injectors-for-servestatic)):
 
 | Function | Signature | Meaning |
 | --- | --- | --- |
-| `createFileReader(root, { stream?, realPath?, streamThreshold? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | `Bun.file` bytes by default with the node adapter's safe defaults: realpath containment on (`realPath: false` opts out) and files over `streamThreshold` (default 16 MiB) stream; `{ stream: true }` streams everything |
-| `createFileStat(root)` | `(path) => Promise<StaticFileInfo \| null>` | `size` + `lastModified` for conditional requests |
-| `createFileRangeReader(root)` | `(path, start, end) => Promise<ReadableStream \| null>` | `Bun.file(...).slice(start, end).stream()` |
-| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | Symlink-escape guard via `realpathSync` — applied by `createFileReader` by default |
+| `createFileReader(root, { stream?, realPath?, streamThreshold? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | `Bun.file` bytes by default with the node adapter's safe defaults: realpath containment on (`realPath: false` opts out), directories (also via symlink) read as missing, and files over `streamThreshold` (default 16 MiB) stream; `{ stream: true }` streams everything |
+| `createFileStat(root)` | `(path) => Promise<StaticFileInfo \| null>` | `statSync` `size` + `mtimeMs` for conditional requests; realpath containment and directory rejection like `createFileReader` |
+| `createFileRangeReader(root)` | `(path, start, end) => Promise<ReadableStream \| null>` | `Bun.file(...).slice(start, end).stream()`; realpath containment and directory rejection like `createFileReader` |
+| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | Symlink-escape guard via `realpathSync` — the same contract and shared algorithm as `s200/node`: `null` only for an escaping real path (or an unresolvable root), the resolved path for a hit or a plain miss |
+
+All three factories apply the guard by default, so a symlink inside the root that points elsewhere is refused on every path — plain read, stat and `Range` alike. `null` is reserved for escapes: a lookup that merely does not exist returns its resolved (nonexistent) path, which keeps `serveStatic`'s directory-redirect/SPA fallbacks reachable for a miss. `createFileReader(root, { realPath: false })` opts the plain reader out.

@@ -72,7 +72,7 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `signJwt(payload, key, options?)` | 紧凑 JWT `header.payload.signature`；options 中的声明覆盖同名 payload 键 |
 | `verifyJwt<T>(token, key, options?)` | 校验结构、算法、签名、`exp`/`nbf`、要求的 `aud`/`iss` → `T & RegisteredClaims`；任何失败抛 `JwtError` |
 | `jwtAuth(options)` | 闸门中间件：提取令牌（头 `Authorization: Bearer …` 或 cookie）、校验、把载荷存入 `ctx.state.jwt`；缺失/无效 → `401` |
-| `createJwksResolver(url, options?)` | 基于 JWKS 端点构建 `KeyResolver` —— 拉取、缓存（`ttlMs`，默认 5 分钟）、按 `kid` 选取；未过期缓存上 `kid` 未命中会强制重拉一次再判失败（轮换竞态）；按 URL 模块级缓存，LRU 上限 50 个端点 |
+| `createJwksResolver(url, options?)` | 基于 JWKS 端点构建 `KeyResolver` —— 拉取、缓存（`ttlMs`，默认 5 分钟）、按 `kid` 选取；未过期缓存上 `kid` 未命中会在一个冷却窗口（`min(ttlMs, 30s)`）内至多强制重拉一次再判失败（轮换竞态；仍未命中该 `kid` 的重拉不会动缓存文档及其刷新期限）；按 URL 模块级缓存，LRU 上限 50 个端点 |
 | `isJwtError(error)` | `JwtError` 谓词 |
 
 | 类型 | 含义 |
@@ -84,7 +84,7 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` —— `KeyResolver` 所见 |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
-| `JwtKeyStore` | `{ get(key), set(key, promise) }` —— 密钥导入缓存；默认进程内 LRU，上限 100 条 |
+| `JwtKeyStore` | `{ get(key), set(key, promise) }` —— 密钥导入缓存；默认进程内 LRU，上限 100 条。键是密钥材料的 SHA-256 十六进制摘要（绝不含原始密钥）；值是进程内、不可导出的 `CryptoKey` |
 | `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
 | `JwksStore` | `{ get(url), set(url, entry) }` —— JWKS 文档缓存；默认进程内 LRU，上限 50 个 URL |
 | `JwksEntry` | `{ exp, keys }` —— 一份缓存文档；`exp` 为 ms 纪元的刷新截止时间 |
@@ -107,11 +107,11 @@ HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCryp
 | `prefix` | `'Bearer '` | 从头值中剥离的方案前缀 |
 | `cookie` | — | 头缺失时回退的 cookie 名 |
 | `verify` | — | 自定义校验（另一个库、奇异令牌）—— 返回值存入 `ctx.state.jwt` |
-| `keyStore` | — | 转发给 `verifyJwt` 的密钥导入 store；绕过默认缓存 |
+| `keyStore` | — | 转发给 `verifyJwt` 的密钥导入 store；绕过默认的进程内缓存（摘要键、进程内 `CryptoKey` 值） |
 
 密钥族必须与头部算法匹配（HS 需要密钥，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥 —— 混淆攻击在结构上被封死）。`jwtAuth` 的密钥来源：`secret`、`key`、`keyResolver`、`jwks`（`string` 或 `{ url, ttlMs?, store? }`），或自定义 `verify`（另一个库、奇异令牌 —— 返回值落到 `ctx.state.jwt`）。
 
-两个模块级缓存都是有界 LRU —— **导入密钥 100 条**、**JWKS 端点 50 个**。越过上限即淘汰最久未用的条目（被淘汰的密钥按需重新导入、文档按需重新拉取），攻击者可控的密钥材料或 issuer URL 集合无法让内存无限增长。可信 issuer 超过 50 个的多租户部署 —— 或希望跨实例共享缓存的集群 —— 应注入自己的 store：`verifyJwt` 的 `keyStore`（`jwtAuth` 的同名选项会转发）接收密钥导入 Promise 的 `JwtKeyStore`；`createJwksResolver` 与 `jwks` 简写接收按 `{ exp, keys }` 条目存取的 `JwksStore`（读取时 TTL 刷新语义不变）。注入的 store 完全绕过进程内默认缓存并自管上限 —— 与 rate-limit/session 的 store 一样可以用 Redis 支撑。
+两个模块级缓存都是有界 LRU —— **导入密钥 100 条**、**JWKS 端点 50 个**。越过上限即淘汰最久未用的条目（被淘汰的密钥按需重新导入、文档按需重新拉取），攻击者可控的密钥材料或 issuer URL 集合无法让内存无限增长。可信 issuer 超过 50 个的多租户部署 —— 或希望跨实例共享 JWKS 文档缓存的集群 —— 应注入自己的 store：`createJwksResolver` 与 `jwks` 简写接收按 `{ exp, keys }` 条目存取的 `JwksStore`（读取时 TTL 刷新语义不变），这些条目是纯 JSON，因此 Redis 支撑的 `JwksStore` 确实能跨进程共享文档。`JwtKeyStore` 不同：它的值是 `Promise<CryptoKey>` —— 进程内、不可导出的句柄，无法序列化、无法送进 Redis —— 所以 `verifyJwt` 的 `keyStore`（以及转发它的 `jwtAuth` 同名选项）定制的是进程内的导入缓存（它的上限、淘汰策略，或由进程自行导入的 id→密钥材料映射）。缓存键是密钥材料的 SHA-256 十六进制摘要，绝不含原始密钥，因此持久化或记录键的 store 不会泄露密钥。注入的 store 完全绕过进程内默认缓存并自管上限 —— 与 rate-limit/session 的 store 一样可以用 Redis 支撑。
 
 ```ts
 const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });

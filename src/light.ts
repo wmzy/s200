@@ -129,10 +129,12 @@ const TOKEN_CHAR = (() => {
 
 /**
  * Eager header validation for the mutating methods — `set`/`append` throw
- * a `TypeError` on a CR/LF in the value (response splitting) or a non-token
- * name, matching undici's `Headers` behavior instead of letting the
- * malformed pair explode later inside node's `writeHead`. One pass per
- * string, no allocation.
+ * a `TypeError` on a NUL/CR/LF in the value (response splitting; NUL makes
+ * node's `writeHead` fail mid-dispatch) or a non-token name (the token
+ * bitmap already excludes NUL and every other control character),
+ * matching undici's `Headers` behavior instead of letting the malformed
+ * pair explode later inside node's `writeHead`. One pass per string, no
+ * allocation.
  */
 function validateHeader(name: string, value: string): void {
   if (name.length === 0) {
@@ -145,7 +147,9 @@ function validateHeader(name: string, value: string): void {
   }
   for (let i = 0; i < value.length; i += 1) {
     const code = value.charCodeAt(i);
-    if (code === 13 || code === 10) {
+    // 0 (NUL), CR and LF: the fetch spec's invalid header-value set, and
+    // exactly what node's writeHead rejects with ERR_INVALID_CHAR.
+    if (code === 0 || code === 13 || code === 10) {
       throw new TypeError(`Invalid header value "${value}"`);
     }
   }

@@ -1,7 +1,7 @@
 import type { App } from './app';
 import type { StaticFileInfo } from './static';
 
-import { realpathSync } from 'node:fs';
+import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { handle } from './app';
@@ -159,31 +159,52 @@ export function createFileReader(
     path: string
   ): Promise<Uint8Array | ReadableStream<Uint8Array> | null> => {
     if (guard !== undefined && (await guard(path)) === null) return null;
-    const file = Bun.file(join(root, path));
-    if (!(await file.exists())) return null;
-    if (options.stream === true || file.size > streamThreshold) return file.stream();
+    const filePath = join(root, path);
+    let size: number;
+    try {
+      const info = statSync(filePath);
+      // A directory (also via symlink) would start a response that dies
+      // mid-stream — read it as a miss, like the node adapter.
+      if (info.isDirectory()) return null;
+      size = info.size;
+    } catch {
+      return null;
+    }
+    const file = Bun.file(filePath);
+    if (options.stream === true || size > streamThreshold) return file.stream();
     return new Uint8Array(await file.arrayBuffer());
   };
 }
 
 /**
  * File metadata for {@link serveStatic}'s `stat` injection (ETag/304,
- * content-length for streamed responses).
+ * content-length for streamed responses). Containment and the directory
+ * check match {@link createFileReader}: an escaping symlink or a directory
+ * reads as missing, so the `Range` path cannot stat its way around the
+ * guard.
  */
 export function createFileStat(
   root: string
 ): (path: string) => Promise<StaticFileInfo | null> {
+  const guard = createRealPathGuard(root);
   return async (path: string): Promise<StaticFileInfo | null> => {
-    const file = Bun.file(join(root, path));
-    if (!(await file.exists())) return null;
-    return { size: file.size, mtimeMs: file.lastModified };
+    if ((await guard(path)) === null) return null;
+    try {
+      const info = statSync(join(root, path));
+      if (info.isDirectory()) return null;
+      return { size: info.size, mtimeMs: info.mtimeMs };
+    } catch {
+      return null;
+    }
   };
 }
 
 /**
  * Streamed byte-range reader for {@link serveStatic}'s `readRange`
  * injection: `Bun.file.slice` windows the file without buffering it whole —
- * the memory-safe Range path for large media.
+ * the memory-safe Range path for large media. Containment and the directory
+ * check match {@link createFileReader}: an escaping symlink or a directory
+ * reads as missing instead of starting a `206` that then dies mid-stream.
  */
 export function createFileRangeReader(
   root: string
@@ -192,14 +213,22 @@ export function createFileRangeReader(
   start: number,
   end: number
 ) => Promise<ReadableStream<Uint8Array> | null> {
+  const guard = createRealPathGuard(root);
   return async (
     path: string,
     start: number,
     end: number
   ): Promise<ReadableStream<Uint8Array> | null> => {
-    const file = Bun.file(join(root, path));
-    if (!(await file.exists())) return null;
-    return file.slice(start, end + 1).stream();
+    if ((await guard(path)) === null) return null;
+    const filePath = join(root, path);
+    try {
+      // A directory (or a symlink to one) would start the 206 and then
+      // reset the connection when the slice stream fails — miss instead.
+      if (statSync(filePath).isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    return Bun.file(filePath).slice(start, end + 1).stream();
   };
 }
 
@@ -211,15 +240,37 @@ function bunRealpath(path: string): string | null {
   }
 }
 
+/** Existence probe for the shared containment guard: only a genuinely
+ * absent entry answers `'missing'`; a dangling symlink or an unreadable
+ * path counts as existing, so the guard fails closed. */
+async function bunExists(path: string): Promise<'exists' | 'missing'> {
+  try {
+    lstatSync(path);
+    return 'exists';
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'exists';
+  }
+}
+
 /**
  * Symlink escape guard for {@link serveStatic}'s `realPath` injection (Bun
- * flavor): identical contract to the node adapter's — `null` for missing
- * files or real paths outside `root`. Resolution is synchronous on this
- * runtime; the async wrapper keeps the injected surface uniform.
- * {@link createFileReader} applies this guard by default.
+ * flavor): identical contract to the node adapter's, because both delegate
+ * to the shared `fs-containment` algorithm. It resolves the real path when
+ * the entry exists under `root`, returns `null` when it escapes, and
+ * reports a missing entry by its resolved (nonexistent) path so
+ * `serveStatic`'s SPA fallback still runs — a miss is not an escape.
+ * Resolution is synchronous on this runtime; the async wrapper keeps the
+ * injected surface uniform. {@link createFileReader},
+ * {@link createFileStat} and {@link createFileRangeReader} apply this
+ * guard by default.
  */
 export function createRealPathGuard(
   root: string
 ): (path: string) => Promise<string | null> {
-  return createRealPathGuardWith(root, async (path) => bunRealpath(path));
+  return createRealPathGuardWith(
+    root,
+    async (path) => bunRealpath(path),
+    bunExists
+  );
 }

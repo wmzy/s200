@@ -990,6 +990,32 @@ describe('LightHeaders.set validation (direct)', () => {
     }
   });
 
+  it('throws a TypeError on NUL in a value, like the platform Headers', () => {
+    for (const bad of ['a\u0000b', '\u0000', 'evil\u0000set-cookie: x=1']) {
+      const headers = new LightHeaders();
+      let thrown: unknown;
+      try {
+        headers.set('x-safe', bad);
+      } catch (error) {
+        thrown = error;
+      }
+      (thrown instanceof TypeError).should.be.true;
+      ((thrown as Error).message.includes('value')).should.be.true;
+      // The rejected pair must not have landed in the store.
+      (headers.get('x-safe') === null).should.be.true;
+    }
+    // A NUL in the NAME is already outside the RFC 9110 token grammar.
+    const headers = new LightHeaders();
+    let nameThrown: unknown;
+    try {
+      headers.set('x\u0000y', 'v');
+    } catch (error) {
+      nameThrown = error;
+    }
+    (nameThrown instanceof TypeError).should.be.true;
+    ((nameThrown as Error).message.includes('name')).should.be.true;
+  });
+
   it('throws a TypeError on a non-token name', () => {
     for (const bad of ['', 'bad name', 'a:b', 'a/b', 'näme', 'a\tb']) {
       const headers = new LightHeaders();

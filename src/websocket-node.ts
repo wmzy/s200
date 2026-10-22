@@ -92,6 +92,20 @@ function acceptUpgrade(
   head: Buffer,
   maxPayload: number
 ): void {
+  // Node emits an unhandled 'error' on a listener-less socket as an
+  // uncaught exception — process death. An upgraded socket can fail at
+  // ANY point (the 400 write, the middleware phase, draining a rejection
+  // response), and `once('error')` only covers the first failure, so the
+  // guard stays attached for the whole socket lifetime. It records
+  // transport death for the pre-handshake phase; `runConnection` layers
+  // its own handler and close/dispatch logic on top afterwards.
+  let dead = false;
+  const onDead = (): void => {
+    dead = true;
+  };
+  socket.on('error', onDead);
+  socket.once('close', onDead);
+
   const url = new URL(
     req.url ?? '/',
     `http://${req.headers.host ?? 'localhost'}`
@@ -176,21 +190,15 @@ function acceptUpgrade(
   // The middleware chain (app's own, then the route's) decides BEFORE the
   // 101 goes out — any rejection Response is answered as plain HTTP on
   // this socket instead. While the chain runs, the socket may die: watch
-  // it, never write to a dead socket, and keep an 'error' listener so the
-  // gap before runConnection attaches its own cannot crash the process.
-  let dead = false;
-  const onDead = (): void => {
-    dead = true;
-  };
-  socket.once('close', onDead);
-  socket.once('error', onDead);
+  // it, never write to a dead socket.
   void resolveUpgrade(app, matched.route, request, url, matched.params).then(
     async (decision): Promise<void> => {
-      // Hands the socket back from the guard listeners; a dead socket is
-      // destroyed and reported as unreleasable.
+      // Hands the socket back from the close guard; a dead socket is
+      // destroyed and reported as unreleasable. The 'error' guard stays:
+      // dropping it here would leave the rejection write (and the gap
+      // before runConnection's own listener) unprotected.
       const release = (): boolean => {
         socket.removeListener('close', onDead);
-        socket.removeListener('error', onDead);
         if (dead) {
           socket.destroy();
           return false;
@@ -198,9 +206,8 @@ function acceptUpgrade(
         return true;
       };
       if (!decision.ok) {
-        // Buffer the rejection body while the guard listeners still own
-        // the socket — after release, an erroring socket is nobody's
-        // business here.
+        // Buffer the rejection body while the close guard still owns the
+        // socket — after release, a transport error only flips `dead`.
         const rejection = await responseBytes(decision.response);
         if (!release()) return;
         socket.end(rejection);

@@ -87,18 +87,21 @@ export type App<
   logError: ((error: unknown, ctx: Ctx) => void) | undefined;
 };
 
-// Default matchers handed out by `createApp` (no `options.match` given).
-// `mount` drops the sub-app's router — only a CUSTOM matcher is worth a
-// warning, since dropping the default changes nothing (the parent's
-// default behaves identically). WeakSet: keyed per closure, zero retention.
-const defaultMatchers = new WeakSet<MatchFn>();
+// Default matchers handed out by `createApp` (no `options.match` given),
+// with the strictness they were built for. `mount` drops the sub-app's
+// router — a CUSTOM matcher is worth a warning, and so is a default
+// matcher whose strictness differs from the parent's: the parent's
+// matcher dispatches the mounted routes, so a sub-app created with
+// `strict: false` loses its trailing-slash tolerance. WeakMap: keyed per
+// closure, zero retention.
+const defaultMatchers = new WeakMap<MatchFn, boolean>();
 
 export function createApp<S extends State = State>(
   options: AppOptions<S> = {}
 ): App<S, []> {
   const match = options.match ?? createMatcher({ strict: options.strict });
   if (options.match === undefined) {
-    defaultMatchers.add(match);
+    defaultMatchers.set(match, options.strict ?? true);
   }
   return {
     routes: Object.freeze([]),
@@ -108,6 +111,24 @@ export function createApp<S extends State = State>(
     onNotFound: options.onNotFound,
     logError: options.logError,
   };
+}
+
+/**
+ * Where a prefix group parks the last `Response` one of its middlewares
+ * returned. A private symbol: it never shows up in the app's data, in
+ * `Object.keys`, or in a serialized ctx.
+ */
+const GROUP_RETURNED = Symbol('s200.groupReturned');
+
+/** The ctx view that carries a prefix group's captured response. */
+type GroupCtx = Ctx<Params, State> & {
+  [GROUP_RETURNED]?: Response | undefined;
+};
+
+/** The ctx as the group carrier — a cast, not a copy: the ctx is the
+ * request's own mutable state. */
+function groupCtx<S extends State>(ctx: Ctx<Params, S>): GroupCtx {
+  return ctx as unknown as GroupCtx;
 }
 
 /**
@@ -152,7 +173,26 @@ export function use<
     const segments = dynamic ? createSegments(`${base}/*rest`) : undefined;
     // Composed once: compose()'s double-next index is per invocation, so
     // the shared group is safe to reuse across requests.
-    const group = compose(middlewares as readonly Middleware<S>[]);
+    //
+    // The group's resolved value is its LAST middleware's return value, so
+    // a middleware that awaits `next()` without returning it swallows a
+    // Response another middleware in the group returned — and the
+    // WebSocket upgrade decision honors a returned Response. Each
+    // middleware therefore parks the Response it saw on the ctx (a private
+    // symbol, invisible to the app's data) and the guard hands the last
+    // one to the outer chain. HTTP ignores middleware returns (only a
+    // handler's return is adopted), so nothing changes there.
+    const group = compose(
+      (middlewares as readonly Middleware<S>[]).map((middleware) =>
+        async (ctx: Ctx<Params, S>, next: Next) => {
+          const returned: unknown = await middleware(ctx, next);
+          if (returned instanceof Response) {
+            groupCtx(ctx)[GROUP_RETURNED] = returned;
+          }
+          return returned as never;
+        }
+      )
+    );
     const guard: Middleware<S> = async (ctx, next) => {
       const pathname = ctx.url.pathname;
       const scoped =
@@ -162,7 +202,13 @@ export function use<
       if (!scoped) {
         return next();
       }
-      return group(ctx, next);
+      const carrier = groupCtx(ctx);
+      carrier[GROUP_RETURNED] = undefined;
+      const returned: unknown = await group(ctx, next);
+      const answer = returned instanceof Response ? returned : carrier[GROUP_RETURNED];
+      // The seam: `Middleware` types the return as void, but the upgrade
+      // decision reads the runtime value.
+      return answer as never;
     };
     // Replace, don't mutate: the app chain cache versions on array identity
     // (see appChainCache). One O(n) copy per registration is startup cost.
@@ -227,14 +273,20 @@ export function usePlugin<
  * The sub-app's `onError` IS carried: every mounted route is wrapped in a
  * route-scoped error boundary (outermost in its chain) that applies the
  * sub's error policy — a response the sub `onError` writes is adopted, a
- * decline (or a crashing handler) rethrows so the parent's policy maps it,
- * exactly like the standalone sub's dispatch would degrade.
+ * decline (or a crashing handler) rethrows so the parent's policy maps it.
+ * That last step differs from a standalone dispatch: standalone, a
+ * declining `onError` leaves the response unwritten and the in-chain
+ * terminal answers `500 {"error":"No response written"}`; mounted, the
+ * parent's policy answers instead (its default: the error is logged and
+ * the response is `500 {"error":"Internal Server Error"}`).
  *
  * What cannot structurally travel is dropped with a one-time warning per
  * mount: `onNotFound` (the parent's 404 policy answers unmatched paths —
  * mounted routes are parent routes) and a custom `match` (the parent's
- * router dispatches the joined patterns). A default matcher is never
- * warned about — dropping it changes nothing.
+ * router dispatches the joined patterns). A default matcher is dropped
+ * silently only when it behaves like the parent's — a sub-app created with
+ * `strict: false` loses its trailing-slash tolerance under a strict
+ * parent, and that is warned about too.
  *
  * Pure data transform: `sub` is copied, never mutated, so one sub-app can
  * mount under many prefixes. Middlewares on an empty `sub` are lost (no
@@ -263,6 +315,20 @@ export function mount<
       '[s200] mount: sub-app onNotFound/match are not carried by mount() — ' +
         'the parent app dispatches mounted routes; handle unmatched paths and ' +
         'custom matching on the parent (a prefixed route or middleware) instead'
+    );
+  }
+  // A default matcher is normally interchangeable with the parent's — but
+  // not when their strictness differs: the parent's matcher dispatches the
+  // mounted routes, so a `strict: false` sub-app loses its trailing-slash
+  // tolerance (`/users/` stops matching its `/users` route) with no other
+  // trace. Warn like the dropped custom matcher above.
+  const subStrict = defaultMatchers.get(sub.match);
+  const parentStrict = defaultMatchers.get(app.match);
+  if (subStrict !== undefined && parentStrict !== undefined && subStrict !== parentStrict) {
+    console.warn(
+      `[s200] mount: the sub-app's strict:${subStrict} is not carried by mount() — ` +
+        `the parent dispatches the mounted routes with strict:${parentStrict}; ` +
+        'register the trailing-slash variant on the parent instead'
     );
   }
   // Route-scoped error boundary carrying the sub's onError — outermost in

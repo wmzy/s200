@@ -3,7 +3,7 @@ import type { NodeServer } from '../src/node';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
 
-import { createApp, get } from '../src/app';
+import { createApp, get, use } from '../src/app';
 import { createHandler } from '../src/cloudflare';
 import { onFinish } from '../src/finish';
 import { serve } from '../src/node';
@@ -215,6 +215,56 @@ describe('onFinish + disconnect propagation (node adapter)', () => {
     await settle();
     fired.length.should.equal(1);
     fired[0]!.aborted.should.be.true;
+  });
+});
+
+describe('onFinish registered after the response (node adapter)', () => {
+  const fired: FinishInfo[] = [];
+  let server: NodeServer;
+
+  beforeAll(async () => {
+    const app = createApp();
+    // The documented cleanup shape: the callback is registered after
+    // `await next()`. When the client disconnects while the handler still
+    // runs, the abort trigger fires before that registration exists — the
+    // callback must still run, with the outcome it missed.
+    use(app, async (ctx, next) => {
+      await next();
+      onFinish(ctx, (info) => {
+        fired.push(info);
+      });
+    });
+    get(app, '/slow', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return new Response('late');
+    });
+    server = await serve(app, { port: 0 });
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it('runs the late callback with aborted=true when the client disconnects mid-handler', async () => {
+    fired.length = 0;
+    const controller = new AbortController();
+    const attempt = fetch(`${server.url}/slow`, { signal: controller.signal });
+    attempt.catch(() => undefined); // the abort rejection is expected
+    setTimeout(() => controller.abort(), 5);
+    await untilFired(fired, 1);
+    await settle();
+    fired.length.should.equal(1);
+    fired[0]!.aborted.should.be.true;
+  });
+
+  it('runs the late callback with aborted=false on a clean response', async () => {
+    fired.length = 0;
+    const res = await fetch(`${server.url}/slow`);
+    (await res.text()).should.equal('late');
+    await untilFired(fired, 1);
+    await settle();
+    fired.length.should.equal(1);
+    fired[0]!.aborted.should.be.false;
   });
 });
 

@@ -66,6 +66,68 @@ describe('aws-lambda createLambdaHandler', () => {
     (result.body ?? '').should.equal('https://localhost/url');
   });
 
+  it('falls back to localhost when the host would move the path', async () => {
+    const app = createApp();
+    get(app, '/hello', (ctx) => text(ctx, 'hello'));
+    get(app, '/admin/hello', (ctx) => text(ctx, 'admin'));
+    const result = await createLambdaHandler(app)(
+      event({ headers: { host: 'evil.example/../admin' } })
+    );
+    result.statusCode.should.equal(200);
+    // The `/../` is a URL dot segment: unguarded, the request would be
+    // dispatched to the admin route.
+    (result.body ?? '').should.equal('hello');
+  });
+
+  it('falls back to localhost for a host the URL parser rejects', async () => {
+    const app = createApp();
+    get(app, '/url', (ctx) => text(ctx, ctx.req.url));
+    const handler = createLambdaHandler(app);
+    const unbalanced = await handler(
+      event({ rawPath: '/url', headers: { host: '[' } })
+    );
+    unbalanced.statusCode.should.equal(200);
+    (unbalanced.body ?? '').should.equal('https://localhost/url');
+    const badPort = await handler(
+      event({ rawPath: '/url', headers: { host: 'x.example:65536' } })
+    );
+    (badPort.body ?? '').should.equal('https://localhost/url');
+  });
+
+  it('answers a GET event that carries an empty body', async () => {
+    const app = createApp();
+    get(app, '/hello', (ctx) => json(ctx, { hello: 'lambda' }));
+    const result = await createLambdaHandler(app)(event({ body: '' }));
+    result.statusCode.should.equal(200);
+    JSON.parse(result.body ?? '').should.deep.equal({ hello: 'lambda' });
+  });
+
+  it('answers a GET event that carries a body, dropping it', async () => {
+    const app = createApp();
+    get(app, '/hello', async (ctx) =>
+      json(ctx, { body: await ctx.req.text() })
+    );
+    const result = await createLambdaHandler(app)(event({ body: 'x' }));
+    result.statusCode.should.equal(200);
+    JSON.parse(result.body ?? '').should.deep.equal({ body: '' });
+  });
+
+  it('treats a null body as no body', async () => {
+    const app = createApp();
+    post(app, '/echo', async (ctx) =>
+      json(ctx, { body: await ctx.req.text() })
+    );
+    const result = await createLambdaHandler(app)(
+      event({
+        rawPath: '/echo',
+        requestContext: { http: { method: 'POST', sourceIp: '203.0.113.7' } },
+        body: null,
+      })
+    );
+    result.statusCode.should.equal(200);
+    JSON.parse(result.body ?? '').should.deep.equal({ body: '' });
+  });
+
   it('passes a textual POST body through to the handler', async () => {
     const app = createApp();
     post(app, '/echo', async (ctx) => json(ctx, { got: await ctx.req.json() }));

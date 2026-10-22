@@ -13,7 +13,13 @@ import { afterAll, beforeAll, describe, it } from 'vitest';
 
 import { createApp, get, post, use } from '../src/app';
 import { readJson } from '../src/body';
-import { createFileReader, createRealPathGuard, serve } from '../src/node';
+import {
+  createFileRangeReader,
+  createFileReader,
+  createFileStat,
+  createRealPathGuard,
+  serve,
+} from '../src/node';
 import { json, send } from '../src/respond';
 
 const KEY_PATH = fileURLToPath(new URL('./fixtures/key.pem', import.meta.url));
@@ -199,6 +205,57 @@ describe('node adapter (real http)', () => {
       (await read('/missing.txt') === null).should.be.true;
       (await read('/sub') === null).should.be.true; // EISDIR
     });
+
+    it('rejects directories in stream mode', async () => {
+      const read = createFileReader(dir, { stream: true });
+      // access(R_OK) accepts a directory, but its stream would die after
+      // the response started — stream mode must miss like the buffered path.
+      (await read('sub') === null).should.be.true;
+      await symlink(join(dir, 'sub'), join(dir, 'stream-sub'));
+      (await read('stream-sub') === null).should.be.true;
+    });
+  });
+
+  describe('createFileStat', () => {
+    it('stats files under the root and reads escaping symlinks as missing', async () => {
+      const statFile = createFileStat(dir);
+      const info = await statFile('hello.txt');
+      info?.size.should.equal('hello from disk'.length);
+      (await statFile('sub') === null).should.be.true; // directories miss
+      await symlink('/etc/passwd', join(dir, 'stat-leak.txt'));
+      (await statFile('stat-leak.txt') === null).should.be.true;
+    });
+  });
+
+  describe('createFileRangeReader', () => {
+    it('streams ranges of files and rejects directories', async () => {
+      const readRange = createFileRangeReader(dir);
+      const stream = await readRange('hello.txt', 0, 4);
+      (stream === null).should.be.false;
+      (await new Response(stream as BodyInit).text()).should.equal('hello');
+      // A directory would start a 206 and then reset the connection when
+      // the read stream errors — it must miss instead, symlinks included.
+      (await readRange('sub', 0, 1) === null).should.be.true;
+      await symlink(join(dir, 'sub'), join(dir, 'sub-link'));
+      (await readRange('sub-link', 0, 1) === null).should.be.true;
+    });
+
+    it('reads an escaping symlink as missing', async () => {
+      const readRange = createFileRangeReader(dir);
+      await symlink('/etc/passwd', join(dir, 'range-leak.txt'));
+      (await readRange('range-leak.txt', 0, 2) === null).should.be.true;
+    });
+  });
+
+  describe('root resolution', () => {
+    it("keeps root '' working for cwd-relative and absolute paths", async () => {
+      const read = createFileReader('');
+      ((await read('package.json')) === null).should.be.false;
+      // An absolute path under the root is served (the guard judges the
+      // exact entry the factory opens); outside it, it still escapes.
+      ((await read(join(process.cwd(), 'package.json'))) === null).should.be.false;
+      (await read('/etc/passwd') === null).should.be.true;
+    });
   });
 
   describe('createRealPathGuard', () => {
@@ -228,9 +285,18 @@ describe('node adapter (real http)', () => {
       (await guard('leak.txt') === null).should.be.true;
     });
 
-    it('returns null for missing files', async () => {
+    it('reports a missing file as a miss, not an escape', async () => {
       const guard = createRealPathGuard(guardDir);
-      (await guard('missing.txt') === null).should.be.true;
+      // serveStatic's SPA fallback relies on this distinction: only an
+      // escape answers null.
+      (await guard('missing.txt') === null).should.be.false;
+      (await guard('no/such/dir/file.txt') === null).should.be.false;
+    });
+
+    it('returns null for a missing file under an escaping symlinked directory', async () => {
+      const guard = createRealPathGuard(guardDir);
+      await symlink(outsideDir, join(guardDir, 'out-link'));
+      (await guard('out-link/missing.txt') === null).should.be.true;
     });
 
     it('returns null for everything when the root itself is missing', async () => {
@@ -542,6 +608,46 @@ describe('node adapter graceful close and server tunables', () => {
       socket.destroyed.should.be.true;
     } finally {
       socket.destroy();
+    }
+  });
+
+  it('force-kills an HTTP/2 session at the grace bound', async () => {
+    const app = createApp();
+    let signalArrived: (() => void) | undefined;
+    const arrived = new Promise<void>((resolve) => {
+      signalArrived = resolve;
+    });
+    get(app, '/slow', async (ctx) => {
+      // In-flight, not idle: graceful shutdown waits for this stream, so
+      // only the grace hard-kill can end the session and let close() run.
+      signalArrived?.();
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      return json(ctx, { done: true });
+    });
+    const tls = await serve(app, {
+      port: 0,
+      closeGraceMs: 300,
+      https: {
+        key: await readFile(KEY_PATH),
+        cert: await readFile(CERT_PATH),
+        http2: true,
+      },
+    });
+    const client = connect(tls.url, { rejectUnauthorized: false });
+    client.on('error', () => undefined); // the hard-kill surfaces here
+    try {
+      const req = client.request({ ':path': '/slow' });
+      req.on('error', () => undefined);
+      req.end();
+      await arrived; // the stream is open on the server
+      const started = Date.now();
+      await tls.close(); // resolves at the grace bound, not never
+      const elapsed = Date.now() - started;
+      elapsed.should.be.at.least(250); // it did wait the grace window
+      elapsed.should.be.below(2_000);
+    } finally {
+      client.destroy();
+      await tls.close().catch(() => undefined);
     }
   });
 

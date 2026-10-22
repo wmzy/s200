@@ -79,19 +79,18 @@ try {
   check('POST /upload txt → 415', rejected.status === 415);
 
   // maxFileSize gate: 5 MB + 1 byte → 413 (still under the 10 MB total
-  // limit, so the rejection names the per-part cap maxFileSize composes
-  // into). The rejection lands mid-stream while the part is still
-  // arriving.
+  // limit, so the rejection is the per-FILE cap, not the total budget).
+  // The file is under the 8 MiB streaming floor, so the rejection lands
+  // when the part completes — and it names the file and the limit.
   const big = new Uint8Array(5 * 1024 * 1024 + 1);
   big.set(PNG);
   const heavy = new FormData();
   heavy.append('file', new Blob([big], { type: 'image/png' }), 'big.png');
   const tooBig = await postForm(heavy);
   check('POST /upload over maxFileSize → 413', tooBig.status === 413);
-  check(
-    '413 names the per-file limit',
-    ((await tooBig.json()) as { error?: string }).error?.includes('part limit') === true
-  );
+  const tooBigError = ((await tooBig.json()) as { error?: string }).error ?? '';
+  check('413 names the per-file limit', tooBigError.includes('per-file limit') === true);
+  check('413 names the file', tooBigError.includes('big.png') === true);
 
   // The index lists what landed.
   const list = await fetch(`${base}/`);

@@ -21,9 +21,9 @@ export const handler = createLambdaHandler(app);
 | `requestContext.http.method`   | 请求方法                                                |
 | `headers`（v2 会把名字小写化） | 请求头                                                  |
 | `cookies`                      | 以 `"; "` 拼接为一个 `Cookie` 头                        |
-| `host` 头                      | URL 主机（`https://` 协议；缺省回退 `localhost`）       |
+| `host` 头                      | URL 主机（`https://` 协议；不在 authority 字符集内、或 URL 解析器无法解析的主机回退 `localhost`） |
 | `rawPath` / `rawQueryString`   | URL 路径与查询串，原样透传不重编码                      |
-| `body` + `isBase64Encoded`     | 请求体 —— 带标记时先 base64 解码；`body` 缺省即无请求体 |
+| `body` + `isBase64Encoded`     | 请求体 —— 带标记时先 base64 解码；`body` 缺省、为 `null` 或为空串即无请求体；GET/HEAD 上的请求体被丢弃（`Request` 不接受） |
 
 只读取上表字段 —— `routeKey`、`version` 与 `requestContext` 的其余部分原样经过、不被使用。
 

@@ -12,8 +12,10 @@
  * ```
  *
  * `ALL` routes are skipped (no single method to document) with a
- * once-per-build `console.warn` naming the pattern; dynamic-pattern
- * routes emit with their pattern verbatim.
+ * once-per-app `console.warn` naming the pattern — the documented usage
+ * rebuilds the spec per request, so the warning is deduped for the
+ * process lifetime, not per build; dynamic-pattern routes emit with their
+ * pattern verbatim.
  *
  * {@link withRouteValidation} is the runtime twin: the same annotations
  * become request gates — a 422 naming the first violation's path — while
@@ -237,6 +239,11 @@ function responsesOf(meta: RouteMeta | undefined, route: Route): Record<string, 
   return out;
 }
 
+/** `ALL`-route warnings already emitted, per app — `openapiJson` handlers
+ * rebuild the spec on every request, so a per-build set would log on every
+ * hit. Weak, so a discarded app is collectable. */
+const warnedAllPatterns = new WeakMap<App, Set<string>>();
+
 /**
  * Builds the OpenAPI 3.1 document for an app. Routes without metadata are
  * still documented (method + path + parameters, bare 200) — the table is
@@ -246,13 +253,17 @@ function responsesOf(meta: RouteMeta | undefined, route: Route): Record<string, 
  * `meta.security` lands on the operation verbatim.
  *
  * `ALL` routes are skipped — there is no single method to document — and
- * each distinct pattern warns once per build:
+ * each distinct pattern warns once per app for the process lifetime:
  * `[s200] openapi: route /x uses ALL — expand to explicit methods to
  * document it`. Dynamic-pattern routes emit with their pattern verbatim.
  */
 export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocument {
   const paths: Record<string, Record<string, unknown>> = {};
-  const warnedAll = new Set<string>();
+  let warnedAll = warnedAllPatterns.get(app);
+  if (warnedAll === undefined) {
+    warnedAll = new Set<string>();
+    warnedAllPatterns.set(app, warnedAll);
+  }
   for (const route of app.routes) {
     if (route.method === 'ALL') {
       if (!warnedAll.has(route.pattern)) {

@@ -173,13 +173,11 @@ describe('mount', function () {
     }
   });
 
-  it('warns for a custom matcher, never for default/strict matchers or carried onError', function () {
+  it('warns for a custom matcher, never for a default matcher or a carried onError', function () {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const app = createApp();
       mount(app, '/plain', createApp());
-      // strict:false still installs the default matcher — no warning.
-      mount(app, '/strict', createApp({ strict: false }));
       // onError is carried now — not a warnable drop.
       mount(app, '/onerr', createApp({ onError: (ctx) => { text(ctx, 'x'); } }));
       warn.mock.calls.length.should.equal(0);
@@ -188,5 +186,35 @@ describe('mount', function () {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('warns when the sub-app strictness differs from the parent — mount drops it', function () {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      mount(app, '/strict', createApp({ strict: false }));
+      warn.mock.calls.length.should.equal(1);
+      (warn.mock.calls[0]![0] as string).should.match(
+        /^\[s200\] mount: the sub-app's strict:false is not carried/
+      );
+      // The same strictness on both sides — nothing is dropped, nothing said.
+      const laxParent = createApp({ strict: false });
+      mount(laxParent, '/lax', createApp({ strict: false }));
+      warn.mock.calls.length.should.equal(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("dispatches the mounted routes with the parent's strictness", async function () {
+    const app = createApp();
+    const sub = createApp({ strict: false });
+    get(sub, '/users', () => new Response('users'));
+    mount(app, '/v1', sub);
+
+    // The parent's matcher decides: the sub's trailing-slash tolerance is
+    // gone (the mount warns about it).
+    (await handle(app, makeRequest('/v1/users'))).status.should.equal(200);
+    (await handle(app, makeRequest('/v1/users/'))).status.should.equal(404);
   });
 });

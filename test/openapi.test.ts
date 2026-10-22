@@ -94,7 +94,7 @@ describe('openapi (spec emission)', () => {
     schema.items.type.should.deep.equal(['string', 'null']);
   });
 
-  it('skips ALL routes with one deduped warn per pattern per build, and documents body schemas', () => {
+  it('skips ALL routes with one deduped warn per app, and documents body schemas', () => {
     const app = createApp();
     const withAll = all(app, '/anything', () => new Response('any'));
     // A second ALL registration of the same pattern: still one warn.
@@ -111,14 +111,17 @@ describe('openapi (spec emission)', () => {
     let spec: ReturnType<typeof openapiSpec>;
     try {
       spec = openapiSpec(withPost, { title: 't', version: '1' });
-      // Deduped within one build; a second build warns once more.
+      // Deduped per app for the process lifetime: the documented usage
+      // rebuilds the spec per request, so a second build must stay quiet.
       openapiSpec(withPost, { title: 't', version: '1' });
+      warn.mock.calls.should.have.length(1);
+      String(warn.mock.calls[0]?.[0]).should.equal(
+        '[s200] openapi: route /anything uses ALL — expand to explicit methods to document it'
+      );
+      // A distinct app gets its own once-per-pattern warning.
+      const other = all(createApp(), '/anything', () => new Response('any'));
+      openapiSpec(other, { title: 't', version: '1' });
       warn.mock.calls.should.have.length(2);
-      for (const call of warn.mock.calls) {
-        String(call[0]).should.equal(
-          '[s200] openapi: route /anything uses ALL — expand to explicit methods to document it'
-        );
-      }
     } finally {
       warn.mockRestore();
     }

@@ -7,6 +7,7 @@ import {
   type ClientResponse,
 } from '../src/client';
 import { json } from '../src/respond';
+import { bodyShape } from '../src/validate';
 
 // vitest's should chain has no rejectedWith; capture manually instead.
 async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
@@ -74,6 +75,25 @@ describe('client (typed fetch)', () => {
     await client.delete('/d/:id', { id: '7' });
     calls[2]?.url.should.equal('/d/7');
     calls[2]?.init.method?.should.equal('DELETE');
+  });
+
+  it('JSON-encodes a plain-object body on a bodyShape route', async () => {
+    const app = createApp();
+    const withShape = post(
+      app,
+      '/shaped',
+      bodyShape<{ a: number }>(),
+      () => new Response('ok')
+    );
+    const { calls, fetch } = capture();
+    const client = createClient(withShape, { baseUrl: 'http://x.test', fetch });
+
+    // The encoding follows the runtime value: the declared structured type
+    // is `{ a: number }`, so the client sends it as JSON, not as a
+    // pass-through object.
+    await client.post('/shaped', { body: { a: 1 } });
+    (calls[0]?.init.body as string).should.equal('{"a":1}');
+    new Headers(calls[0]?.init.headers).get('content-type')?.should.equal('application/json');
   });
 
   it('throws on missing params and unknown patterns', async () => {

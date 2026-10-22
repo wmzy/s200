@@ -72,7 +72,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `signJwt(payload, key, options?)` | Compact JWT `header.payload.signature`; claims from options override same-named payload keys |
 | `verifyJwt<T>(token, key, options?)` | Verifies structure, algorithm, signature, `exp`/`nbf`, requested `aud`/`iss` → `T & RegisteredClaims`; throws `JwtError` on any failure |
 | `jwtAuth(options)` | Gate middleware: extracts the token (header `Authorization: Bearer …`, or a cookie), verifies, stores the payload on `ctx.state.jwt`; missing/invalid → `401` |
-| `createJwksResolver(url, options?)` | Builds a `KeyResolver` over a JWKS endpoint — fetches, caches (`ttlMs`, default 5 min), picks by `kid`; a `kid` miss on an unexpired cached document forces exactly one refetch before failing (rotation races); cached per URL module-wide in an LRU bounded at 50 endpoints |
+| `createJwksResolver(url, options?)` | Builds a `KeyResolver` over a JWKS endpoint — fetches, caches (`ttlMs`, default 5 min), picks by `kid`; a `kid` miss on an unexpired cached document forces at most one refetch per cooldown (`min(ttlMs, 30s)`) before failing (rotation races; a refetch that still misses the `kid` leaves the cached document and its refresh deadline untouched); cached per URL module-wide in an LRU bounded at 50 endpoints |
 | `isJwtError(error)` | `JwtError` predicate |
 
 | Type | Meaning |
@@ -84,7 +84,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` — what a `KeyResolver` sees |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
-| `JwtKeyStore` | `{ get(key), set(key, promise) }` — key-import cache; default in-process LRU, bounded at 100 entries |
+| `JwtKeyStore` | `{ get(key), set(key, promise) }` — key-import cache; default in-process LRU, bounded at 100 entries. Keys are SHA-256 hex digests of the key material (never the raw secret); values are process-local, non-extractable `CryptoKey`s |
 | `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
 | `JwksStore` | `{ get(url), set(url, entry) }` — JWKS document cache; default in-process LRU, bounded at 50 URLs |
 | `JwksEntry` | `{ exp, keys }` — one cached document; `exp` is the ms-epoch refresh deadline |
@@ -107,11 +107,11 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `prefix` | `'Bearer '` | Scheme prefix stripped from the header value |
 | `cookie` | — | Cookie name to fall back to when the header is absent |
 | `verify` | — | Custom verification (another library, exotic tokens) — the returned value lands on `ctx.state.jwt` |
-| `keyStore` | — | Key-import store forwarded to `verifyJwt`; bypasses the default cache |
+| `keyStore` | — | Key-import store forwarded to `verifyJwt`; bypasses the default in-process cache (digest keys, process-local `CryptoKey` values) |
 
 Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key — the confusion attack is structurally closed). `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs?, store? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
 
-Both module-wide caches are bounded LRUs — **100 imported keys** and **50 JWKS endpoints**. Crossing a bound drops the least recently used entry (an evicted key is re-imported, an evicted document refetched, on demand), so attacker-shaped key material or issuer URL sets cannot grow memory without bound. Multi-tenant deployments with more than 50 trusted issuers — or fleets that should share one cache — should inject their own stores: `verifyJwt`'s `keyStore` (and `jwtAuth`'s, which forwards it) takes a `JwtKeyStore` over imported-key promises, while `createJwksResolver` and the `jwks` shorthand take a `JwksStore` over `{ exp, keys }` entries (TTL refresh still applies on read). An injected store bypasses the in-process default entirely and owns its own bounds — back it with Redis the same way as the rate-limit/session stores.
+Both module-wide caches are bounded LRUs — **100 imported keys** and **50 JWKS endpoints**. Crossing a bound drops the least recently used entry (an evicted key is re-imported, an evicted document refetched, on demand), so attacker-shaped key material or issuer URL sets cannot grow memory without bound. Multi-tenant deployments with more than 50 trusted issuers — or fleets that want one shared JWKS document cache — should inject their own stores. `createJwksResolver` and the `jwks` shorthand take a `JwksStore` over `{ exp, keys }` entries (TTL refresh still applies on read); those entries are plain JSON, so a Redis-backed `JwksStore` genuinely shares documents across processes. A `JwtKeyStore` is different: its values are `Promise<CryptoKey>` — process-local, non-extractable handles that cannot be serialized or shipped to Redis — so `verifyJwt`'s `keyStore` (and `jwtAuth`'s, which forwards it) customizes the in-process import cache instead (its bounds, its eviction policy, or an id→secret-material mapping the process imports itself). Cache keys are SHA-256 hex digests of the key material, never the raw secret, so a store that persists or logs its keys does not leak secrets. An injected store bypasses the in-process default entirely and owns its own bounds — back a `JwksStore` with Redis the same way as the rate-limit/session stores.
 
 ```ts
 const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });

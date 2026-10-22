@@ -8,13 +8,15 @@
  *
  * Gates, in order, before a file reaches the sink: `accept` (a 415 for a
  * content type outside the allowlist), `maxFiles` (a 413 naming the count
- * constraint). `maxFileSize` composes into `streamForm`'s per-part cap and
- * rejects while the part is still streaming — the crossing byte aborts the
- * receive, the sink never sees the file. The total `limit` and the part
- * count `maxParts` (default 256) are likewise enforced by `streamForm`
- * mid-receive. Every rejection and any sink error abort the upload: the
- * parse stops, the platform source is cancelled, the error bubbles for the
- * error boundary.
+ * constraint), `maxFileSize` (a 413 naming the per-file limit). The last is
+ * a FILE cap: field parts are never rejected for exceeding it. The
+ * streaming per-part bound is the larger of `maxFileSize` and `streamForm`'s
+ * 8 MiB default — a file past that floor aborts mid-receive, a file past
+ * `maxFileSize` but under it rejects as its part completes (the sink never
+ * sees either). The total `limit` and the part count `maxParts` (default
+ * 256) are likewise enforced by `streamForm` mid-receive. Every rejection
+ * and any sink error abort the upload: the parse stops, the platform source
+ * is cancelled, the error bubbles for the error boundary.
  *
  * A part is the unit of buffering (see `s200/multipart`): each file sits
  * fully in memory by the time the sink sees it — right for typical
@@ -31,6 +33,12 @@ import { streamForm } from './multipart';
 import { httpError } from './errors';
 
 const decoder = new TextDecoder();
+
+/** `streamForm`'s default per-part bound, mirrored here to keep the
+ * streaming cap from dropping below it — the part cap is shared by field
+ * and file parts, so `maxFileSize` must never shrink it. Kept in sync with
+ * `multipart.ts`'s `DEFAULT_MAX_PART_SIZE`. */
+const DEFAULT_PART_SIZE = 8 * 1024 * 1024;
 
 /** One file part, buffered whole and ready to land. `size` is
  * `data.length` — carried separately so sinks can log it cheaply. */
@@ -76,10 +84,12 @@ export type UploadOptions = {
    * an oversized upload rejects with a 413 while bytes are still
    * arriving. */
   readonly limit?: number;
-  /** Per-file byte cap, enforced while the part streams (composed into
-   * `streamForm`'s per-part cap): the upload rejects with a 413 the
-   * moment the crossing byte lands, before the file is buffered or the
-   * sink sees anything. Default: `streamForm`'s 8 MiB per-part bound. */
+  /** Per-FILE byte cap — file parts only; a text field is never rejected
+   * for exceeding it (fields are bounded by the total `limit` and the
+   * shared streaming part bound: 8 MiB by default, this value when it is
+   * larger). A file past `maxFileSize` rejects with a 413 before the sink
+   * sees it — mid-stream when it also crosses that shared bound, otherwise
+   * as its part completes. */
   readonly maxFileSize?: number;
   /** Cap on the number of file parts. */
   readonly maxFiles?: number;
@@ -139,14 +149,13 @@ function accepted(part: FormPart, accept: UploadAccept): boolean {
  * - Field parts (no `filename`) decode as UTF-8 and collect into
  *   `fields` with `parseQuery`'s convention: a name seen once is a
  *   `string`, a repeated name a `string[]`.
- * - File parts pass the `accept`/`maxFiles` gates in that order, then
- *   reach the sink. A sink-returned string is reported as that file's
- *   `id`; a sink rejection aborts everything and propagates.
+ * - File parts pass the `accept`/`maxFiles`/`maxFileSize` gates in that
+ *   order, then reach the sink. A sink-returned string is reported as
+ *   that file's `id`; a sink rejection aborts everything and propagates.
  * - Errors, all bubbling for the error boundary: a 415 `HttpError` for a
  *   non-multipart content type or an allowlist rejection, a 413 for the
  *   total `limit`, the part count `maxParts` (default 256), `maxFiles`,
- *   or `maxFileSize` (the last enforced mid-stream while the part is
- *   still arriving), a 400 for a malformed body.
+ *   or `maxFileSize` (file parts only), a 400 for a malformed body.
  * - Terminal for the body: a later `readJson`/`readText`/`readForm`
  *   rejects with the 409.
  */
@@ -187,6 +196,12 @@ export async function uploadForm(
           `Too many files: "${part.filename}" exceeds the limit of ${maxFiles}`
         );
       }
+      if (maxFileSize !== undefined && part.data.length > maxFileSize) {
+        throw httpError(
+          413,
+          `File "${part.filename}" is ${part.data.length} bytes; the per-file limit is ${maxFileSize}`
+        );
+      }
       const file: UploadFile = {
         name: part.name,
         filename: part.filename,
@@ -203,11 +218,19 @@ export async function uploadForm(
         ...(typeof id === 'string' ? { id } : {}),
       });
     },
-    // `maxFileSize` composes into `streamForm`'s per-part cap (undefined
-    // falls back to its 8 MiB default): the cap rejects while the part
-    // streams, so `onPart` never sees an over-limit file and the sink
-    // never buffers one.
-    { limit, maxParts, maxPartSize: maxFileSize }
+    // `maxFileSize` cannot simply become `streamForm`'s per-part cap: that
+    // cap applies to every part, so a small file cap would also reject
+    // large text fields. The streaming bound is instead the larger of the
+    // file cap and `streamForm`'s 8 MiB default (undefined = default); the
+    // file cap itself is enforced in `onPart` above. Field parts stay
+    // bounded by `limit` and that per-part default.
+    {
+      limit,
+      maxParts,
+      ...(maxFileSize === undefined
+        ? {}
+        : { maxPartSize: Math.max(maxFileSize, DEFAULT_PART_SIZE) }),
+    }
   );
   return { files, fields };
 }

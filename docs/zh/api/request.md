@@ -17,7 +17,7 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 | `validate(parse, options?)` | 纯解析函数 `(ctx) => unknown` 上的闸门 —— 接收整个上下文，可自行读取方法、请求头或手工解析的请求体；抛出的值原样拒绝链（由应用的错误路径决定状态码） |
 | `jsonBody<S>(schema)` | JSON 体模式上的闸门 —— 解析函数**或** Standard Schema 值（任何带 `~standard` 的） |
 | `requiresHeaders<K>(...keys)` | 声明路由读取的请求头 —— `throws` 同款的纯透传闸门：不检查任何东西，键只随路由的 `in` 通道走，让 `s200/client` 把它们要求为 `init.headers`（每个键必填的 record）。执法归中间件 —— 读 `ctx.req.headers` 的 `validate(parse)` 是运行时孪生 |
-| `bodyShape<T>()` | 声明路由读取的结构化请求体类型（上传路由 `bodyShape<FormData>()`、二进制路由 `bodyShape<Blob>()`）—— 同款纯声明模具；`s200/client` 把 `init.body` 类型化（并要求）为恰好 `T`，原样传给 fetch。运行时读取留在 handler（`streamForm`、`uploadForm` 或裸 `ctx.req.body`） |
+| `bodyShape<T>()` | 声明路由读取的结构化请求体类型（上传路由 `bodyShape<FormData>()`、二进制路由 `bodyShape<Blob>()`）—— 同款纯声明模具；`s200/client` 把 `init.body` 类型化（并要求）为恰好 `T`，并按运行时的值编码：普通对象/数组会被 JSON 序列化并带上默认 `content-type: application/json`，而 `FormData`/`Blob`/流则原样传给 fetch。运行时读取留在 handler（`streamForm`、`uploadForm` 或裸 `ctx.req.body`） |
 | `standardValidate(schema, data)` | 裸 Standard Schema 调用：`validate()` → `{ value }` 或 `{ issues }`；空 `issues` 算成功 |
 | `isStandardSchema(value)` | 结构性 `~standard` 谓词 |
 
@@ -104,7 +104,7 @@ const result = await uploadForm(
   (file) => writeFile(`/tmp/${file.filename}`, file.data),   // sink
   {
     limit: 10 * 1024 * 1024,          // 总体预算，流式过程中强制执行
-    maxFileSize: 5 * 1024 * 1024,     // 每文件上限（413），流式中途强制执行
+    maxFileSize: 5 * 1024 * 1024,     // 每文件上限（413）；只管文件，且仅在 8 MiB 流式地板之上才中途强制
     maxFiles: 8,                        // 文件 part 数上限（413）
     accept: ['image/'],                 // content-type 白名单（415）
   }
@@ -125,4 +125,4 @@ const result = await uploadForm(
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 
-闸门：`accept`（415）与 `maxFiles`（413）在 part 交付时运行；`maxFileSize` 组合进 `streamForm` 的每 part 上限，在文件仍在流式到达时中止 —— 越限字节即以 `413` 拒绝、源被取消、sink 根本看不到该文件（默认上限即 `streamForm` 的 8 MiB）。`maxParts`（默认 256，字段也计入）以同样方式在流中拒绝无尽 part 的表单。任何拒绝与任何 sink 错误都会中止上传：解析停止、平台源取消、错误冒泡。part 是缓冲单元：文件到达 sink 时已整体在内存 —— 真正巨大的文件请直接用 `streamForm`。
+闸门：`accept`（415）与 `maxFiles`（413）在 part 交付时运行；`maxFileSize` 只管文件 part —— 超限文件在 sink 看到它之前即以 `413` 拒绝（消息里带上文件名与上限）：低于 8 MiB 流式地板的文件在 part 交付时拒绝，高于它的则中途拒绝（越限字节即拒、源被取消）。文本字段不受它约束：它们保留总体 `limit` 与流自身的 8 MiB 每 part 默认上限。`maxParts`（默认 256，字段也计入）以同样方式在流中拒绝无尽 part 的表单。任何拒绝与任何 sink 错误都会中止上传：解析停止、平台源取消、错误冒泡。part 是缓冲单元：文件到达 sink 时已整体在内存 —— 真正巨大的文件请直接用 `streamForm`。

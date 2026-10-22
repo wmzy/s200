@@ -1,6 +1,6 @@
 import { describe, it } from 'vitest';
 
-import { createApp, get, handle, post } from '../src/app';
+import { createApp, get, handle, post, put } from '../src/app';
 import { httpError } from '../src/errors';
 import { describeApp, describeRoute } from '../src/meta';
 import { createMcpHandler, toolManifest } from '../src/mcp';
@@ -83,6 +83,24 @@ describe('toolManifest', () => {
       role: { type: ['string', 'null'] },
     });
     (create?.inputSchema.required ?? []).should.deep.equal(['name']);
+  });
+
+  it('dedupes a required name shared by the path and the body schema', () => {
+    const app = createApp();
+    put(app, '/users/:id', (ctx) => json(ctx, { id: ctx.params.id }));
+    describeRoute(app, 'PUT', '/users/:id', {
+      summary: 'Replace a user',
+      body: {
+        type: 'object',
+        properties: { id: { type: 'string' }, name: { type: 'string' } },
+        required: ['id', 'name'],
+      },
+    });
+    const { tools } = toolManifest(app);
+    const replace = tools.find((tool) => tool.name === 'put_users__id');
+    // JSON Schema's `required` is a `uniqueItems` array: `id` is both a
+    // required path parameter and a required body property.
+    (replace?.inputSchema.required ?? []).should.deep.equal(['id', 'name']);
   });
 });
 

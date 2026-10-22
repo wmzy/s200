@@ -21,9 +21,9 @@ Point the function at `<file>.handler` — a function URL or an HTTP API Lambda 
 | `requestContext.http.method`    | request method                                                          |
 | `headers` (v2 lowercases names) | request headers                                                         |
 | `cookies`                       | joined with `"; "` into one `Cookie` header                             |
-| `host` header                   | URL host (`https://` scheme; falls back to `localhost`)                 |
+| `host` header                   | URL host (`https://` scheme; a host outside the authority grammar, or one the URL parser rejects, falls back to `localhost`) |
 | `rawPath` / `rawQueryString`    | URL path and query, passed through un-re-encoded                        |
-| `body` + `isBase64Encoded`      | request body — base64-decoded when flagged; absent `body` means no body |
+| `body` + `isBase64Encoded`      | request body — base64-decoded when flagged; an absent, `null` or empty `body` means no body, and a body on GET/HEAD is dropped (a `Request` rejects one) |
 
 Only the fields above are read — `routeKey`, `version`, and the rest of `requestContext` pass through unused.
 

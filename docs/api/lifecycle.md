@@ -129,7 +129,7 @@ Runner flags (value flags take both `--flag value` and `--flag=value`):
 | `--port N` | listen port (default `$PORT` or `3000`; `0` picks a free port) |
 | `--host H` | listen host, forwarded to `serve` (default: all interfaces) |
 | `--watch DIR` | extra directory to watch for reloads — repeatable; the entry's directory is always watched, and `--watch` dirs are appended after `RunDevOptions.watchDirs` |
-| `--env-file FILE` | dotenv-style file (`KEY=VALUE` lines, surrounding whitespace trimmed, `#` comments and blank lines skipped, matching single-/double-quoted values unquoted) loaded into `process.env` **before the entry module graph is imported** — repeatable; a missing file is a hard error naming the path. Loaded values **override** variables already in `process.env`, matching `node --env-file` semantics |
+| `--env-file FILE` | dotenv-style file (`KEY=VALUE` lines, surrounding whitespace trimmed, `#` comments and blank lines skipped, matching single-/double-quoted values unquoted) loaded into `process.env` **before the entry module graph is imported** — repeatable; a missing file is a hard error naming the path. Variables already present in `process.env` **win** over the file, matching `node --env-file` semantics (the ambient environment is never overwritten) |
 | `--no-hints` | disable the 404 route-hints middleware (on by default) |
 | `--overlay` | enable the browser error overlay (off by default) |
 

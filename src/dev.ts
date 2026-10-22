@@ -380,10 +380,15 @@ export function routeHints(app: App, options: RouteHintsOptions = {}): Middlewar
       }
     }
     if (decorated !== undefined) {
-      ctx.res = newResponse(ctx, JSON.stringify(decorated), {
-        status: 404,
-        headers: res.headers,
-      });
+      // The decorated body is larger than the default 404 the copied
+      // headers were stamped for, and `newResponse` does not recompute
+      // content-length (same hazard overlayMiddleware below handles):
+      // rebuild, then REPLACE the stale value so the wire framing matches
+      // the body. A shorter value is never appended to.
+      const body = JSON.stringify(decorated);
+      const rebuilt = newResponse(ctx, body, { status: 404, headers: res.headers });
+      rebuilt.headers.set('content-length', String(utf8Length(body)));
+      ctx.res = rebuilt;
     }
   };
 }

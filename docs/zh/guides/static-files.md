@@ -26,7 +26,7 @@ use(app, serveStatic({
 
 ## 符号链接
 
-词法检查看不穿符号链接：root 内的符号链接可以指向任何地方。因此适配器的 `createFileReader` **默认**接线 realpath 守卫 —— 每次查找都被解析，root 之外的真实路径像未命中一样落下。自带 `read` 函数时守卫由你负责（同样方式注入适配器的 `createRealPathGuard`）；它每次请求花费一次 realpath，`createFileReader(root, { realPath: false })` 可在确认无符号链接时关闭：
+词法检查看不穿符号链接：root 内的符号链接可以指向任何地方。因此适配器的工厂函数**默认**接线 realpath 守卫 —— `createFileReader`、`createFileStat`、`createFileRangeReader` 在碰文件前都会解析每次查找，逃逸的符号链接在普通读取、stat 与 `Range` 请求上同样不可达。`null` 只保留给这一种情况：逃逸的真实路径（或无法解析的 root）像拒绝一样落下；仅仅不存在的路径则按其解析出的（不存在的）路径返回 —— 未命中不是逃逸，目录重定向与 SPA 回退仍会执行。自带 `read` 函数时守卫由你负责（同样方式注入适配器的 `createRealPathGuard`）；它每次请求花费一次 realpath，`createFileReader(root, { realPath: false })` 可在确认无符号链接时关闭：
 
 ```ts
 import { createRealPathGuard } from 's200/node';   // or 's200/bun'

@@ -17,7 +17,7 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 | `validate(parse, options?)` | Gate over a plain parse function `(ctx) => unknown` — it receives the whole context, so it can read the method, headers, or a manually-parsed body itself; a thrown value rejects the chain unchanged (the app's error path decides the status) |
 | `jsonBody<S>(schema)` | Gate over a JSON-body schema — a parse function **or** a Standard Schema value (anything with `~standard`) |
 | `requiresHeaders<K>(...keys)` | Declares the request headers a route reads — a pure pass-through gate in the `throws` mold: nothing is checked, the keys just ride the route's `in` channel so `s200/client` demands them as `init.headers` (a record with every key required). Enforcement is middleware's job — `validate(parse)` reading `ctx.req.headers` is the runtime twin |
-| `bodyShape<T>()` | Declares the structured body type a route reads (`bodyShape<FormData>()` on an upload route, `bodyShape<Blob>()` on a binary one) — same declaration-only mold; `s200/client` types (and demands) `init.body` as exactly `T`, passed to fetch untouched. Runtime reading stays with the handler (`streamForm`, `uploadForm`, or the raw `ctx.req.body`) |
+| `bodyShape<T>()` | Declares the structured body type a route reads (`bodyShape<FormData>()` on an upload route, `bodyShape<Blob>()` on a binary one) — same declaration-only mold; `s200/client` types (and demands) `init.body` as exactly `T` and encodes it from the runtime value: a plain object/array is JSON-stringified with a default `content-type: application/json`, while `FormData`/`Blob`/streams ride to fetch untouched. Runtime reading stays with the handler (`streamForm`, `uploadForm`, or the raw `ctx.req.body`) |
 | `standardValidate(schema, data)` | The raw Standard Schema call: `validate()` → `{ value }` or `{ issues }`; empty `issues` counts as success |
 | `isStandardSchema(value)` | Structural `~standard` predicate |
 
@@ -104,7 +104,7 @@ const result = await uploadForm(
   (file) => writeFile(`/tmp/${file.filename}`, file.data),   // the sink
   {
     limit: 10 * 1024 * 1024,          // total body budget, enforced while streaming
-    maxFileSize: 5 * 1024 * 1024,     // per-file cap (413), enforced mid-stream
+    maxFileSize: 5 * 1024 * 1024,     // per-file cap (413); files only, mid-stream only above the 8 MiB streaming floor
     maxFiles: 8,                        // file-part cap (413)
     accept: ['image/'],                 // content-type allowlist (415)
   }
@@ -125,4 +125,4 @@ const result = await uploadForm(
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 
-Gates: `accept` (415) and `maxFiles` (413) run at part delivery; `maxFileSize` composes into `streamForm`'s per-part cap and aborts while the file is still streaming — the crossing byte rejects with a `413`, the source is cancelled, and the sink never sees the file (default cap: `streamForm`'s 8 MiB). `maxParts` (default 256, fields included) rejects endless-part forms mid-stream the same way. Every rejection and any sink error aborts the upload: the parse stops, the platform source is cancelled, the error bubbles. A part is the unit of buffering: each file sits fully in memory by the time the sink sees it — for truly huge files, use `streamForm` directly.
+Gates: `accept` (415) and `maxFiles` (413) run at part delivery; `maxFileSize` caps FILE parts only — a file over the cap rejects with a `413` (naming the file and the limit) before the sink sees it, at part completion for a file below the 8 MiB streaming floor and mid-stream above it (the crossing byte rejects, the source is cancelled). Text fields are never bounded by it: they keep the total `limit` plus the stream's own 8 MiB per-part default. `maxParts` (default 256, fields included) rejects endless-part forms mid-stream the same way. Every rejection and any sink error aborts the upload: the parse stops, the platform source is cancelled, the error bubbles. A part is the unit of buffering: each file sits fully in memory by the time the sink sees it — for truly huge files, use `streamForm` directly.

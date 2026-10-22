@@ -27,6 +27,7 @@ import {
   runCodegen,
   runDev,
   runRoutes,
+  stampGraphUrl,
   supportsTypeStripping,
 } from '../src/cli';
 import { html, text } from '../src/respond';
@@ -191,7 +192,7 @@ describe('runDev', () => {
     await dev.close();
   });
 
-  it('loads --env-file before the first load, overriding process.env', async () => {
+  it('loads --env-file before the first load, with the ambient environment winning', async () => {
     const dir = await mkdtemp(join(tmpdir(), 's200-env-'));
     const keys = [
       'S200_ENV_TEST_A',
@@ -212,7 +213,7 @@ describe('runDev', () => {
           'no-equals-line',
         ].join('\n')
       );
-      process.env.S200_ENV_TEST_A = 'preexisting'; // node --env-file parity: file wins
+      process.env.S200_ENV_TEST_A = 'preexisting'; // node --env-file parity: the environment wins
       let seen: NodeJS.ProcessEnv = {};
       const dev = await runDev(['--env-file', join(dir, '.env')], {
         load: async () => {
@@ -222,7 +223,7 @@ describe('runDev', () => {
         port: 0,
         watch: stubWatch,
       });
-      seen.S200_ENV_TEST_A!.should.equal('from-file');
+      seen.S200_ENV_TEST_A!.should.equal('preexisting');
       seen.S200_ENV_TEST_B!.should.equal('double quoted');
       seen.S200_ENV_TEST_C!.should.equal('single quoted');
       seen.S200_ENV_TEST_D!.should.equal('spaced');
@@ -743,6 +744,22 @@ describe('isMainEntry (bin self-run guard)', () => {
 
   it('is false when this test file is imported (vitest is the entry)', () => {
     isMainEntry(process.argv[1], pathToFileURL(fileURLToPath(import.meta.url)).href).should.be.false;
+  });
+});
+
+describe('stampGraphUrl (whole-graph reload stamping)', () => {
+  it('stamps project modules only — never node_modules', () => {
+    const root = pathToFileURL(`${resolve('proj')}/`).href;
+    const stamped = stampGraphUrl(`${root}src/app.ts`, [root]);
+    stamped!.should.contain('s200epoch=');
+    // Already stamped: re-stamping would duplicate the query.
+    (stampGraphUrl(stamped!, [root]) === undefined).should.be.true;
+    // The watcher ignores node_modules, so the epoch must too — stamping
+    // would re-evaluate and re-instantiate every dependency per reload.
+    (stampGraphUrl(`${root}node_modules/dep/index.js`, [root]) === undefined).should.be.true;
+    // Outside every watched root / not a file URL: untouched.
+    (stampGraphUrl(`${root}src/app.ts`, []) === undefined).should.be.true;
+    (stampGraphUrl('node:fs', [root]) === undefined).should.be.true;
   });
 });
 

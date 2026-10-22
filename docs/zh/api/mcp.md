@@ -34,6 +34,8 @@ const { tools } = toolManifest(app);
 2. **Query 参数**（`meta.query`）—— 可选：query 参数在 HTTP 层永远不是必需的，且 `RouteMeta` 没有按 query 声明 required 的标记。
 3. **Body**（`meta.body`）—— object schema 把自己的 `properties` 与 `required` 展平进顶层；其他形状嵌在必需的 `body` 键下。
 
+合并后的 `required` 列表按首次出现顺序去重：路径参数与 body schema 同名要求的字段只要求一次，因此生成的 JSON Schema 始终合法（`required` 的名字必须唯一）。
+
 schema 经 `toJsonSchema`（`s200/serialize`）转换 —— 与 OpenAPI 发射器同一条直通管道，覆盖 `SerializeSchema` DSL 携带的全部内容（`type`、`properties`/`required`、`items`、`nullable`）。
 
 ## 处理器（`createMcpHandler`）

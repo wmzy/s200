@@ -83,8 +83,10 @@ type InitArg<D extends RouteDef> = [DefBody<D>] extends [undefined]
 
 /** The init one route accepts: unbranded routes keep {@link ClientInit}
  * verbatim; a `jsonBody` or `bodyShape` brand retypes `body` as the gate's
- * declared type (a JSON shape is stringified at call time, a structured
- * `bodyShape` value rides to fetch untouched); a `queryParams` brand
+ * declared type (a JSON shape is stringified at call time; a `bodyShape`
+ * value that is a plain object or array is JSON-encoded too — the client
+ * follows the runtime value, not the declared type — while platform body
+ * types ride to fetch untouched); a `queryParams` brand
  * replaces the loose `query` sugar with the gate's declared read; a
  * `requiresHeaders` brand retypes `headers` as the plain-record form with
  * the gate's keys required. `body`/`query`/`headers` are
@@ -471,11 +473,12 @@ function buildPathFn(
  * params, and the route's gates tighten `init` — a `jsonBody` gate types
  * and demands `init.body` (a JSON shape, stringified with a default
  * `content-type: application/json` unless already set), a `bodyShape`
- * gate demands `init.body` as its declared structured type (passed to
- * fetch untouched), a `queryParams` gate replaces the loose `init.query`
- * sugar, a `requiresHeaders` gate demands `init.headers` as a record
- * with the gate's keys required. Response bodies still type
- * from the handler's `json()` branding alone.
+ * gate demands `init.body` as its declared structured type (a plain
+ * object or array is JSON-encoded with that same default content-type;
+ * platform body types pass to fetch untouched), a `queryParams` gate
+ * replaces the loose `init.query` sugar, a `requiresHeaders` gate demands
+ * `init.headers` as a record with the gate's keys required. Response
+ * bodies still type from the handler's `json()` branding alone.
  *
  * Dynamic-pattern routes (registered via the `pattern: string` overload)
  * type as untyped calls; `ALL` routes are offered under every method.

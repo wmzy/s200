@@ -67,15 +67,20 @@ export type ServeStaticOptions = {
   dotfiles?: 'deny' | 'allow';
   /**
    * Symlink escape guard: when supplied, called with each resolved lookup
-   * path before any read/stat. Returning `null` (missing file, or a real
-   * path outside the served root — a symlink pointing elsewhere) falls
-   * through to next() like a miss. Without it, `..` traversal is still
-   * blocked but a symlink inside the root can point outside it — inject
-   * the adapter's `createRealPathGuard(root)` to close that hole for a
-   * custom reader. The adapters' own `createFileReader`s apply that guard
-   * internally by default, so the standard filesystem setup needs no
-   * injection here. Best-effort by nature: the check and the read are
-   * separate operations.
+   * path before any read/stat. Returning `null` means the lookup escapes
+   * the served root (a real path outside it — a symlink pointing
+   * elsewhere), so the request falls through to next() instead of being
+   * served or answered with the SPA shell. A path that merely does not
+   * exist is NOT an escape: the guard must return a value for it, letting
+   * the ordinary miss flow (directory redirect, SPA fallback) still run —
+   * the adapter's `createRealPathGuard` reports misses that way. Without
+   * the guard, `..` traversal is still blocked but a symlink inside the
+   * root can point outside it — inject the adapter's
+   * `createRealPathGuard(root)` to close that hole for a custom reader.
+   * The adapters' own `createFileReader`/`createFileStat`/
+   * `createFileRangeReader` apply that guard internally by default, so the
+   * standard filesystem setup needs no injection here. Best-effort by
+   * nature: the check and the read are separate operations.
    */
   realPath?: (path: string) => Promise<string | null>;
 };
@@ -441,7 +446,10 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
 
     // Symlink guard: the path checks above are lexical; a symlink inside
     // the root can still resolve outside it. When the guard is injected,
-    // every read/stat is gated on the real path staying under root.
+    // the lookup is gated on its real path staying under root. A `null`
+    // answer means an escape, not a mere miss — so this early exit never
+    // takes the miss flow below (redirect probe/SPA shell) away from a
+    // lookup that simply has no file.
     if (realPath !== undefined && (await realPath(lookup)) === null) {
       return next();
     }

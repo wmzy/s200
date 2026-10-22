@@ -1,7 +1,10 @@
-import { once } from 'node:events';
+import type { IncomingMessage } from 'node:http';
+
 import { randomBytes } from 'node:crypto';
+import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
+import { PassThrough, type Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
@@ -884,6 +887,54 @@ describe('websocket over TLS (wss, node global WebSocket client)', () => {
     ws.close(1000, 'bye');
     // The server echoes the close frame, so the client sees its own code.
     (await closed).should.equal(1000);
+  });
+});
+
+describe('websocket node upgrade socket errors', () => {
+  it('keeps an error listener for the whole pre-handshake phase', async () => {
+    // A middleware that parks the chain: the socket is still in the
+    // pre-handshake phase while the errors below are emitted.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const app = createApp();
+    use(app, async (_ctx, next) => {
+      await gate;
+      await next();
+    });
+    upgradeWebSocket(app, '/ws', () => undefined);
+
+    const req = {
+      url: '/ws',
+      method: 'GET',
+      headers: {
+        host: `${HOST}:1`,
+        upgrade: 'websocket',
+        connection: 'Upgrade',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': KEY,
+      },
+      rawHeaders: [
+        'Host', `${HOST}:1`,
+        'Upgrade', 'websocket',
+        'Connection', 'Upgrade',
+        'Sec-WebSocket-Version', '13',
+        'Sec-WebSocket-Key', KEY,
+      ],
+    } as unknown as IncomingMessage;
+    const socket = new PassThrough() as unknown as Duplex;
+    createUpgradeHandler(app)(req, socket, Buffer.alloc(0));
+
+    socket.emit('error', new Error('first'));
+    // A one-shot guard is gone after the first error; the second must not
+    // reach EventEmitter's unhandled-'error' throw and kill the process.
+    (() => socket.emit('error', new Error('second'))).should.not.throw();
+
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    // The dead socket is destroyed instead of being handshaked.
+    socket.destroyed.should.be.true;
   });
 });
 

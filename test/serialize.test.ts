@@ -35,6 +35,52 @@ describe('serialize', () => {
     s({ text: 'x', n: Infinity }).should.equal('{"text":"x","n":null}');
   });
 
+  it('emits valid JSON for property names that need escaping', () => {
+    const quoted = serialize({
+      type: 'object',
+      properties: { 'a"b': { type: 'string' } },
+      required: ['a"b'] as const,
+    });
+    const quotedValue = { 'a"b': 'x' };
+    const quotedOut = quoted(quotedValue);
+    quotedOut.should.equal(JSON.stringify(quotedValue));
+    (JSON.parse(quotedOut) as Record<string, string>).should.deep.equal(quotedValue);
+
+    const control = serialize({
+      type: 'object',
+      properties: { 'a\u0001b': { type: 'string' } },
+      required: ['a\u0001b'] as const,
+    });
+    const controlValue = { 'a\u0001b': 'x' };
+    const controlOut = control(controlValue);
+    controlOut.should.equal(JSON.stringify(controlValue));
+    (JSON.parse(controlOut) as Record<string, string>).should.deep.equal(controlValue);
+
+    // The optional-key statement path shares the same key escaping.
+    const optional = serialize({
+      type: 'object',
+      properties: { 'a"b': { type: 'string' }, other: { type: 'string' } },
+    });
+    const optionalValue = { 'a"b': 'x', other: 'y' };
+    optional(optionalValue).should.equal(JSON.stringify(optionalValue));
+  });
+
+  it('maps undefined array elements to null, like JSON.stringify', () => {
+    const list = serialize({ type: 'array', items: { type: 'string' } });
+    const withUndefined = ['a', undefined] as unknown as string[];
+    const out = list(withUndefined);
+    out.should.equal('["a",null]');
+    (JSON.parse(out) as unknown[]).should.deep.equal(['a', null]);
+
+    // A hole is an element JSON.stringify also renders as null.
+    const sparse: string[] = [];
+    sparse[1] = 'a';
+    list(sparse).should.equal('[null,"a"]');
+
+    // A lone undefined must not collapse into an empty array.
+    list([undefined] as unknown as string[]).should.equal('[null]');
+  });
+
   it('omits undefined optional keys and emits them after required ones', () => {
     const s = serialize({
       type: 'object',

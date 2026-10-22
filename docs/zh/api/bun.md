@@ -35,7 +35,9 @@ await server.close();
 
 | 函数 | 签名 | 含义 |
 | --- | --- | --- |
-| `createFileReader(root, { stream?, realPath?, streamThreshold? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | 默认 `Bun.file` 字节，并带 Node 适配器同款安全默认：realpath 包含性检查开启（`realPath: false` 关闭）、超过 `streamThreshold`（默认 16 MiB）的文件流式返回；`{ stream: true }` 一律流式 |
-| `createFileStat(root)` | `(path) => Promise<StaticFileInfo \| null>` | 条件请求所需的 `size` + `lastModified` |
-| `createFileRangeReader(root)` | `(path, start, end) => Promise<ReadableStream \| null>` | `Bun.file(...).slice(start, end).stream()` |
-| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | 经 `realpathSync` 的符号链接逃逸守卫 —— `createFileReader` 已默认内置 |
+| `createFileReader(root, { stream?, realPath?, streamThreshold? })` | `(path) => Promise<Uint8Array \| ReadableStream \| null>` | 默认 `Bun.file` 字节，并带 Node 适配器同款安全默认：realpath 包含性检查开启（`realPath: false` 关闭）、目录（含符号链接指向的目录）按未命中处理、超过 `streamThreshold`（默认 16 MiB）的文件流式返回；`{ stream: true }` 一律流式 |
+| `createFileStat(root)` | `(path) => Promise<StaticFileInfo \| null>` | `statSync` 的 `size` + `mtimeMs`，用于条件请求；与 `createFileReader` 相同的 realpath 包含性检查与目录拒绝 |
+| `createFileRangeReader(root)` | `(path, start, end) => Promise<ReadableStream \| null>` | `Bun.file(...).slice(start, end).stream()`；与 `createFileReader` 相同的 realpath 包含性检查与目录拒绝 |
+| `createRealPathGuard(root)` | `(path) => Promise<string \| null>` | 经 `realpathSync` 的符号链接逃逸守卫 —— 与 `s200/node` 相同的契约与共享算法：仅逃逸的真实路径（或无法解析的 root）返回 `null`，命中与普通未命中都返回解析出的路径 |
+
+三个工厂函数都默认应用该守卫，root 内指向别处的符号链接在普通读取、stat 与 `Range` 请求上同样被拒绝。`null` 只保留给逃逸：仅仅不存在的查找返回其解析出的（不存在的）路径，`serveStatic` 的目录重定向/SPA 回退因此仍可执行。`createFileReader(root, { realPath: false })` 可关闭普通读取器的守卫。

@@ -26,7 +26,7 @@ Traversal (`..`) never escapes the root, `index` (default `index.html`) serves d
 
 ## Symlinks
 
-Lexical checks can't see through symlinks: a symlink inside the root can point anywhere. The adapters' `createFileReader` therefore wires the realpath guard **by default** — every lookup is resolved, and a real path outside the root falls through like a miss. Bring your own `read` function and you own the guard (inject the adapter's `createRealPathGuard` the same way); it costs one realpath per request, and `createFileReader(root, { realPath: false })` opts out when the served tree is known symlink-free:
+Lexical checks can't see through symlinks: a symlink inside the root can point anywhere. The adapters' factories therefore wire the realpath guard **by default** — `createFileReader`, `createFileStat` and `createFileRangeReader` all resolve each lookup before touching the file, so an escaping symlink is unreachable through a plain read, a stat, or a `Range` request alike. `null` is reserved for exactly that: an escaping real path (or an unresolvable root) falls through like a refusal, while a path that merely does not exist is reported by its resolved (nonexistent) path — a miss is not an escape, so the directory-redirect and SPA fallbacks still run for it. Bring your own `read` function and you own the guard (inject the adapter's `createRealPathGuard` the same way); it costs one realpath per request, and `createFileReader(root, { realPath: false })` opts out when the served tree is known symlink-free:
 
 ```ts
 import { createRealPathGuard } from 's200/node';   // or 's200/bun'

@@ -28,7 +28,9 @@ export type LambdaEventV2 = {
   readonly headers: Readonly<Record<string, string>>;
   readonly cookies?: readonly string[];
   readonly isBase64Encoded: boolean;
-  readonly body?: string;
+  /** Absent, `null` and `''` all mean "no body" — v2 sends `null` for
+   * bodyless GETs. */
+  readonly body?: string | null;
   readonly requestContext: {
     readonly http: { readonly method: string; readonly sourceIp: string };
   };
@@ -54,11 +56,63 @@ export type LambdaHandler = (
   context?: unknown
 ) => Promise<LambdaResultV2>;
 
+/** Host characters legal inside an `https://` authority: the vocabulary
+ * `SAFE_HOST` in `src/node.ts` admits — alphanumerics, `.`, `-`, `:`
+ * (port) and `[`/`]` (IPv6 literals). Kept in sync by hand on purpose:
+ * importing the node adapter here would drag node-only code into a Lambda
+ * bundle. A crafted Host — `evil.example/../admin`, `a b`, `u@h`, `x#y`,
+ * percent-escapes, an empty value — must not reach the URL: a `/` moves
+ * the pathname, and the rest either changes the parse or breaks it. */
+const SAFE_HOST = /^[A-Za-z0-9.[\]:-]+$/;
+
+/** Whether the `host` header may be interpolated into the URL authority:
+ * {@link SAFE_HOST} keeps the path/query delimiters out, and the URL
+ * parser rejects what the character set still admits but cannot parse
+ * (`[`, a port above 65535, leading-zero IPv4 labels) — `new Request`
+ * would throw on those. An absent or unsafe host falls back to
+ * `localhost`, exactly like `toRequest` in `src/node.ts`. */
+function isSafeHost(host: string | undefined): host is string {
+  return (
+    host !== undefined &&
+    SAFE_HOST.test(host) &&
+    URL.canParse(`https://${host}/`)
+  );
+}
+
+/** The request URL: `https://` plus the validated host and the raw
+ * path/query, both passed through un-re-encoded. */
+function requestUrl(event: LambdaEventV2): string {
+  const suffix =
+    event.rawQueryString === ''
+      ? event.rawPath
+      : `${event.rawPath}?${event.rawQueryString}`;
+  const host = event.headers['host'];
+  return isSafeHost(host)
+    ? `https://${host}${suffix}`
+    : `https://localhost${suffix}`;
+}
+
+/** The request body: `undefined` for an absent, `null` or empty payload,
+ * and for GET/HEAD whatever the platform delivered — a `Request` rejects
+ * a body on either method. Real payloads keep the base64 decoding. */
+function requestBody(
+  event: LambdaEventV2,
+  method: string
+): BodyInit | undefined {
+  const body = event.body;
+  if (body === undefined || body === null || body === '') return undefined;
+  const upper = method.toUpperCase();
+  if (upper === 'GET' || upper === 'HEAD') return undefined;
+  return event.isBase64Encoded ? Buffer.from(body, 'base64') : body;
+}
+
 /** Builds the v2 `Request`: method from the http context, URL from the
- * `host` header (falling back to `localhost`) plus the raw path/query, and
- * the split `cookies` array recomposed into the single `Cookie` header the
- * Web Standard side expects. Bodies are fully buffered here (string or
- * bytes), so the `Request` never wraps a stream — no duplex hop. */
+ * validated `host` header (falling back to `localhost`) plus the raw
+ * path/query, and the split `cookies` array recomposed into the single
+ * `Cookie` header the Web Standard side expects. Bodies are fully
+ * buffered here (string or bytes), so the `Request` never wraps a stream
+ * — no duplex hop; a body on GET/HEAD (or an empty one) is dropped
+ * rather than rejected. */
 function toRequest(event: LambdaEventV2): Request {
   const headers = new Headers();
   for (const [name, value] of Object.entries(event.headers)) {
@@ -67,21 +121,11 @@ function toRequest(event: LambdaEventV2): Request {
   if (event.cookies !== undefined && event.cookies.length > 0) {
     headers.set('cookie', event.cookies.join('; '));
   }
-  const host = event.headers['host'] ?? 'localhost';
-  const url =
-    event.rawQueryString === ''
-      ? `https://${host}${event.rawPath}`
-      : `https://${host}${event.rawPath}?${event.rawQueryString}`;
-  const body =
-    event.body === undefined
-      ? undefined
-      : event.isBase64Encoded
-        ? Buffer.from(event.body, 'base64')
-        : event.body;
-  return new Request(url, {
-    method: event.requestContext.http.method,
+  const method = event.requestContext.http.method;
+  return new Request(requestUrl(event), {
+    method,
     headers,
-    body,
+    body: requestBody(event, method),
   });
 }
 

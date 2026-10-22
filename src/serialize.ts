@@ -175,8 +175,12 @@ function compileValue(schema: SerializeSchema): (value: string) => string {
         withNullable(schema, value, `(${value} === true ? 'true' : 'false')`);
     case 'array': {
       const item = compileValue(schema.items);
+      // `Array.from`, not `.map`: map skips holes, which `join` then renders
+      // as empty slots (`[,"a"]`). `?? 'null'` matches `JSON.stringify` for
+      // an element whose encoded form is `undefined` (undefined/function/
+      // symbol) — without it, `join` leaves a trailing comma (`["a",]`).
       return (value) =>
-        `'[' + ${value}.map((item) => ${item('item')}).join(',') + ']'`;
+        `'[' + Array.from(${value}, (item) => ${item('item')} ?? 'null').join(',') + ']'`;
     }
     case 'object':
       return hasOptionalKeys(schema)
@@ -214,8 +218,11 @@ function compileObjectExpr(schema: ObjectSchema, value: string): string {
     const comma = index === 0 ? '' : `',' + `;
     // The key prefix embeds its own quotes and colon so the concat chain
     // stays a sequence of `+` operands (a bare `"key":expr` would parse as
-    // a label, not an operand).
-    return `${comma}${JSON.stringify(`"${key}":`)} + ${compileValue(sub)(member(value, key))}`;
+    // a label, not an operand). The key is JSON-escaped FIRST (quotes,
+    // backslashes, control characters), so the emitted text is a valid
+    // JSON member name for any key — the outer stringify only quotes that
+    // fragment for the JS source.
+    return `${comma}${JSON.stringify(`${JSON.stringify(key)}:`)} + ${compileValue(sub)(member(value, key))}`;
   });
   return `'{' + ${parts.join(' + ')} + '}'`;
 }
@@ -230,7 +237,7 @@ function objectStmts(schema: ObjectSchema, value: string): string {
   const required = new Set(schema.required ?? []);
   return Object.entries(schema.properties)
     .map(([key, sub]) => {
-      const prop = `(first ? '' : ',') + ${JSON.stringify(`"${key}":`)} + ${compileValue(sub)(member(value, key))}`;
+      const prop = `(first ? '' : ',') + ${JSON.stringify(`${JSON.stringify(key)}:`)} + ${compileValue(sub)(member(value, key))}`;
       const assign = `out += ${prop}; first = false;`;
       return required.has(key)
         ? assign

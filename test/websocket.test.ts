@@ -281,6 +281,44 @@ describe('websocket upgrade decision (middleware chain)', () => {
     allowed.ok.should.be.true;
   });
 
+  it('rejects when a prefix-group middleware RETURNS a response', async () => {
+    const app = createApp();
+    // A prefix group compiles into one guard; a returned Response must
+    // still reject the upgrade (the guard propagates it outward).
+    const answers = (): void =>
+      new Response('nope', { status: 403 }) as unknown as void;
+    use(app, '/ws', answers);
+    upgradeWebSocket(app, '/ws', () => undefined);
+    const decision = await decide(app, '/ws');
+    decision.ok.should.be.false;
+    if (!decision.ok) {
+      decision.response.status.should.equal(403);
+      (await decision.response.text()).should.equal('nope');
+    }
+  });
+
+  it('rejects when a prefix-group middleware RETURNS a response behind a swallowing middleware', async () => {
+    const app = createApp();
+    // The first middleware awaits next() without returning its value, so
+    // the group's own return value is swallowed — the Response the second
+    // middleware returned must still reach the upgrade decision.
+    use(
+      app,
+      '/ws',
+      async (_ctx, next) => {
+        await next();
+      },
+      (): void => new Response('nope', { status: 403 }) as unknown as void
+    );
+    upgradeWebSocket(app, '/ws', () => undefined);
+    const decision = await decide(app, '/ws');
+    decision.ok.should.be.false;
+    if (!decision.ok) {
+      decision.response.status.should.equal(403);
+      (await decision.response.text()).should.equal('nope');
+    }
+  });
+
   it('rides pending setHeader entries onto the rejection response', async () => {
     const app = createApp();
     use(app, (ctx) => {

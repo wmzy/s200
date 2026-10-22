@@ -313,25 +313,34 @@ async function coldStartMs(framework, entry) {
   const port = await freePort();
   const t0 = performance.now();
   const proc = spawnServeChild(entry, port);
-  const ms = await pollFirst200(`http://127.0.0.1:${port}/`, t0, framework, proc);
-  await stopServeChild(proc);
-  return ms;
+  try {
+    return await pollFirst200(`http://127.0.0.1:${port}/`, t0, framework, proc);
+  } finally {
+    // A failed boot/timeout must not leak the child or its bound port for
+    // the scenarios that follow.
+    await stopServeChild(proc);
+  }
 }
 
 async function steadyRss(framework, entry) {
   const port = await freePort();
   const proc = spawnServeChild(entry, port);
-  const url = `http://127.0.0.1:${port}`;
-  // Readiness probe (not measured): wait for the first 200 before driving.
-  await pollFirst200(`${url}/`, performance.now(), framework, proc);
-  const { rps, failed } = await drive(url, '/', WARMUP, WARMUP_CONCURRENCY);
-  if (failed > 0) throw new Error(`${framework}: ${failed}/${WARMUP} non-200 during warmup`);
-  // Let the last responses quiesce (event-loop drain) before asking the
-  // kernel what the process actually holds.
-  await sleep(200);
-  const rssKb = readVmRssKb(proc.child.pid);
-  await stopServeChild(proc);
-  return { rssKb, rps };
+  try {
+    const url = `http://127.0.0.1:${port}`;
+    // Readiness probe (not measured): wait for the first 200 before driving.
+    await pollFirst200(`${url}/`, performance.now(), framework, proc);
+    const { rps, failed } = await drive(url, '/', WARMUP, WARMUP_CONCURRENCY);
+    if (failed > 0) throw new Error(`${framework}: ${failed}/${WARMUP} non-200 during warmup`);
+    // Let the last responses quiesce (event-loop drain) before asking the
+    // kernel what the process actually holds.
+    await sleep(200);
+    const rssKb = readVmRssKb(proc.child.pid);
+    return { rssKb, rps };
+  } finally {
+    // Every exit path (warmup failure, timeout, RSS read) stops the child
+    // so a failed scenario cannot leave a server and its port running.
+    await stopServeChild(proc);
+  }
 }
 
 async function heapPerRouteBytes(framework, entry) {

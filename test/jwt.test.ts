@@ -1,6 +1,6 @@
 import type { JwtKeyStore, JwksEntry, JwksStore } from '../src/jwt';
 
-import { describe, it } from 'vitest';
+import { describe, it, vi } from 'vitest';
 
 import { createApp, get, use, handle  } from '../src/app';
 import { createJwksResolver, isJwtError, jwtAuth, signJwt, verifyJwt } from '../src/jwt';
@@ -220,12 +220,14 @@ describe('jwt', () => {
     // kid B misses the fresh (mid-TTL) cache → exactly one forced refetch.
     (await verifyJwt(tokenB, await resolver({ alg: 'ES256', kid: 'B' }))).sub?.should.equal('b');
     fetches.should.equal(2);
-    // A kid unknown to both documents still refetches once, then fails.
+    // A kid unknown to both documents fails without another outbound
+    // fetch: the forced-refetch cooldown from the kid B rotation is still
+    // open.
     const unknown = (await rejectionOf(
       Promise.resolve().then(() => resolver({ alg: 'ES256', kid: 'C' }))
     )) as Error;
     unknown.message.should.match(/no jwks key for kid 'C'/);
-    fetches.should.equal(3);
+    fetches.should.equal(2);
   });
 
   it('does not refetch on a kid miss when this call just fetched the document', async () => {
@@ -254,6 +256,90 @@ describe('jwt', () => {
     )) as Error;
     missing.message.should.match(/no jwks key for kid 'B'/);
     fetches.should.equal(1);
+  });
+
+  it('bounds forced jwks refetches for unknown kids and keeps the cached TTL', async () => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    let served = JSON.stringify({ keys: [{ ...publicJwk, kid: 'A' }] });
+    let fetches = 0;
+    const fetchFn = async () => {
+      fetches += 1;
+      return new Response(served, { status: 200 });
+    };
+    const url = 'https://idp-bounded.test/jwks';
+    const backing = new Map<string, JwksEntry>();
+    const store: JwksStore = {
+      get: (key) => backing.get(key),
+      set: (key, entry) => backing.set(key, entry),
+    };
+    // Fake only the clock: fetch and WebCrypto stay real.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(0);
+      const resolver = createJwksResolver(url, { ttlMs: 600_000, fetchFn, store });
+      await resolver({ alg: 'ES256', kid: 'A' });
+      fetches.should.equal(1);
+      const document = backing.get(url);
+      (document === undefined).should.equal(false);
+      // A burst of unknown kids: one forced refetch total, then the
+      // cooldown answers without touching the network.
+      for (let i = 0; i < 5; i += 1) {
+        const missing = (await rejectionOf(
+          Promise.resolve().then(() => resolver({ alg: 'ES256', kid: 'ghost' }))
+        )) as Error;
+        missing.message.should.match(/no jwks key for kid 'ghost'/);
+      }
+      fetches.should.equal(2);
+      // The fruitless forced refetch did not replace the document or
+      // push its refresh deadline forward.
+      backing.get(url)!.should.equal(document);
+      // Past the 30 s cooldown, still mid-TTL: another forced refetch runs.
+      vi.setSystemTime(30_001);
+      await rejectionOf(
+        Promise.resolve().then(() => resolver({ alg: 'ES256', kid: 'ghost' }))
+      );
+      fetches.should.equal(3);
+      // The normal TTL path still picks up a rotation.
+      served = JSON.stringify({ keys: [{ ...publicJwk, kid: 'B' }] });
+      vi.setSystemTime(600_001);
+      const rotated = (await resolver({ alg: 'ES256', kid: 'B' })) as JsonWebKey & {
+        kid?: string;
+      };
+      rotated.kid?.should.equal('B');
+      fetches.should.equal(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keys the import cache by a secret digest, never the raw secret', async () => {
+    const secret = 'raw-secret-that-must-not-leak';
+    const token = await signJwt({ sub: 'digest' }, secret);
+    const keys: string[] = [];
+    const backing = new Map<string, Promise<CryptoKey>>();
+    const store: JwtKeyStore = {
+      get: (key) => {
+        keys.push(key);
+        return backing.get(key);
+      },
+      set: (key, value) => {
+        keys.push(key);
+        backing.set(key, value);
+      },
+    };
+    (await verifyJwt(token, secret, { keyStore: store })).sub?.should.equal('digest');
+    keys.length.should.equal(2); // one get, one set
+    keys.every((key) => !key.includes(secret)).should.equal(true);
+    keys[0]!.should.match(/^SHA-256:sign\+verify:[0-9a-f]{64}$/);
+    keys[0]!.should.equal(keys[1]);
+    // The digest is stable, so the same secret + usages is a cache hit.
+    await verifyJwt(token, secret, { keyStore: store });
+    backing.size.should.equal(1);
   });
 
   it('gates routes through jwtAuth with a jwks endpoint', async () => {

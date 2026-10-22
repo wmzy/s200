@@ -132,10 +132,16 @@ export function isJwtError(error: unknown): boolean {
 }
 
 /**
- * Key-import cache: one entry per (algorithm, key material, usage) — the
- * cache key encodes all three. The default is an in-process LRU; injecting
- * a store (e.g. Redis) shares imports across instances and bypasses the
- * default cache entirely.
+ * Key-import cache. The key encodes the algorithm and usages plus a
+ * SHA-256 hex digest of the key material — the material itself is never
+ * embedded, since an injected store may persist or log whatever it is
+ * keyed by. The value is
+ * a `Promise` of a process-local, non-extractable `CryptoKey`: it cannot
+ * be serialized or shipped to another process, so an injected store
+ * customizes the in-process import cache (its bounds, eviction policy, or
+ * an id→secret mapping the process imports itself) rather than sharing
+ * imported keys across instances. The default is an in-process LRU
+ * bounded at 100 entries; injecting a store bypasses it entirely.
  */
 export type JwtKeyStore = {
   get(key: string): Promise<CryptoKey> | undefined;
@@ -176,15 +182,29 @@ const defaultKeyStore: JwtKeyStore = {
   set: (key, value) => lruSet(keyCache, key, value, KEY_CACHE_LIMIT),
 };
 
-/** One imported HMAC key per (secret text, hash, usage) — importing per
+/** Hex of a SHA-256 digest of key material — the import cache is keyed by
+ * this, so a store that persists or logs its keys never sees the material
+ * (an HMAC secret, a private signing JWK) in the clear. */
+async function materialDigest(material: string): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material))
+  );
+  let hex = '';
+  for (const byte of digest) {
+    hex += byte.toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
+/** One imported HMAC key per (secret digest, hash, usage) — importing per
  * signature would cost a key-derivation pass on every request. */
-function getHmacKey(
+async function getHmacKey(
   secretText: string,
   hash: string,
   usages: readonly KeyUsage[],
   store: JwtKeyStore
 ): Promise<CryptoKey> {
-  const cacheKey = `${hash}:${usages.join('+')}:${secretText}`;
+  const cacheKey = `${hash}:${usages.join('+')}:${await materialDigest(secretText)}`;
   let key = store.get(cacheKey);
   if (key === undefined) {
     key = crypto.subtle.importKey(
@@ -199,15 +219,15 @@ function getHmacKey(
   return key;
 }
 
-/** One imported asymmetric key per (alg, JWK, usage). */
-function importAsymKey(
+/** One imported asymmetric key per (alg, JWK digest, usage). */
+async function importAsymKey(
   jwk: JsonWebKey,
   alg: JwtAlgorithm,
   usages: readonly KeyUsage[],
   store: JwtKeyStore
 ): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
-  const cacheKey = `${alg}:${usages.join('+')}:${JSON.stringify(jwk)}`;
+  const cacheKey = `${alg}:${usages.join('+')}:${await materialDigest(JSON.stringify(jwk))}`;
   let key = store.get(cacheKey);
   if (key === undefined) {
     if (info.kind === 'rsa') {
@@ -408,8 +428,10 @@ export type JwtVerifyOptions = {
   readonly requireExpiry?: boolean;
   /**
    * Key-import cache. The default is an in-process LRU bounded at 100
-   * entries; injecting a store (e.g. Redis) bypasses the default cache
-   * entirely and shares imports across instances.
+   * entries; injecting a store bypasses the default cache entirely. Keys
+   * are SHA-256 digests of the key material (never the raw secret); values
+   * are process-local `CryptoKey`s, so a store bounds/expires imports in
+   * this process rather than sharing them across instances.
    */
   readonly keyStore?: JwtKeyStore;
 };
@@ -585,24 +607,36 @@ const defaultJwksStore: JwksStore = {
   set: (url, entry) => lruSet(jwksCache, url, entry, JWKS_CACHE_LIMIT),
 };
 
+/** Upper bound on the forced-refetch cooldown: the window between two
+ * refetches triggered by an unknown `kid`. A shorter `ttlMs` wins, since
+ * the document then refreshes on its own sooner. */
+const JWKS_FORCED_REFETCH_COOLDOWN_MS = 30_000;
+
 /**
  * Builds a {@link KeyResolver} over a JWKS endpoint: fetches the key set,
  * caches it for `ttlMs`, and picks by `kid` (first key when the token
- * carries none). A `kid` miss against an unexpired cached document forces
- * exactly one refetch before failing, so a key published after the cached
- * document was fetched is visible mid-TTL (rotation races). Documents are
- * cached per URL module-wide in an LRU bounded at 50 endpoints, so many
- * app instances in one process share the rotation; inject a `store` to
- * share across processes instead.
+ * carries none). A `kid` miss against an unexpired cached document may
+ * force one refetch, so a key published after the cached document was
+ * fetched becomes visible mid-TTL (rotation races) — at most one refetch
+ * per cooldown (`min(ttlMs, 30s)`), so an arbitrary `kid` cannot turn every
+ * request into an outbound fetch. A forced refetch that does not bring the
+ * `kid` leaves the cached document and its refresh deadline untouched.
+ * Documents are cached per URL module-wide in an LRU bounded at 50
+ * endpoints, so many app instances in one process share the rotation;
+ * inject a `store` to share documents across processes (their entries are
+ * plain JSON), not imported keys.
  */
 export function createJwksResolver(
   url: string,
   options: JwksOptions = {}
 ): KeyResolver {
   const ttl = options.ttlMs ?? 300_000;
+  const cooldown = Math.max(0, Math.min(ttl, JWKS_FORCED_REFETCH_COOLDOWN_MS));
   const fetchFn = options.fetchFn ?? globalThis.fetch;
   const store = options.store ?? defaultJwksStore;
-  const fetchDocument = async (): Promise<JwksEntry> => {
+  // `-Infinity`: the first unknown `kid` may always force one refetch.
+  let lastForcedRefetch = Number.NEGATIVE_INFINITY;
+  const fetchKeys = async (): Promise<JwksEntry> => {
     const fetchedAt = Date.now();
     const res = await fetchFn(url);
     if (!res.ok) {
@@ -612,7 +646,10 @@ export function createJwksResolver(
     if (!Array.isArray(body.keys) || body.keys.length === 0) {
       throw jwtError('malformed jwks: missing keys');
     }
-    const entry: JwksEntry = { exp: fetchedAt + ttl, keys: body.keys };
+    return { exp: fetchedAt + ttl, keys: body.keys };
+  };
+  const fetchDocument = async (): Promise<JwksEntry> => {
+    const entry = await fetchKeys();
     store.set(url, entry);
     return entry;
   };
@@ -632,9 +669,20 @@ export function createJwksResolver(
     let key = keyFor(cached, header.kid);
     if (key === undefined && header.kid !== undefined && !fetchedThisCall) {
       // Rotation race: a key published after the cached document was
-      // fetched is invisible mid-TTL — force exactly one refetch
-      // (bypassing the TTL cache) before giving up on the kid.
-      key = keyFor(await fetchDocument(), header.kid);
+      // fetched is invisible mid-TTL. One refetch is allowed per cooldown
+      // (checked and claimed before the await so concurrent misses share
+      // it); a refresh that does not bring the kid is discarded — the old
+      // document keeps its refresh deadline, so unknown kids cannot pin the
+      // TTL forward with fruitless fetches.
+      if (now - lastForcedRefetch >= cooldown) {
+        lastForcedRefetch = now;
+        const refreshed = await fetchKeys();
+        const refreshedKey = keyFor(refreshed, header.kid);
+        if (refreshedKey !== undefined) {
+          store.set(url, refreshed);
+          key = refreshedKey;
+        }
+      }
     }
     if (key === undefined) {
       throw jwtError(
@@ -664,7 +712,8 @@ export type JwtAuthOptions = {
   /**
    * Key-import cache forwarded to `verifyJwt`. The default is an
    * in-process LRU bounded at 100 entries; injecting a store bypasses
-   * the default cache entirely.
+   * the default cache entirely. Keys are SHA-256 digests of the key
+   * material (never the raw secret).
    */
   readonly keyStore?: JwtKeyStore;
   /** Algorithms the gate accepts; default every supported one. */

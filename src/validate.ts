@@ -195,9 +195,15 @@ export function requiresHeaders(): Middleware {
  * ArrayBuffer>()`/`bodyShape<ReadableStream>()` on binary routes. The
  * `throws`-mold type-level gate: pure pass-through, nothing parsed. The
  * declaration brands the route log's `in` channel with `{ body: T }` so
- * `s200/client` types (and demands) `init.body` as exactly `T` instead
- * of the loose `BodyInit` — the client passes the value to fetch
- * untouched (no JSON stringifying). Runtime reading stays with the
+ * `s200/client` types (and demands) `init.body` as exactly `T` instead of
+ * the loose `BodyInit`.
+ *
+ * The client decides how the value travels from the RUNTIME value, not
+ * from the declared type: a plain object or array is `JSON.stringify`ed
+ * and sent with `content-type: application/json` (an explicit
+ * content-type wins), while strings and platform body types (`FormData`,
+ * `Blob`, `ArrayBuffer`, typed-array views, `URLSearchParams`,
+ * `ReadableStream`) go to fetch untouched. Runtime reading stays with the
  * handler (`s200/multipart`'s `streamForm`, `s200/upload`'s
  * `uploadForm`, or a raw `ctx.req.body` stream).
  */

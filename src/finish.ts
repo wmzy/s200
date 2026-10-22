@@ -36,14 +36,38 @@ type FinishEntry = { readonly ctx: Ctx; readonly fns: Set<FinishFn> };
 // a no-op.
 const finishers = new WeakMap<object, FinishEntry>();
 
+// An abort that arrived before any callback was registered. The socket
+// runtimes fire the abort from the connection's 'close' event, which can
+// happen while the handler is still running — a callback registered after
+// `await next()` (the documented cleanup shape) would then never run at
+// all: the trigger is gone and the registration is a fresh entry nothing
+// will ever consume. Remembering the abort lets a late registration fire
+// immediately with the outcome it missed. Only aborts are remembered: a
+// clean finish keeps the documented "registered after the finish — dropped"
+// behaviour, and the write path stays free of bookkeeping.
+const abortedBeforeRegister = new WeakMap<
+  object,
+  {
+    readonly info: FinishInfo;
+    readonly logError: ((error: unknown, ctx: Ctx) => void) | undefined;
+  }
+>();
+
 /**
  * Registers a callback that runs **exactly once** when this request's
  * response finishes. `{ aborted: false }` after the response was fully
  * written; `{ aborted: true }` when the connection ended first (client
  * disconnect, a cancelled response body, or a mid-write failure — first
- * trigger wins). Register before the finish: registrations after it are
- * dropped. Typical homes: a middleware around `await next()` (the cleanup
- * counterpart of work started on the way in) or the top of a handler.
+ * trigger wins). Typical homes: a middleware around `await next()` (the
+ * cleanup counterpart of work started on the way in) or the top of a
+ * handler.
+ *
+ * A registration made after the request already **aborted** runs
+ * immediately with `{ aborted: true }` — the socket runtimes abort from the
+ * connection's 'close' event, which can fire while the handler is still
+ * running, so the callback below would otherwise never run at all. A
+ * registration made after a **clean** finish is dropped (nothing is left to
+ * observe).
  *
  * ```ts
  * use(app, async (ctx, next) => {
@@ -60,6 +84,15 @@ export function onFinish(ctx: Ctx, fn: FinishFn): void {
   const existing = finishers.get(key);
   if (existing !== undefined) {
     existing.fns.add(fn);
+    return;
+  }
+  const aborted = abortedBeforeRegister.get(key);
+  if (aborted !== undefined) {
+    // The request already ended (aborted) before this registration: run the
+    // callback now with the outcome it missed — dropping it would lose the
+    // one signal the caller asked for.
+    abortedBeforeRegister.delete(key);
+    fire({ ctx, fns: new Set([fn]) }, aborted.info, aborted.logError);
     return;
   }
   finishers.set(key, { ctx, fns: new Set([fn]) });
@@ -121,6 +154,12 @@ export function runFinish(
   const key = request as object;
   const entry = finishers.get(key);
   if (entry === undefined) {
+    // No callback yet — remember an abort so a registration made later (the
+    // socket runtimes abort from the connection's 'close' event, which can
+    // fire mid-handler) still runs.
+    if (info.aborted) {
+      abortedBeforeRegister.set(key, { info, logError });
+    }
     return;
   }
   finishers.delete(key);
