@@ -23,7 +23,6 @@ hono-patched  hello    14130 req/s   param    13762 req/s
 express       hello     6476 req/s   param     6355 req/s
 fastify       hello    14115 req/s   param    14064 req/s
 elysia        hello    14420 req/s   param    14135 req/s
-s200-deno  not measured on the reference machine (auto-skipped: deno not installed)
 ```
 
 机器：AMD Ryzen 7 8745HS，Fedora 42，Node 22.23.2，2026-09-21。
@@ -33,21 +32,6 @@ s200-deno  not measured on the reference machine (auto-skipped: deno not install
 
 - `hello` — `GET /` → `{ "message": "hello" }`
 - `param` — `GET /users/:id` → `{ "id": "42", "name": "ada" }`
-
-### `s200-deno` 场景
-
-`pnpm bench:http` 还认识第八个场景 `s200-deno`：**同一份构建出的核心**
-（`dist/index.mjs`）通过 `Deno.serve` 提供服务。s200 的核心是纯 Web 标准
-代码，因此同一个 bundle 无需适配器就能跑在 Deno 上。脚本会向操作系统
-临时目录写入一个小入口文件（通过 `file://` URL 导入构建出的核心），
-把它作为独立进程 spawn `deno run`，再用与其他每一行相同的 node
-keep-alive 客户端去测量它——唯一的结构性差异是客户端与服务器分处
-两个进程而非同一个。
-
-当 `PATH` 上没有 `deno` 二进制时，该场景**自动跳过**：运行会打印一行
-跳过信息（上面那一行就是来自参考机器的这条）然后继续；它绝不会让基准
-测试失败。想启用它，请安装 [Deno](https://deno.com) ≥ 2.x 并重新运行
-`pnpm bench:http`。
 
 读数：
 
@@ -313,7 +297,6 @@ pre-lazy 运行的排序一致，`mw` 各格在 ~±4% 之内，`s200-light mw`
 | fastify       | 17590 req/s      | 16681   | −5%         |
 | elysia        | 16846 req/s      | 15428   | −8%         |
 
-`s200-deno` 自动跳过（这台机器上没有 `deno` 二进制，与参考运行相同）。
 单个 `hello` 格逐次运行会有高达 ~±10% 的摆动，因此请把单格增量读作
 近似值，把排序读作信号。
 

@@ -19,6 +19,7 @@ import type {
   ResolveStatus,
   RouteFilter,
   State,
+  StateOf,
 } from './types';
 
 import type { ParamsOf } from './router';
@@ -140,7 +141,35 @@ function groupCtx<S extends State>(ctx: Ctx<Params, S>): GroupCtx {
  * middlewares; `next()` from inside one continues into the next scope and
  * the route chain below. A prefix with no middlewares is a programmer
  * error — it typechecks, but `use` throws at registration.
+ *
+ * ## The state channel
+ *
+ * A middleware branded by `withState<X>` (core barrel) advertises the
+ * keys it writes onto `ctx.state`; `use` collects every argument's brand
+ * into the returned app's `S`, so downstream middlewares and handlers
+ * read the injected keys typed — the counterpart of
+ * Hono's `c.var`/`Env` and Elysia's `derive`, with no hand-written app
+ * state interface. Plain, unbranded middlewares are the identity case:
+ * their contribution collapses and the app's type is unchanged.
+ *
+ * The type is app-wide — the prefix-scoped form cannot narrow it to the
+ * prefix's routes (a handler outside the prefix would still see the keys
+ * as typed, `undefined` at runtime), so prefix-scoped injection is a
+ * programmer's assertion, exactly like a hand-written `createApp<MyState>`.
+ * In a route's own middleware chain a branded middleware runs but its
+ * brand is not threaded into the handler's `ctx.state` — scope injections
+ * with `use`.
  */
+export function use<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  M extends Middleware<S> | string = Middleware<S>,
+  Ms extends readonly Middleware<S>[] = Middleware<S>[]
+>(
+  app: App<S, R>,
+  prefixOrMiddleware: M,
+  ...middlewares: Ms
+): App<S & StateOf<[M, ...Ms]>, R>;
 export function use<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[]
@@ -580,10 +609,13 @@ export type RoutesBuilder<
   readonly head: BuilderMethod<'HEAD', S, R>;
   readonly options: BuilderMethod<'OPTIONS', S, R>;
   readonly all: BuilderMethod<'ALL', S, R>;
-  readonly use: (
-    prefixOrMiddleware: string | Middleware<S>,
-    ...middlewares: Middleware<S>[]
-  ) => RoutesBuilder<S, R>;
+  readonly use: <
+    M extends Middleware<S> | string = Middleware<S>,
+    Ms extends readonly Middleware<S>[] = Middleware<S>[]
+  >(
+    prefixOrMiddleware: M,
+    ...middlewares: Ms
+  ) => RoutesBuilder<S & StateOf<[M, ...Ms]>, R>;
   readonly mount: <
     R2 extends readonly RouteDef[] = readonly RouteDef[],
     Prefix extends string = string

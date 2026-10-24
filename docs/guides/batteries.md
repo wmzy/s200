@@ -20,6 +20,7 @@ import { timeout } from 's200/timeout';
 import { upgradeWebSocket } from 's200/websocket';
 import { createUpgradeHandler } from 's200/websocket/node';
 import { createBunWebSocketBridge } from 's200/websocket/bun';
+import { createCloudflareWebSocketBridge } from 's200/websocket/cloudflare';
 import { etag } from 's200/etag';
 import { secureHeaders } from 's200/secure-headers';
 import { basicAuth, bearerAuth } from 's200/auth';
@@ -34,7 +35,6 @@ import { toolManifest, createMcpHandler } from 's200/mcp';
 import { signJwt, verifyJwt, jwtAuth } from 's200/jwt';
 import { cache } from 's200/cache';
 import { trustProxy } from 's200/trust-proxy';
-import { serve as serveDeno } from 's200/deno';
 import { createHandler } from 's200/cloudflare';
 import { trace } from 's200/otel';
 import { generateClient } from 's200/codegen';
@@ -84,7 +84,7 @@ Handy for route listing or cross-language translation — and `s200/openapi` bui
 
 ## OpenAPI
 
-The route table is the API surface, so the OpenAPI 3.1 document comes out of it directly: `describeRoute` annotates (summary, tags, query/body schemas in the `SerializeSchema` DSL, response shapes), `openapiSpec` emits the spec, and unannotated routes still appear with their params and a bare 200:
+The route table is the API surface, so the OpenAPI 3.1 document comes out of it directly: `describeRoute` annotates (summary, tags, query/body schemas in the `SerializeSchema` DSL, response shapes), `openapiSpec` emits the spec, and unannotated routes still appear with their params and a bare 200. Schemas that occur ≥2 times (structural JSON equality) are hoisted into `components.schemas` and referenced with `$ref`s — named by the schema's optional `title`, else `Schema1`, `Schema2`, … in first-occurrence order (`refSchemas: false` keeps everything inline). A query entry may mark itself required (`query: { format: { schema: { type: 'string' }, required: true } }`): the spec emits `parameters[].required: true` and the gate below rejects the key's absence — the two views stay isomorphic.
 
 ```ts
 describeApp(app, { title: 'Users API', version: '1.0.0' });
@@ -96,7 +96,7 @@ describeRoute(app, 'GET', '/users/:id', {
 get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
 ```
 
-The same annotations can become runtime gates: `withRouteValidation(app)` is a pure data transform (mount's family) that rebuilds only the routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` — the read-side twin of `serialize()`, covering exactly the same DSL subset. A violation answers `422` naming the first offending path (`{"error":"body.tags.1: expected string, got number"}`); valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes, so `openapiSpec(gated)` keeps documenting them. Annotate mounted sub-apps on the parent after `mount` (the metadata registry keys by route identity).
+The same annotations can become runtime gates: `withRouteValidation(app)` is a pure data transform (mount's family) that rebuilds only the routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` — the read-side twin of `serialize()`, covering exactly the same DSL subset. A violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while the body's `issues` array carries the full list, built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes, so `openapiSpec(gated)` keeps documenting them. Annotate mounted sub-apps on the parent after `mount` (the metadata registry keys by route identity).
 
 Pair the spec with a documentation UI — `swaggerUi` serves the Scalar API Reference page (assets load from a pinned CDN, so s200 stays zero-dependency):
 
@@ -169,7 +169,7 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 });
 ```
 
-Standard Schema values work without a wrapper: anything carrying a `~standard` prop (zod, valibot, typebox, arktype…) can be handed to `jsonBody`/`queryParams` directly. The gate calls `validate()` on the parsed body/record — the first reported issue becomes a `422 HttpError` carrying its message; an empty `issues` array counts as success. The schema's phantom `types` prop types both sides for free: `types.input` is what the caller sends (`jsonBody(schema)` demands and types the client's `init.body`, `queryParams(schema)` brands `init.query` the same way — the input side, so transforming schemas are honest end to end), while the parsed `types.output` product lands on `ctx.state.validated` for the handler; `standardValidate(schema, data)` exports the identical 422 semantics for your own gates.
+Standard Schema values work without a wrapper: anything carrying a `~standard` prop (zod, valibot, typebox, arktype…) can be handed to `jsonBody`/`queryParams` directly. The gate calls `validate()` on the parsed body/record — any reported issue becomes a `422 HttpError` whose body carries the full list with formatted paths (`error` keeps the first message, `issues: [{ "path": "user.tags[0]", "message": "…" }]`); an empty `issues` array counts as success. The schema's phantom `types` prop types both sides for free: `types.input` is what the caller sends (`jsonBody(schema)` demands and types the client's `init.body`, `queryParams(schema)` brands `init.query` the same way — the input side, so transforming schemas are honest end to end), while the parsed `types.output` product lands on `ctx.state.validated` for the handler; `standardValidate(schema, data)` exports the identical 422 semantics for your own gates.
 
 ## Query
 
@@ -197,6 +197,7 @@ upgradeWebSocket(app, '/chat/:room', (socket, ctx) => {
 
 await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });            // node
 serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
+// workers: ws.upgrade(request) ?? createHandler(app).fetch(…) — see the WebSocket API page
 ```
 
 The node server implements the protocol — handshake, text/binary with fragmentation, ping/pong, close handshake, a `maxPayload` budget (default 4 MiB, 1009 beyond it, enforced at frame-header time) — plus opt-in subprotocol negotiation and permessage-deflate (RFC 7692, no-context-takeover both ways), and a heartbeat surface (`socket.ping()` / `socket.onPong()`):
@@ -227,7 +228,7 @@ use(app, secureHeaders({ strictTransportSecurity: 'max-age=31536000' }));  // HS
 
 ## Auth
 
-`basicAuth`/`bearerAuth` gates: the `verify` function decides, failures answer `401` + `WWW-Authenticate` in place and the chain below never runs:
+`basicAuth`/`bearerAuth` gates: the `verify` function decides, failures throw a 401 `HttpError` with the `WWW-Authenticate` challenge into the error boundary (`onError` included; the default mapping answers `401` + challenge) and the chain below never runs:
 
 ```ts
 use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
@@ -288,7 +289,7 @@ const type = want.type(['application/json', 'text/html']) ?? 'application/json';
 
 ## Rate limit
 
-True sliding-window gate per client key: every hit expires `windowMs` after it landed (no fixed boundary, so window edges can't burst), the over-limit request is answered in place with `429` + `Retry-After`, and the chain below never runs:
+True sliding-window gate per client key: every hit expires `windowMs` after it landed (no fixed boundary, so window edges can't burst), the over-limit request throws a 429 `HttpError` into the error boundary (`onError` included; the default mapping answers `429` + `Retry-After` + IETF `RateLimit-Limit`/`RateLimit-Remaining`/`RateLimit-Reset`), and the chain below never runs:
 
 ```ts
 use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
@@ -327,7 +328,7 @@ use(app, responseCheck(app, {
 
 ## Compress
 
-Gzip/deflate response compression via the Web Standard `CompressionStream` (no `node:zlib` — works on Node 18+, Bun, Deno), plus opt-in brotli through an injected encoder (`CompressionStream` has no brotli; `s200/node` ships `brotliCompress` over `node:zlib`). Negotiates `Accept-Encoding` q-values, skips bodyless/encoded/`no-transform` responses and small bodies (when a content-length is known), and maintains `Vary: Accept-Encoding`:
+Gzip/deflate response compression via the Web Standard `CompressionStream` (no `node:zlib` — works on Node 18+, Bun), plus opt-in brotli through an injected encoder (`CompressionStream` has no brotli; `s200/node` ships `brotliCompress` over `node:zlib`). Negotiates `Accept-Encoding` q-values, skips bodyless/encoded/`no-transform` responses and small bodies (when a content-length is known), and maintains `Vary: Accept-Encoding`:
 
 ```ts
 use(app, compress({ minBytes: 1024 }));
@@ -359,7 +360,7 @@ use(app, requestId({ header: 'x-trace', generator: () => nanoid() }));
 
 ## ALS
 
-Ambient ctx access — the opt-in supplement to explicit ctx passing, for call stacks that cannot thread it (logging sinks, deep legacy helpers). `als()` wraps the chain below it in `node:async_hooks`' `AsyncLocalStorage`, and `currentCtx()` resolves the executing request's ctx from anywhere inside that extent — deep awaits, `setTimeout` callbacks, code that never saw a parameter. Interleaved requests stay isolated; outside a request `currentCtx()` is `undefined`. Node/Bun/Deno only — Cloudflare Workers has no async_hooks, so importing the entry fails there (keep it out of edge bundles):
+Ambient ctx access — the opt-in supplement to explicit ctx passing, for call stacks that cannot thread it (logging sinks, deep legacy helpers). `als()` wraps the chain below it in `node:async_hooks`' `AsyncLocalStorage`, and `currentCtx()` resolves the executing request's ctx from anywhere inside that extent — deep awaits, `setTimeout` callbacks, code that never saw a parameter. Interleaved requests stay isolated; outside a request `currentCtx()` is `undefined`. Node/Bun only — Cloudflare Workers has no async_hooks, so importing the entry fails there (keep it out of edge bundles):
 
 ```ts
 import { als, currentCtx } from 's200/als';

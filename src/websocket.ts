@@ -7,6 +7,9 @@
  *   `s200/websocket/node` — a zero-dependency RFC 6455 server.
  * - bun: `serve(app, { websocket: createBunWebSocketBridge(app) })` from
  *   `s200/websocket/bun`.
+ * - cloudflare: `ws.upgrade(request) ?? worker.fetch(…)` with
+ *   `createCloudflareWebSocketBridge(app)` from `s200/websocket/cloudflare`
+ *   composed with `s200/cloudflare`'s `createHandler`.
  *
  * Patterns use the router's segment syntax (`:param`, terminal `*rest`);
  * matching is strict and first registration wins, exactly like HTTP

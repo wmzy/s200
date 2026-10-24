@@ -1,8 +1,10 @@
 /**
  * Authentication gates: `basicAuth` and `bearerAuth` — zero-dependency
  * header verification middleware. The `verify` function decides; a failed
- * or missing credential is answered in place with `401` +
- * `WWW-Authenticate`, and the rest of the chain never runs.
+ * or missing credential throws an `HttpError` 401 tagged with the
+ * `WWW-Authenticate` challenge into the app's error boundary — the default
+ * mapping answers exactly `401 {"error":"Unauthorized"}` + challenge, and
+ * a configured `onError` takes over — and the rest of the chain never runs.
  *
  * Note: credential comparison inside `verify` is yours — use a
  * constant-time compare for secrets (e.g. the same technique
@@ -13,14 +15,7 @@
 
 import type { Ctx, Middleware } from './types';
 
-import { json } from './respond';
-
-function unauthorized(ctx: Ctx, challenge: string): Response {
-  return json(ctx, { error: 'Unauthorized' }, {
-    status: 401,
-    headers: { 'www-authenticate': challenge },
-  });
-}
+import { httpError } from './errors';
 
 /**
  * Decodes `Basic base64(user:pass)`. atob yields the base64 payload as
@@ -50,7 +45,8 @@ export type BasicAuthOptions = {
 
 /**
  * Basic-auth gate: `verify(username, password, ctx)` decides. Truthy →
- * `next()`; otherwise 401 with a `Basic` challenge, in place.
+ * `next()`; otherwise a 401 with a `Basic` challenge is thrown into the
+ * error boundary.
  */
 export function basicAuth(
   verify: (username: string, password: string, ctx: Ctx) => boolean | Promise<boolean>,
@@ -61,8 +57,12 @@ export function basicAuth(
     const header = ctx.req.headers.get('authorization');
     const creds = header === null ? undefined : decodeBasic(header);
     if (creds === undefined || !(await verify(creds[0], creds[1], ctx))) {
-      unauthorized(ctx, challenge);
-      return;
+      throw httpError(
+        401,
+        'Unauthorized',
+        { error: 'Unauthorized' },
+        { 'www-authenticate': challenge }
+      );
     }
     return next();
   };
@@ -75,7 +75,8 @@ export type BearerAuthOptions = {
 
 /**
  * Bearer-token gate: `verify(token, ctx)` decides. Truthy → `next()`;
- * otherwise 401 with a `Bearer` challenge, in place.
+ * otherwise a 401 with a `Bearer` challenge is thrown into the error
+ * boundary.
  */
 export function bearerAuth(
   verify: (token: string, ctx: Ctx) => boolean | Promise<boolean>,
@@ -87,8 +88,12 @@ export function bearerAuth(
     const token =
       header === null ? undefined : /^Bearer\s+(.+)$/i.exec(header)?.[1];
     if (token === undefined || !(await verify(token, ctx))) {
-      unauthorized(ctx, challenge);
-      return;
+      throw httpError(
+        401,
+        'Unauthorized',
+        { error: 'Unauthorized' },
+        { 'www-authenticate': challenge }
+      );
     }
     return next();
   };

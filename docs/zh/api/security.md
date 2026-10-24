@@ -49,7 +49,7 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 
 ## 认证（`s200/auth`）
 
-`basicAuth` / `bearerAuth` 闸门：`verify` 函数裁决；失败以 `401` + `WWW-Authenticate` 就地应答，其下链条永不运行。`verify` 内的凭据比较是你的责任 —— 密钥请用常量时间比较。
+`basicAuth` / `bearerAuth` 闸门：`verify` 函数裁决；失败抛出携带 `WWW-Authenticate` 质询的 401 `HttpError` 进入错误边界 —— 默认映射应答 `401 {"error":"Unauthorized"}` + 质询，配置了 `onError` 时由其接管。其下链条永不运行。`verify` 内的凭据比较是你的责任 —— 密钥请用常量时间比较。
 
 ```ts
 use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
@@ -165,7 +165,7 @@ use(app, async (ctx, next) => {
 
 ## 限流（`s200/rate-limit`）
 
-按客户端密钥的真滑动窗口闸门：每次命中在落地 `windowMs` 后过期（无固定边界，因此窗口边缘无法突发）。超限请求就地以 `429` + `Retry-After` 应答；其下链条永不运行。
+按客户端密钥的真滑动窗口闸门：每次命中在落地 `windowMs` 后过期（无固定边界，因此窗口边缘无法突发）。超限请求抛出 429 `HttpError` 进入错误边界 —— 默认映射应答 `429 {"error":"Too Many Requests"}` + `Retry-After`，配置了 `onError` 时由其接管；其下链条永不运行。
 
 ```ts
 use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
@@ -182,6 +182,8 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 | `store` | 每密钥进程内双端队列 | 跨实例共享计数：一个 `RateLimitStore` —— `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` —— 必须按键原子（Redis INCR + PEXPIRE 形状） |
 
 `RateLimitHit`：`{ count: number; retryAt: number }` —— 存活计数与最早可重试时间。默认存储是每实例的；共享限流需要注入 `store`。
+
+429 响应在 `Retry-After` 之外携带 IETF 限流头（`RateLimit-Limit`、`RateLimit-Remaining`、`RateLimit-Reset` —— draft-ietf-httpapi-ratelimit-headers）：整数字符串，分别为限额 / 被拦截时的 `0` / 最早阻断命中过期前的剩余秒数（与 `Retry-After` 同一余量）。与所有 HTTP/2 响应头一样，线上名称为小写。
 
 ## 信任代理（`s200/trust-proxy`）
 

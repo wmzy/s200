@@ -41,7 +41,7 @@ Cookie 名遵循 RFC 6265 token 字母表（比值更严格）；值在读取时
 
 `createSession({ secret, store? })` 返回一个中间件（外加 `close()` 用于默认存储的清扫定时器）。客户端只持有经签名的 opaque id（HMAC 经 cookies 电池 —— 全框架一套签名约定）；数据放在服务端可插拔的 `store` 里。被篡改、缺失或过期的 id 表现一致：一个全新空会话，绝不报错。
 
-变更（`set`/`delete`/`clear`/`touch`）在 unwind 时持久化并（重新）签发 cookie；`destroy()` 从存储删除并过期 cookie；只读请求不留痕迹 —— 无存储写入、无 `Set-Cookie`。
+变更（`set`/`delete`/`clear`/`touch`）在 unwind 时持久化并（重新）签发 cookie；`destroy()` 从存储删除并过期 cookie；`regenerate()` 轮换到新 id 且旧 id 当场删除；只读请求不留痕迹 —— 无存储写入、无 `Set-Cookie`。
 
 ```ts
 const { middleware, close } = createSession({ secret: SECRET, cookie: { maxAge: 3600 } });
@@ -75,6 +75,26 @@ get(app, '/', (ctx) => {
 | `isNew` | 本请求内稳定 —— 无有效 cookie + 存储命中恢复数据时为 true |
 | `get(key)` / `set(key, value)` / `delete(key)` / `clear()` | 数据访问；变更在 unwind 时持久化 |
 | `touch()` | 续期已有会话的过期时间（新会话为 no-op） |
+| `regenerate(keepData?)` | 登录/提权时的会话固定防御：轮换到新 id（旧 id 立即从存储删除 —— 即使响应永远没能送达，被盗 cookie 也已作废），unwind 在新 id 下持久化并（重新）签发 cookie。默认丢弃数据（express-session 语义）；`regenerate(true)` 保留。`isNew` 保持本请求内的稳定值；`destroy()` 之后为 no-op |
 | `destroy()` | 从存储删除；unwind 过期 cookie。终局性 —— `destroy()` 之后的变更被丢弃 |
 
 `SessionData`：`Record<string, unknown>` —— 普通 JSON 形状记录，对存储不透明。
+
+### 登录轮换
+
+`regenerate()` 是会话固定防御：攻击者在登录前固定到浏览器上的 id，会在登录轮换的那一刻从存储里死掉。它与 CSRF 电池的 `bind` 天然搭配 —— 把会话 id 折进 token 的 HMAC，为旧 id 铸造的 token 随轮换一并退役：
+
+```ts
+const csrf = createCsrf({
+  secret: SECRET,
+  bind: (ctx) => (ctx.state.session as Session).id ?? '',
+});
+
+post(app, '/login', async (ctx) => {
+  const session = ctx.state.session as Session;
+  await session.regenerate();   // 新 id，数据丢弃
+  session.set('user', 'alice'); // 登录升级本身
+  await csrf.issueToken(ctx);   // 绑定到新 id 的全新 token
+  return json(ctx, { ok: true });
+});
+```

@@ -298,6 +298,53 @@ describe('createRedisSessionStore', function () {
       .should.be.true;
   });
 
+  it('regenerate() rotates the id: the fixed record dies, the fresh one carries on', async function () {
+    const time = clock();
+    const redis = fakeRedis(time);
+    const tool = createSession({
+      secret: 'sekret',
+      store: createRedisSessionStore(redis),
+      now: time.now,
+    });
+    const app = createApp();
+    use(app, tool.middleware);
+    get(app, '/seed', (ctx) => {
+      sessionOf(ctx).set('cart', ['pen']);
+      return new Response('set');
+    });
+    get(app, '/login', async (ctx) => {
+      await sessionOf(ctx).regenerate(true);
+      sessionOf(ctx).set('user', 'alice');
+      return new Response('in');
+    });
+    get(app, '/', (ctx) =>
+      Response.json({ isNew: sessionOf(ctx).isNew, user: sessionOf(ctx).get('user') })
+    );
+
+    const seeded = await request(app, '/seed');
+    const fixedCookie = cookieHeader(seeded);
+    const idA = fixedCookie.match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    (redis.entries.get(`s200:sess:${idA}`) === undefined).should.be.false;
+
+    const login = await request(app, '/login', { headers: { cookie: fixedCookie } });
+    const idB = cookieHeader(login).match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    idB.should.not.equal(idA);
+    // The fixed id's record is deleted; the fresh one carries the kept data.
+    (redis.entries.get(`s200:sess:${idA}`) === undefined).should.be.true;
+    JSON.parse(redis.entries.get(`s200:sess:${idB}`)?.value ?? 'null').should.deep.equal({
+      cart: ['pen'],
+      user: 'alice',
+    });
+
+    // Replay of the fixed id restores nothing; the new cookie continues.
+    const replay = await request(app, '/', { headers: { cookie: fixedCookie } });
+    ((await replay.json()) as { isNew: boolean }).isNew.should.equal(true);
+    const after = await request(app, '/', { headers: { cookie: cookieHeader(login) } });
+    const afterBody = (await after.json()) as { isNew: boolean; user: string };
+    afterBody.isNew.should.equal(false);
+    afterBody.user.should.equal('alice');
+  });
+
   it('treats a corrupt record as no session and mints a fresh one', async function () {
     const time = clock();
     const redis = fakeRedis(time);

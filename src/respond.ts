@@ -120,7 +120,7 @@ export type JsonResponse<T, S extends number = 200> = Response & {
  * `Uint8Array` is widened beyond lib-dom's `BodyInit` because TS 5.7 made
  * plain `Uint8Array` mean `Uint8Array<ArrayBufferLike>` while `BodyInit`
  * only accepts the `ArrayBuffer`-backed flavor — every runtime (undici,
- * Bun, Deno) accepts any ArrayBufferView at runtime, and fs readers hand
+ * Bun) accepts any ArrayBufferView at runtime, and fs readers hand
  * out Buffers.
  */
 export function send<S extends number = 200>(

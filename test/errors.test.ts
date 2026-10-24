@@ -47,6 +47,18 @@ describe('httpError', function () {
     expectTypeOf(withBody.status).toEqualTypeOf<502>();
     expectTypeOf(withBody.body).toEqualTypeOf<{ retryAfter: number } | undefined>();
   });
+
+  it('carries the given headers, and the key is absent without them', function () {
+    const e = httpError(429, 'Too Many Requests', { error: 'Too Many Requests' }, {
+      'retry-after': '30',
+      'ratelimit-limit': '60',
+    });
+    e.headers?.should.deep.equal({ 'retry-after': '30', 'ratelimit-limit': '60' });
+    // Spread, not `headers: undefined` — today's exact shape either way.
+    httpError(429).should.not.have.property('headers');
+    httpError(429, 'msg').should.not.have.property('headers');
+    httpError(429, 'msg', { error: 'msg' }).should.not.have.property('headers');
+  });
 });
 
 describe('throws', function () {
@@ -123,6 +135,26 @@ describe('toErrorResponse', function () {
         error: 'Internal Server Error',
       });
     }
+  });
+
+  it('merges the headers record onto the error response', async function () {
+    const res = toErrorResponse(
+      httpError(401, 'Unauthorized', { error: 'Unauthorized' }, {
+        'www-authenticate': 'Basic realm="s200"',
+      })
+    );
+    res.status.should.equal(401);
+    res.headers.get('www-authenticate')!.should.equal('Basic realm="s200"');
+    (await res.json()).should.deep.equal({ error: 'Unauthorized' });
+  });
+
+  it('keeps the envelope shape when headers ride an error without a body', async function () {
+    const res = toErrorResponse(
+      httpError(429, 'Too Many Requests', undefined, { 'retry-after': '7' })
+    );
+    res.status.should.equal(429);
+    res.headers.get('retry-after')!.should.equal('7');
+    (await res.json()).should.deep.equal({ error: 'Too Many Requests' });
   });
 });
 

@@ -248,6 +248,156 @@ describe('createSession', function () {
     tool.close();
   });
 
+  it('regenerate() defeats session fixation: fresh cookie id, old id dead, data reset', async function () {
+    const tool = createSession({ secret: 'sekret' });
+    const app = createApp();
+    use(app, tool.middleware);
+    get(app, '/seed', (ctx) => {
+      sessionOf(ctx).set('cart', ['pen']);
+      return new Response('set');
+    });
+    get(app, '/login', async (ctx) => {
+      const session = sessionOf(ctx);
+      await session.regenerate(); // express-session semantics: data dropped
+      session.set('user', 'alice');
+      return new Response('in');
+    });
+    get(app, '/', (ctx) =>
+      Response.json({
+        isNew: sessionOf(ctx).isNew,
+        user: sessionOf(ctx).get('user'),
+        cart: sessionOf(ctx).get('cart'),
+      })
+    );
+
+    // Pre-login: an id an attacker may have fixed onto the browser.
+    const seeded = await request(app, '/seed');
+    const fixedCookie = cookieHeader(seeded);
+    const idA = fixedCookie.match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    idA.should.not.be.empty;
+
+    const login = await request(app, '/login', { headers: { cookie: fixedCookie } });
+    const rotatedCookie = cookieHeader(login);
+    const idB = rotatedCookie.match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    idB.should.not.be.empty;
+    idB.should.not.equal(idA);
+    // The rotated cookie carries the full attributes, not a bare mint.
+    (login.headers.getSetCookie()[0] ?? '').should.contain('Max-Age=86400');
+
+    // The new id continues the authenticated session…
+    const after = await request(app, '/', { headers: { cookie: rotatedCookie } });
+    const afterBody = (await after.json()) as { isNew: boolean; user: string; cart: unknown };
+    afterBody.isNew.should.equal(false);
+    afterBody.user.should.equal('alice');
+    // …while the pre-login data did not survive the rotation.
+    (afterBody.cart === undefined).should.be.true;
+
+    // Replaying the fixed id looks exactly like no session at all.
+    const replay = await request(app, '/', { headers: { cookie: fixedCookie } });
+    const replayBody = (await replay.json()) as { isNew: boolean; user: unknown };
+    replayBody.isNew.should.equal(true);
+    (replayBody.user === undefined).should.be.true;
+    tool.close();
+  });
+
+  it('regenerate() deletes the old id at once and persists a fresh empty entry', async function () {
+    const spy = spyStore();
+    const tool = createSession({ secret: 'sekret', store: spy });
+    const app = createApp();
+    use(app, tool.middleware);
+    get(app, '/seed', (ctx) => {
+      sessionOf(ctx).set('user', 'anon');
+      return new Response('set');
+    });
+    get(app, '/login', async (ctx) => {
+      const session = sessionOf(ctx);
+      const before = session.id;
+      await session.regenerate();
+      return Response.json({ before, after: session.id });
+    });
+    get(app, '/out', async (ctx) => {
+      const session = sessionOf(ctx);
+      await session.destroy();
+      await session.regenerate(); // destroy() is terminal — discarded
+      return new Response('out');
+    });
+
+    const seeded = await request(app, '/seed');
+    const idA = cookieHeader(seeded).match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    const login = await request(app, '/login', { headers: { cookie: cookieHeader(seeded) } });
+    const idB = cookieHeader(login).match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    idB.should.not.equal(idA);
+    // The handler observed the rotation in-request — the fresh id is
+    // visible before the unwind, not only in the response cookie.
+    const loginBody = (await login.json()) as { before?: string; after?: string };
+    (loginBody.before ?? '').should.equal(idA);
+    (loginBody.after ?? '').should.equal(idB);
+    // Old id deleted eagerly (anti-replay); the new entry persisted empty.
+    spy.deletes.should.deep.equal([idA]);
+    spy.sets.should.have.lengthOf(2);
+    (spy.sets[1]?.id ?? '').should.equal(idB);
+    (spy.sets[1]?.data ?? {}).should.deep.equal({});
+
+    // The same call on a brand-new session (the login IS the first
+    // request) mints and persists — there is no old id to delete.
+    const freshLogin = await request(app, '/login');
+    const idC = cookieHeader(freshLogin).match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    idC.should.not.be.empty;
+    idC.should.not.equal(idB);
+    spy.deletes.should.deep.equal([idA]);
+    spy.sets.should.have.lengthOf(3);
+    (spy.sets[2]?.id ?? '').should.equal(idC);
+
+    // destroy() stays terminal even against a regeneration.
+    const out = await request(app, '/out', { headers: { cookie: cookieHeader(freshLogin) } });
+    out.headers
+      .getSetCookie()
+      .some((line) => /max-age=0/i.test(line))
+      .should.be.true;
+    spy.deletes.should.deep.equal([idA, idC]);
+    tool.close();
+  });
+
+  it('regenerate(true) rotates the id but keeps the existing fields', async function () {
+    const spy = spyStore();
+    const tool = createSession({ secret: 'sekret', store: spy });
+    const app = createApp();
+    use(app, tool.middleware);
+    get(app, '/seed', (ctx) => {
+      sessionOf(ctx).set('cart', ['pen']);
+      return new Response('set');
+    });
+    get(app, '/login', async (ctx) => {
+      await sessionOf(ctx).regenerate(true);
+      sessionOf(ctx).set('user', 'alice'); // the upgrade itself
+      return new Response('in');
+    });
+    get(app, '/', (ctx) =>
+      Response.json({
+        isNew: sessionOf(ctx).isNew,
+        user: sessionOf(ctx).get('user'),
+        cart: sessionOf(ctx).get('cart'),
+      })
+    );
+
+    const seeded = await request(app, '/seed');
+    const idA = cookieHeader(seeded).match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    const login = await request(app, '/login', { headers: { cookie: cookieHeader(seeded) } });
+    const idB = cookieHeader(login).match(/s200\.sid=([^;]+)/)?.[1] ?? '';
+    idB.should.not.equal(idA);
+    spy.deletes.should.deep.equal([idA]);
+    spy.sets.should.have.lengthOf(2);
+    (spy.sets[1]?.id ?? '').should.equal(idB);
+    (spy.sets[1]?.data ?? {}).should.deep.equal({ cart: ['pen'], user: 'alice' });
+
+    const after = await request(app, '/', { headers: { cookie: cookieHeader(login) } });
+    const afterBody = (await after.json()) as { isNew: boolean; user: string; cart: string[] };
+    afterBody.isNew.should.equal(false);
+    afterBody.user.should.equal('alice');
+    (afterBody.cart ?? []).should.deep.equal(['pen']);
+    tool.close();
+  });
+
   it('expires sessions past their ttl and slides the expiry on touch', async function () {
     const time = clock();
     const tool = createSession({ secret: 'sekret', cookie: { maxAge: 5 }, now: time.now });

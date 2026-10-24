@@ -157,9 +157,9 @@ function formatIssues(issues: readonly StandardIssue[]): string {
 /**
  * Validates `input` against a Standard Schema once, at construction — the
  * equivalent of NestJS's `validate(config)` bootstrap gate. This is the
- * same `~standard.validate` call `standardValidate` makes, but instead of
- * surfacing the first issue it aggregates ALL of them into one thrown
- * `Error`:
+ * same `~standard.validate` call `standardValidate` makes, but for CLI
+ * eyes it aggregates ALL issues into one thrown multi-line `Error`
+ * instead of a 422 `HttpError` body:
  *
  * ```text
  * config invalid:

@@ -23,7 +23,7 @@ describe('cloudflare createHandler', () => {
 
   it('dispatches fetch(request) through the full handle chain', async () => {
     const app = createApp();
-    // Same probe as the deno smoke: after next() resolves the response
+    // Same probe as the cloudflare smoke: after next() resolves the response
     // must already exist, so the unwind can observe and re-stamp it.
     use(app, async (ctx, next) => {
       await next();

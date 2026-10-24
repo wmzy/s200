@@ -15,7 +15,7 @@ tree-shaking、可替换。
 | 维度 | s200 | Hono | Express 5 | Fastify 5 | Koa | Elysia |
 |---|---|---|---|---|---|---|
 | 范式 | 数据 + 函数，零依赖 | 基于类，零依赖 | OOP，~30 个依赖 | 工厂模式，~20 个依赖 | 极简核心，零依赖 | 类链，TS 优先，4 个依赖 |
-| 运行时 | Node ≥ 20.3、Bun；Deno/Cloudflare/AWS Lambda/Vercel 适配器 | 一切运行时 + 适配器矩阵（v5：8 个 `@hono/*` 包） | 仅 Node | 仅 Node（v6 计划 ≥ 24） | 仅 Node | Bun 优先；Node 经 srvx+crossws（h3 同款地基），web-standard/Cloudflare 经适配器 |
+| 运行时 | Node ≥ 20.3、Bun；Cloudflare/AWS Lambda/Vercel 适配器 | 一切运行时 + 适配器矩阵（v5：8 个 `@hono/*` 包） | 仅 Node | 仅 Node（v6 计划 ≥ 24） | 仅 Node | Bun 优先；Node 经 srvx+crossws（h3 同款地基），web-standard/Cloudflare 经适配器 |
 | 中间件模型 | koa 洋葱模型，链内错误边界 | hono 洋葱模型 | connect 风格 | 钩子系统 | koa 洋葱模型 | 生命周期钩子（derive/resolve）+ 插件 |
 | 路由器 | 静态前缀 trie，每个静态段都有索引 | RegExpRouter / TrieRouter | path-to-regexp | find-my-way radix | koa-router（path-to-regexp） | 静态映射 + memoirist radix，JIT 编译的处理器 |
 | 可选参数 `:id?` | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
@@ -34,11 +34,12 @@ tree-shaking、可替换。
 | 生态规模 | 年轻 | 庞大 | 非常庞大 | 庞大 | 庞大 | 快速增长（使用量第 9，SoJS 2025） |
 
 battery 行的计数口径：包共暴露 55 个入口——根 barrel 加 54 个子路径。
-其中 6 个子路径是运行时适配器（`node`、`bun`、`deno`、`cloudflare`、
+其中 5 个子路径是运行时适配器（`node`、`bun`、`cloudflare`、
 `aws-lambda`、`vercel`），9 个是工具/元信息入口（`client`、`codegen`、
 `dev`、`meta`、`openapi`、`route-table`、`swagger`、`test`、`version`）；
-其余 39 个功能子路径在把 `websocket/node` 与 `websocket/bun` 归并进
-`websocket` 这一个 battery 之后，是 37 个各自独立的 opt-in battery。
+其余 40 个功能子路径在把 `websocket/node`、`websocket/bun` 与
+`websocket/cloudflare` 归并进 `websocket` 这一个 battery 之后，是 37 个
+各自独立的 opt-in battery。
 
 ### 一段话讲 Elysia
 
@@ -64,7 +65,7 @@ Fastify 26.7），TypeBox schema 下 16 kB（Fastify 的 JSON Schema 序列化
 依赖](https://www.npmjs.com/package/elysia)（TypeBox 以 peer 形式发布），
 Bun 之外走的是适配器而非 Hono 那套矩阵——v2 的 Node 适配器重建于
 srvx + crossws 之上（h3 脚下的同一块地基），Node 谈不上二等公民，但
-web-standard 与 Cloudflare 仍要过适配器，Deno/edge 方面无可奉告；
+web-standard 与 Cloudflare 仍要过适配器，edge 方面无可奉告；
 中间件是
 [生命周期钩子](https://elysiajs.com/essential/life-cycle)（derive/
 resolve），不是 s200 与 Koa 共享的洋葱模型。如果你的目标是 Bun，并且
@@ -141,7 +142,7 @@ resolve），不是 s200 与 Koa 共享的洋葱模型。如果你的目标是 B
   清单](https://github.com/honojs/hono/issues/5106)）：rc.0 于
   2026-10-08 发布，两天后是 rc.1；stable 尚未落地。`hono` 转为
   ESM-only——CommonJS 构建被移除——并要求 Node ≥ 22.12；运行时适配器
-  拆成八个 `@hono/*` 包（`@hono/bun`、`@hono/deno`、
+  拆成八个 `@hono/*` 包（`@hono/bun`、
   `@hono/cloudflare-workers`、`@hono/vercel`、…）；非 `Error` 的抛出
   不再逃出 `app.fetch()`——会被包进 `Error` 送进 `onError`（原值在
   `c.error.cause` 上）；通配符匹配增加路径中段的段后缀形式

@@ -1,4 +1,4 @@
-# WebSocket（`s200/websocket`、`s200/websocket/node`、`s200/websocket/bun`）
+# WebSocket（`s200/websocket`、`s200/websocket/node`、`s200/websocket/bun`、`s200/websocket/cloudflare`）
 
 `data + functions` 形状的 WebSocket 路由：`upgradeWebSocket` 在应用上记录 `pattern → handler` 路由（普通数据），运行时适配器在连接升级时查询注册表。模式使用路由的分段语法（`:param`、末端 `*rest`）；匹配严格、先注册先得，与 HTTP 路由完全一致。升级在握手完成前先运行应用的中间件链与路由的中间件 —— 见[升级上的中间件与鉴权](#升级上的中间件与鉴权)。
 
@@ -8,6 +8,7 @@
 import { upgradeWebSocket } from 's200/websocket';
 import { createUpgradeHandler } from 's200/websocket/node';   // node
 import { createBunWebSocketBridge } from 's200/websocket/bun'; // bun
+import { createCloudflareWebSocketBridge } from 's200/websocket/cloudflare'; // workers
 
 upgradeWebSocket(app, '/chat/:room', (socket, ctx) => {
   socket.onMessage((data) => socket.send(`[${ctx.params.room}] ${data}`));
@@ -15,6 +16,7 @@ upgradeWebSocket(app, '/chat/:room', (socket, ctx) => {
 
 await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });            // node
 serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
+// workers：ws.upgrade(request) ?? createHandler(app).fetch(…) —— 见下文
 ```
 
 | 函数 | 含义 |
@@ -28,17 +30,17 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 
 `WebSocketRoute`：`{ pattern, segments, middlewares, handler, protocols?, perMessageDeflate? }` —— 一条注册表项。注册表挂在应用之外（应用旁的 `WeakMap`），因此核心 `App` 形状保持纯 HTTP，WebSocket 状态在所有非 WS 消费者中被 tree-shake 掉。`WebSocketMatch`：`{ route, params }` —— `matchWebSocket` 的返回值。
 
-`WebSocketRouteOptions`：`{ protocols?: readonly string[]; perMessageDeflate?: boolean }` —— 子协议按服务端偏好序（客户端提供的第一个匹配者胜出）；permessage-deflate（RFC 7692）双向 no-context-takeover 协商（node 适配器实现；bun 桥把压缩交给 Bun 原生协商）。
+`WebSocketRouteOptions`：`{ protocols?: readonly string[]; perMessageDeflate?: boolean }` —— 子协议按服务端偏好序（客户端提供的第一个匹配者胜出）；permessage-deflate（RFC 7692）双向 no-context-takeover 协商（node 适配器实现；bun 桥把压缩交给 Bun 原生协商；Workers 不协商压缩，cloudflare 桥忽略该开关）。
 
 `WsSocket` —— 一连接的服务端，纯函数属性（无事件发射器对象、无类）：
 
 | 成员 | 含义 |
 | --- | --- |
 | `send(data)` | 文本或二进制消息；尽力背压（运行时内部排队） |
-| `bufferedAmount` | 传输层已排队、尚未发送到网络的字节数 —— 发送侧背压可见性：`send` 快于网络时增长，socket 冲刷后回落到 `0`（node：socket 的 `writableLength`；bun：Bun 的每连接计数器） |
+| `bufferedAmount` | 传输层已排队、尚未发送到网络的字节数 —— 发送侧背压可见性：`send` 快于网络时增长，socket 冲刷后回落到 `0`（node：socket 的 `writableLength`；bun：Bun 的每连接计数器；cloudflare：Workers 不暴露计数器，恒为 `0`） |
 | `close(code?, reason?)` | 启动关闭握手 |
 | `protocol` | 协商出的子协议 —— 路由声明了 protocols 且客户端提供了时 |
-| `ping(payload?)` / `onPong(cb)` | 保活原语 —— 配对检测死连接 |
+| `ping(payload?)` / `onPong(cb)` | 保活原语 —— 配对检测死连接（cloudflare：Workers 自行管理保活 —— `ping` 仅在运行时提供该 API 时转发，`onPong` 保持沉默） |
 | `onMessage(cb)` | `cb(data: WsData)` —— `string \| ArrayBuffer \| Uint8Array` |
 | `onClose(cb)` | 以协商的关闭码触发一次（无关闭帧断开为 `1006`） |
 | `onError(cb)` | 本连接的传输/处理错误 |
@@ -49,7 +51,7 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 
 ## 升级上的中间件与鉴权
 
-WebSocket 升级在握手完成之前，先运行应用的中间件链（与 HTTP 相同的那些 `use(app, …)` 中间件），再运行路由自己的中间件。中间件通过写 `ctx.res`（或返回一个 `Response`、或抛错）作答：该响应即拒绝升级，并以普通 HTTP 应答替代 `101` —— node 适配器在写出任何协议字节之前把它写回 socket，bun 桥从 fetch handler 返回它。鉴权门因此就是一个普通中间件：
+WebSocket 升级在握手完成之前，先运行应用的中间件链（与 HTTP 相同的那些 `use(app, …)` 中间件），再运行路由自己的中间件。中间件通过写 `ctx.res`（或返回一个 `Response`、或抛错）作答：该响应即拒绝升级，并以普通 HTTP 应答替代 `101` —— node 适配器在写出任何协议字节之前把它写回 socket，bun 与 cloudflare 桥从 fetch handler 返回它。鉴权门因此就是一个普通中间件：
 
 ```ts
 import { httpError, use } from 's200';
@@ -90,7 +92,7 @@ upgradeWebSocket(
 - **批准** —— 链正常结束且 `ctx.res` 仍为 `undefined` 时升级继续：socket 即响应。中间件在回卷侧看到 `res: undefined`，且所有 `ctx.state` 修改都随 handler 的 ctx 一并传递（同一个 ctx 对象 —— `resolveUpgrade` 把它交还给适配器）。既不作答也不调 `next()` 的中间件隐式批准 —— 要么调 `next()` 要么作答，没有第三条分支。
 - **handler 本身在批准之后运行**，位于链外：它抛出的错误不再经过中间件（走 `socket.onError` + 以 1011 关闭的既有行为）。
 
-`resolveUpgrade(app, route, request, url, params)` 是两个适配器共用的判定帮助函数 —— `WsUpgradeDecision` 为 `{ ok: true; ctx: Ctx }` 或 `{ ok: false; response: Response }`。它面向适配器作者；应用通过 `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` 获得相同行为。
+`resolveUpgrade(app, route, request, url, params)` 是所有适配器共用的判定帮助函数 —— `WsUpgradeDecision` 为 `{ ok: true; ctx: Ctx }` 或 `{ ok: false; response: Response }`。它面向适配器作者；应用通过 `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` / `createCloudflareWebSocketBridge` 获得相同行为。
 
 ## Node（`s200/websocket/node`）
 
@@ -123,3 +125,43 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });
 | `BunWebSocketBridge` | `{ upgrade: (req, server: BunUpgrader) => Promise<boolean \| Response>; websocket: BunWsHandlers }` —— `true` = 已升级，`Response` = 拒绝，`false` = 非 ws 路由 |
 | `BunUpgrader` | Bun 交给 fetch handler 的 `server`：`upgrade(request, options?) => boolean` |
 | `BunWs` / `BunWsHandlers` | Bun 的每连接 socket 与 `open`/`message`/`close`/`pong` 回调集，收窄到用到的成员 |
+
+## Cloudflare（`s200/websocket/cloudflare`）{#cloudflare-s200-websocket-cloudflare}
+
+Workers 侧的对应物：module worker 的 `fetch` 返回 `Response`，因此该桥与 [`s200/cloudflare`](/zh/api/edge) 的 `createHandler` 组合 —— `ws.upgrade(request)` 应答 WebSocket 握手，`undefined` 落回 HTTP fetch。协议由 workerd 实现；本模块只做升级路由（`new WebSocketPair()` + `status: 101` + `init.webSocket` 惯用法）并把 pair 的服务端映射到 `WsSocket` 面，含子协议协商（服务端偏好序，与 node 适配器镜像；协商结果同时挂在 101 响应的 `sec-websocket-protocol` 头上，让运行时完成握手）。
+
+```ts
+import { createHandler } from 's200/cloudflare';
+import { createCloudflareWebSocketBridge } from 's200/websocket/cloudflare';
+
+const ws = createCloudflareWebSocketBridge(app);
+const worker = createHandler(app);
+
+export default {
+  fetch: (request, env, ctx) =>
+    ws.upgrade(request).then((res) => res ?? worker.fetch(request, env, ctx)),
+};
+```
+
+`upgrade(request)` 的应答：携带 pair 客户端的 `101` `Response`（直接从 `fetch` 返回即可）；中间件拒绝握手时的拒绝 `Response`（普通 HTTP）；请求未携带 `Upgrade: websocket` 头或未命中 ws 路由时返回 `undefined`（交给 HTTP 链）。在没有 `WebSocketPair` 的宿主上（非 workerd 运行时导入该桥）应答 `501` 而不是崩溃。
+
+| 函数 / 类型 | 含义 |
+| --- | --- |
+| `createCloudflareWebSocketBridge(app)` | `{ upgrade }` —— worker `fetch` 的 ws 一半；handler 与 ctx 传递与其他桥一致 |
+| `CloudflareWebSocketBridge` | `{ upgrade: (request: Request) => Promise<Response \| undefined> }` —— `Response` 即应答，`undefined` 落回 HTTP |
+| `CloudflareWebSocket` / `CloudflareWebSocketPair` | Workers `WebSocketPair` 的一端 / `{ 0: client, 1: server }` pair 值，收窄到用到的成员 |
+
+Workers 特有说明：运行时自动回应关闭帧（2026-04-07 起的 compatibility date —— 更早的日期需在 handler 里自行回应，即 `onClose` 中调 `socket.close()`）；`socket.bufferedAmount` 恒为 `0`（workerd 不暴露计数器）；`socket.ping()` 为 no-op、`onPong` 永不触发（workerd 自行管理保活 —— 若未来运行时提供该 API，桥会直接转发）；`perMessageDeflate` 被忽略（Workers 不协商压缩）。
+
+### 三桥对照
+
+| | node（`websocket/node`） | bun（`websocket/bun`） | cloudflare（`websocket/cloudflare`） |
+| --- | --- | --- | --- |
+| 接入方式 | `serve(app, { upgrade })` | `serve(app, { websocket })` | `ws.upgrade(request) ?? worker.fetch(…)` |
+| 协议实现 | s200 零依赖 RFC 6455 服务器 | Bun 原生 ws | workerd 原生 ws |
+| 子协议 | 服务端偏好序 | 同左 | 同左（+ 101 响应头） |
+| `perMessageDeflate` | 实现（opt-in） | Bun 协商 | 忽略 |
+| `bufferedAmount` | socket `writableLength` | Bun 计数器 | `0`（不暴露） |
+| `ping` / `onPong` | 帧 | 帧 | no-op / 沉默（运行时托管） |
+| 拒绝应答 | 握手前写回 socket | 从 fetch 返回 | 从 fetch 返回 |
+| 未知 ws 路径 | 销毁 socket | 落回 HTTP | 落回 HTTP |

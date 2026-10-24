@@ -6,8 +6,9 @@
  * It also speaks the vendor-neutral Standard Schema shape
  * (`https://standardschema.dev`): anything carrying a `~standard` prop
  * slots straight into {@link jsonBody} (and into `queryParams` from
- * `s200/query`) — reported issues map to a single 422 `HttpError`
- * carrying the first issue's message.
+ * `s200/query`) — reported issues map to a single 422 `HttpError` whose
+ * body carries every issue with its path (`error` keeps the first
+ * message).
  *
  * @module
  */
@@ -15,7 +16,7 @@
 import type { Ctx, Middleware } from './types';
 
 import { readJson } from './body';
-import { httpError } from './errors';
+import { httpError, type HttpError } from './errors';
 
 export type ValidateOptions = {
   /** `ctx.state` slot for the parsed value; default `'validated'`. */
@@ -85,17 +86,88 @@ export function isStandardSchema(value: unknown): value is StandardSchema {
   return typeof value === 'object' && value !== null && '~standard' in value;
 }
 
+/** One issue as a 422 rejection body carries it: `path` is the key walk
+ * from the validated root — object keys dotted, array indices bracketed
+ * (`'a.b[0]'`), `''` when the issue carries no path — and `message` is
+ * the vendor's own reason. */
+export type ReportedIssue = {
+  readonly path: string;
+  readonly message: string;
+};
+
+/** `['a', 'b', 0]` → `'a.b[0]'`: object keys join with dots, numeric
+ * indices bracket themselves; a missing or empty path formats as `''`
+ * (the issue sits at the validated root). */
+export function formatIssuePath(path: readonly PropertyKey[] | undefined): string {
+  if (path === undefined) return '';
+  let out = '';
+  for (const key of path) {
+    if (typeof key === 'number') {
+      out += `[${String(key)}]`;
+    } else {
+      out += out === '' ? String(key) : `.${String(key)}`;
+    }
+  }
+  return out;
+}
+
+/**
+ * The 422 every framework validation gate throws — one shape from one
+ * place, shared with `withRouteValidation` in `s200/openapi`. The body
+ * keeps the `error` compat key — the first issue's one-line summary,
+ * scope-qualified (`'body.items.2.name: expected string, got number'`)
+ * when `scope` names the request location, the raw first message
+ * otherwise — and adds `issues`, the full list, each entry's `path`
+ * qualified the same way. Raw issues arrive in either dialect the
+ * framework speaks: Standard Schema (`path` an optional key array,
+ * formatted by {@link formatIssuePath}) or the serialize validator's
+ * pre-joined strings. Callers arrive only with a non-empty list; the
+ * first-issue fallback keeps the helper total under
+ * `noUncheckedIndexedAccess`.
+ */
+export function validationError(
+  scope: string | undefined,
+  issues: readonly {
+    readonly path?: readonly PropertyKey[] | string;
+    readonly message: string;
+  }[]
+): HttpError & {
+  readonly body: { readonly error: string; readonly issues: readonly ReportedIssue[] };
+} {
+  const qualify = (path: string): string =>
+    scope === undefined ? path : path === '' ? scope : `${scope}.${path}`;
+  const reported: ReportedIssue[] = issues.map((issue) => ({
+    path: qualify(typeof issue.path === 'string' ? issue.path : formatIssuePath(issue.path)),
+    message: issue.message,
+  }));
+  const first = reported[0];
+  const summary =
+    first === undefined
+      ? ''
+      : scope === undefined
+        ? first.message
+        : `${first.path}: ${first.message}`;
+  // The cast is honest erasure: `httpError` brands `body` optional (the key
+  // is absent when callers pass none), but this call always passes one, so
+  // the returned error's `body` is the envelope below — required, not `?`.
+  return httpError(422, summary, { error: summary, issues: reported }) as ReturnType<
+    typeof validationError
+  >;
+}
+
 /**
  * Generic Standard Schema adapter, exported for other batteries (header
  * gates, form gates, …) that want the same semantics: returns the parsed
- * value, or throws a 422 `HttpError` carrying the first issue's message
- * when the schema reports any issue. An empty `issues` array passes.
+ * value, or throws a 422 `HttpError` when the schema reports any issue —
+ * `error` keeps the first issue's message while the body's `issues`
+ * array carries every issue with its formatted path ({@link
+ * validationError}). An empty `issues` array passes.
  */
 export function standardValidate(schema: StandardSchema, data: unknown): unknown {
   const result = schema['~standard'].validate(data);
-  const issue = result.issues?.[0];
-  if (issue !== undefined) {
-    throw httpError(422, issue.message);
+  const issues = result.issues;
+  if (issues !== undefined && issues.length > 0) {
+    throw validationError(undefined, issues);
   }
   return result.value;
 }
@@ -123,7 +195,8 @@ export function validate(
  *
  * - a Standard Schema (anything with a `~standard` prop, detected with
  *   `isStandardSchema`) — {@link standardValidate} runs it, mapping
- *   issues to a 422 `HttpError` with the first message; the value the
+ *   issues to a 422 `HttpError` (`error` keeps the first message, the
+ *   body's `issues` array carries the full list with paths); the value the
  *   handler reads from `ctx.state[key]` is the schema's parsed OUTPUT,
  *   while the gate's `_in` brand carries the schema's INPUT — what a
  *   caller must send;

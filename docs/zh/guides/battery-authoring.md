@@ -13,24 +13,26 @@ battery 是 s200 复用中间件的基本单元：一个位于独立包入口（
 
 ## 两种形态
 
-### 闸门：就地作答，绝不向下执行
+### 闸门：拒绝走错误边界，绝不向下执行
 
-闸门在它下方的链之前执行请求侧工作。拒绝是结构性的——写一个响应（或抛出），并且**不调用 `next()`**：处理器及其后的所有中间件都不会执行。两种拒绝风格，树中都有实例：
+闸门在它下方的链之前执行请求侧工作。拒绝是结构性的——抛出（或写一个响应），并且**不调用 `next()`**：处理器及其后的所有中间件都不会执行。两种拒绝风格，树中都有实例：
 
 ```ts
-// 风格 1 —— 抛出 HttpError；链内错误边界会把它渲染成
-// 401 响应，附带默认的 { "error": message } JSON 信封。
-throw httpError(401, 'invalid api key');
-
-// 风格 2 —— 就地写出拒绝（s200/auth 的做法，这样可以
-// 携带 WWW-Authenticate 挑战），然后不调用 next() 直接返回。
-json(ctx, { error: 'Unauthorized' }, {
-  status: 401,
-  headers: { 'www-authenticate': challenge },
+// 风格 1 —— 抛出 HttpError；链内错误边界会渲染它（含 onError），
+// 得到 401 响应与默认的 { "error": message } JSON 信封 —— 而且
+// `headers` 记录会随响应携带，质询头也能一并送达（s200/auth 对
+// WWW-Authenticate 的做法）。
+throw httpError(401, 'invalid api key', undefined, {
+  'www-authenticate': 'Basic realm="api"',
 });
+
+// 风格 2 —— 就地写出拒绝，然后不调用 next() 直接返回。线上应答
+// 相同，但它绕过 onError 与错误边界 —— 留给不是错误的短路（CORS
+// 预检 204、缓存重新验证）。
+json(ctx, { error: 'Unauthorized' }, { status: 401 });
 ```
 
-树中的闸门：`basicAuth` / `bearerAuth`（401）、`jwtAuth`（401）、`rateLimit`（429 + `Retry-After`）、`csrf`（403）、`jsonBody` / `queryParams`（400 JSON 格式错误，422 schema 问题）、`timeout`（503）。
+树中的闸门：`basicAuth` / `bearerAuth`（401 + 质询）、`jwtAuth`（401）、`rateLimit`（429 + `Retry-After` + IETF `RateLimit-*`）、`csrf`（403）、`jsonBody` / `queryParams`（400 JSON 格式错误，422 schema 问题）、`timeout`（503）。它们全部走抛出——每次拒绝都进错误边界，`onError` 拥有策略。
 
 接受则是镜像操作：完成工作（解析、验证、计数），把任何请求作用域的结果存到 `ctx.state`，然后 `return next()`。
 
@@ -114,6 +116,21 @@ export function jsonBody<T>(
   options?: ValidateOptions
 ): Middleware & { readonly _in?: { readonly json: T } };
 ```
+
+**state 侧，`_state`。** 在 `ctx.state` 上存放文档化槽位的 battery 可以用 `withState`（核心 barrel）声明槽位类型，`use` 会把它贯穿进应用的 `S` —— handler 类型化地读到槽位，无需 cast：
+
+```ts
+import { withState } from 's200';
+
+export const myBattery = (options?: …) =>
+  withState<{ mySlot: MyShape }>(async (ctx, next) => {
+    ctx.state.mySlot = compute(ctx);
+    await next();
+  });
+// use(app, myBattery()) → App<State & { mySlot: MyShape }, R>
+```
+
+这是一个*服务端*品牌——它为你的应用的中间件与 handler 类型化 `ctx.state`，而非客户端（上面 `_in`/`_out` 通道才负责客户端）。它也让 battery 保持随处可插：未打品牌的消费方只是看到宽松的 `State` 视图。
 
 **流转方式。** 路由注册器把每条路由串进由应用自身类型携带的幻影日志——`get` / `post` / … 每条路由追加一个条目：
 

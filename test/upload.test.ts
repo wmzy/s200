@@ -3,7 +3,7 @@ import type { UploadFile, UploadOptions } from '../src/upload';
 import { describe, it } from 'vitest';
 
 import { createApp, handle, post } from '../src/app';
-import { uploadForm } from '../src/upload';
+import { uploadForm, safeFilename } from '../src/upload';
 
 const BOUNDARY = 's200uploadboundary';
 const CONTENT_TYPE = `multipart/form-data; boundary=${BOUNDARY}`;
@@ -388,5 +388,54 @@ describe('uploadForm', () => {
     outcome.landed.length.should.equal(1);
     (outcome.result === null).should.equal(true);
     cancelled.should.equal(true);
+  });
+});
+
+describe('safeFilename', () => {
+  it('collapses traversal to the basename across both separators', () => {
+    safeFilename('../../etc/passwd').should.equal('passwd');
+    safeFilename('/etc/shadow').should.equal('shadow');
+    safeFilename('..\\..\\win.ini').should.equal('win.ini');
+    safeFilename('C:\\Users\\me\\report.pdf').should.equal('report.pdf');
+    safeFilename('uploads/nested/photo.png').should.equal('photo.png');
+  });
+
+  it('strips NUL and control characters wherever they sit', () => {
+    safeFilename('pas\u0000sword').should.equal('password');
+    safeFilename('re\u0007port\tv2\n.txt').should.equal('reportv2.txt');
+    // Nothing but control characters: the fallback name.
+    safeFilename('\u0000\u001f\u007f\u009f').should.equal('upload');
+  });
+
+  it('returns the deterministic fallback when nothing survives', () => {
+    safeFilename('../..').should.equal('upload');
+    safeFilename('..').should.equal('upload');
+    safeFilename('///').should.equal('upload');
+    safeFilename('..\\\\..\\\\').should.equal('upload');
+    safeFilename('. .').should.equal('upload');
+    safeFilename('').should.equal('upload');
+  });
+
+  it('trims edge dots and spaces: win32 aliases and dotfiles never land', () => {
+    safeFilename('report.').should.equal('report');
+    safeFilename('report. ').should.equal('report');
+    safeFilename('notes.pdf ').should.equal('notes.pdf');
+    safeFilename('.env').should.equal('env');
+    safeFilename('.htaccess').should.equal('htaccess');
+  });
+
+  it('passes a normal filename through unchanged, unicode included', () => {
+    safeFilename('照片 2024 (副本).png').should.equal('照片 2024 (副本).png');
+    safeFilename('résumé_final-v2.pdf').should.equal('résumé_final-v2.pdf');
+    safeFilename('a file..name.txt').should.equal('a file..name.txt');
+  });
+
+  it('round-trips through a real upload: the sink path stays inside the directory', async () => {
+    const outcome = await runUpload(
+      bodyOf(filePart('avatar', '../../etc/passwd', 'text/plain', text('root:x:0:0'))),
+      (file) => `/var/uploads/${safeFilename(file.filename)}`
+    );
+    (outcome.error === null).should.equal(true);
+    (outcome.result!.files[0]!.id ?? '').should.equal('/var/uploads/passwd');
   });
 });

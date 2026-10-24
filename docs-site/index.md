@@ -30,7 +30,7 @@ features:
     details: cors, logger, compress, websocket, jwt and friends live in separate entries — importing one pulls only it, the core stays lean.
   - icon: 🌍
     title: Multi-runtime
-    details: node · bun · deno · edge. Adapters for s200/node, s200/bun, s200/deno and s200/cloudflare; the core consumes Web Standard Request/Response directly.
+    details: node · bun · edge. Adapters for s200/node, s200/bun and s200/cloudflare; the core consumes Web Standard Request/Response directly.
   - icon: 🛡️
     title: Typed client from the route table
     details: "createClient(app) derives a type-safe fetch client from the app's own route table — paths restricted to registered pattern literals, params typed from them, bodies typed from schema inputs, declared error branches unioned into json() and status."

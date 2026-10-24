@@ -1,5 +1,7 @@
 # ws-chat — WebSocket rooms
 
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/fork/github/wmzy/s200/tree/main/examples/ws-chat)
+
 Multi-room chat over s200's zero-dependency RFC 6455 server. Demonstrates
 the **`s200/websocket`** battery: `upgradeWebSocket` registering
 `/chat/:room`, and the node adapter's `createUpgradeHandler` wired into

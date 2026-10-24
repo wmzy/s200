@@ -5,8 +5,10 @@
  *
  * The middleware restores or mints on the way in and settles up on the
  * unwind: mutated or `touch()`ed sessions persist and (re)issue their
- * cookie, destroyed ones are deleted and expired, and a request that
- * only reads leaves no trace — no store write, no `Set-Cookie`.
+ * cookie, destroyed ones are deleted and expired, `regenerate()`d ones
+ * re-key under a fresh id with the old one deleted on the spot, and a
+ * request that only reads leaves no trace — no store write, no
+ * `Set-Cookie`.
  *
  * Cookie signing is imported from `./cookies` (HMAC-SHA256 plus a
  * `name.sig` partner cookie) instead of being reimplemented: one signing
@@ -43,7 +45,10 @@ export type SessionStore = {
  * not whether the unwind is about to mint an id.
  */
 export type Session = {
-  /** The restored session's id; `undefined` until the unwind mints one. */
+  /**
+   * The restored session's id; `undefined` until the unwind — or a
+   * `regenerate()` — mints one.
+   */
   readonly id?: string;
   /** True when no valid cookie/store hit restored data this request. */
   readonly isNew: boolean;
@@ -54,8 +59,20 @@ export type Session = {
   delete(key: string): void;
   /** Drops every key; the session persists on the unwind. */
   clear(): void;
-  /** Renews the expiry of an existing session — a no-op on a new one. */
+  /**
+   * Renews the expiry of an existing session — a no-op on a new one.
+   */
   touch(): void;
+  /**
+   * Rotates the session id — the session-fixation defense to call at
+   * login or any privilege change. The old id is deleted from the store
+   * immediately (a stolen cookie dies even if the response never
+   * lands); a fresh id is minted and the unwind persists the data under
+   * it and (re)issues the cookie. By default the data is dropped
+   * (express-session semantics); `regenerate(true)` keeps it. `isNew`
+   * keeps its stable for-the-request value. A no-op after `destroy()`.
+   */
+  regenerate(keepData?: boolean): Promise<void>;
   /**
    * Deletes the session from the store; the unwind expires the cookie.
    * Terminal: mutations after `destroy()` are discarded.
@@ -145,8 +162,8 @@ function memoryStore(now: () => number): SessionStore & { close(): void } {
             if (entry.expiresAt <= t) entries.delete(staleId);
           }
         }, SWEEP_MS);
-        // Node keeps the event loop alive for a live interval; Deno hands
-        // back a plain number. The optional call covers both.
+        // Node keeps the event loop alive for a live interval; edge
+        // runtimes hand back a plain number. The optional call covers both.
         (sweeper as { unref?: () => void }).unref?.();
       }
     },
@@ -251,6 +268,30 @@ export function createSession(options: SessionOptions): {
       touch: () => {
         if (id !== undefined) renewed = true;
       },
+      regenerate: async (keepData = false) => {
+        // destroy() is terminal — a destroyed session has no id left to
+        // rotate; like every post-destroy mutation, this is discarded.
+        if (destroyed) return;
+        // Anti-replay first: the old id dies in the store now, not at
+        // the unwind — a stolen cookie is worthless even if this
+        // response never lands.
+        if (id !== undefined && !deleted) {
+          deleted = true;
+          await store.delete(id);
+        }
+        // Copy on rotate (the restore contract): post-regeneration
+        // mutations rewrite the bag, never alias the old one's store
+        // entry.
+        data = keepData ? { ...data } : {};
+        const fresh = crypto.randomUUID();
+        id = fresh;
+        deleted = false; // the new id's entry is only written at the unwind
+        // The same mint pattern the unwind uses for a new session: the
+        // readonly `id` has exactly two writers, and a handler reading
+        // it after `regenerate()` sees the fresh id.
+        (session as { id?: string }).id = fresh;
+        dirty = true;
+      },
       destroy: async () => {
         destroyed = true;
         if (id !== undefined && !deleted) {
@@ -282,8 +323,9 @@ export function createSession(options: SessionOptions): {
       const sid = id ?? crypto.randomUUID();
       if (id === undefined) {
         id = sid;
-        // `id` is readonly to readers; the unwind's mint is its single
-        // writer — every handler has already observed the session.
+        // `id` is readonly to readers; its writers are this unwind mint
+        // and `regenerate()` — every handler has already observed the
+        // session.
         (session as { id?: string }).id = sid;
       }
       await store.set(sid, data, maxAge);

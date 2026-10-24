@@ -40,6 +40,11 @@ function defaultLogError(error: unknown, ctx: Ctx): void {
  * becomes an anonymous 500. Shared by the in-chain boundary (route/fallback
  * errors), the outer catch (middleware errors), and the WebSocket upgrade
  * decision (`s200/websocket` maps chain errors identically).
+ *
+ * A thrown `HttpError`'s `headers` record (a gate's `WWW-Authenticate`
+ * challenge, `Retry-After`, `RateLimit-*`) rides the default mapping via
+ * `toErrorResponse`; deferred `setHeader` values then drain on top, so a
+ * middleware's pending header still wins the collision.
  */
 export async function mapError<S extends State = State>(
   app: App<S>,

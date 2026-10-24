@@ -13,24 +13,27 @@ Four rules every battery follows, built-in or yours:
 
 ## The two shapes
 
-### Gates: answer in place, never descend
+### Gates: reject into the error boundary, never descend
 
-A gate runs request-side work ahead of the chain below it. Rejection is structural — write a response (or throw) and **don't call `next()`**: the handler and every later middleware never run. Two rejection styles, both in the tree:
+A gate runs request-side work ahead of the chain below it. Rejection is structural — throw (or write a response) and **don't call `next()`**: the handler and every later middleware never run. Two rejection styles, both in the tree:
 
 ```ts
 // Style 1 — throw an HttpError; the in-chain error boundary renders it
-// as a 401 response with the default { "error": message } JSON envelope.
-throw httpError(401, 'invalid api key');
-
-// Style 2 — write the rejection in place (what s200/auth does, so it can
-// carry the WWW-Authenticate challenge), then return without next().
-json(ctx, { error: 'Unauthorized' }, {
-  status: 401,
-  headers: { 'www-authenticate': challenge },
+// (onError included) as a 401 with the default { "error": message }
+// envelope — and a `headers` record rides the response, so a challenge
+// header travels too (what s200/auth does for WWW-Authenticate).
+throw httpError(401, 'invalid api key', undefined, {
+  'www-authenticate': 'Basic realm="api"',
 });
+
+// Style 2 — write the rejection in place, then return without next().
+// Same wire answer, but it bypasses onError and the error boundary —
+// reserve it for short-circuits that are not errors (CORS preflight
+// 204s, cached revalidations).
+json(ctx, { error: 'Unauthorized' }, { status: 401 });
 ```
 
-Gates in the tree: `basicAuth` / `bearerAuth` (401), `jwtAuth` (401), `rateLimit` (429 + `Retry-After`), `csrf` (403), `jsonBody` / `queryParams` (400 bad JSON, 422 schema issues), `timeout` (503).
+Gates in the tree: `basicAuth` / `bearerAuth` (401 + challenge), `jwtAuth` (401), `rateLimit` (429 + `Retry-After` + IETF `RateLimit-*`), `csrf` (403), `jsonBody` / `queryParams` (400 bad JSON, 422 schema issues), `timeout` (503). All of them throw — every rejection takes the error boundary, so `onError` owns the policy.
 
 Acceptance is the mirror image: do the work (parse, verify, count), store any request-scoped result on `ctx.state`, then `return next()`.
 
@@ -114,6 +117,21 @@ export function jsonBody<T>(
   options?: ValidateOptions
 ): Middleware & { readonly _in?: { readonly json: T } };
 ```
+
+**The state side, `_state`.** A battery that stores a documented slot on `ctx.state` can advertise the slot's type with `withState` (core barrel), and `use` threads it into the app's `S` — handlers read the slot typed instead of casting:
+
+```ts
+import { withState } from 's200';
+
+export const myBattery = (options?: …) =>
+  withState<{ mySlot: MyShape }>(async (ctx, next) => {
+    ctx.state.mySlot = compute(ctx);
+    await next();
+  });
+// use(app, myBattery()) → App<State & { mySlot: MyShape }, R>
+```
+
+This is a *server-side* brand — it types `ctx.state` for your app's middlewares and handlers, not the client (the `_in`/`_out` channels above do that). It keeps the battery pluggable anywhere: unbranded consumers simply see the loose `State` view.
 
 **The flow.** Route registrars thread every route into a phantom log carried by the app's own type — `get` / `post` / … append one entry per route:
 

@@ -24,7 +24,13 @@ import type { App } from './app';
 import type { Route } from './types';
 
 import { handle } from './app';
-import { getAppMeta, getRouteMeta, type RouteMeta } from './meta';
+import {
+  getAppMeta,
+  getRouteMeta,
+  isQueryRequired,
+  querySchemaOf,
+  type RouteMeta,
+} from './meta';
 import { toJsonSchema, type SerializeSchema } from './serialize';
 
 /**
@@ -123,17 +129,19 @@ function descriptionOf(meta: RouteMeta | undefined, route: Route): { description
  *
  * 1. path params — `{ type: 'string' }`, required unless `:param?`;
  *    wildcards are always required.
- * 2. query params from the annotation — optional (a query param is
- *    never required at the HTTP layer, and `RouteMeta` declares no
- *    per-query required flag).
+ * 2. query params from the annotation — optional unless the entry uses
+ *    the marker form (`{ schema, required: true }`): the same flag
+ *    `openapiSpec` emits as `parameters[].required` and
+ *    `withRouteValidation` enforces with a 422, listed here under
+ *    `required` so tool callers send it.
  * 3. the body annotation — an object schema flattens its `properties`
  *    and `required` into the top level; any other shape nests under a
  *    required `body` key.
  *
  * `required` is deduplicated in first-seen order (path params before
- * body names): a name declared by both — `PUT /users/:id` whose body
- * also requires `id` — appears once, since JSON Schema requires
- * `required` entries to be unique.
+ * query names before body names): a name declared by both — `PUT
+ * /users/:id` whose body also requires `id` — appears once, since JSON
+ * Schema requires `required` entries to be unique.
  */
 function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['inputSchema'] {
   const properties: Record<string, JsonSchema> = {};
@@ -148,8 +156,9 @@ function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['in
     if (segment._tag === 'wildcard' || !segment.optional) required.add(segment.name);
   }
   if (meta?.query !== undefined) {
-    for (const [name, schema] of Object.entries(meta.query)) {
-      properties[name] = toJsonSchema(schema);
+    for (const [name, entry] of Object.entries(meta.query)) {
+      properties[name] = toJsonSchema(querySchemaOf(entry));
+      if (isQueryRequired(entry)) required.add(name);
     }
   }
   const body = meta?.body;

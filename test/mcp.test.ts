@@ -102,6 +102,27 @@ describe('toolManifest', () => {
     // required path parameter and a required body property.
     (replace?.inputSchema.required ?? []).should.deep.equal(['id', 'name']);
   });
+
+  it('lists a required query entry under required; bare entries stay optional', () => {
+    const app = createApp();
+    get(app, '/report', (ctx) => json(ctx, { ok: true }));
+    describeRoute(app, 'GET', '/report', {
+      summary: 'Report',
+      query: {
+        format: { schema: { type: 'string' }, required: true },
+        verbose: { type: 'boolean' },
+      },
+    });
+    const { tools } = toolManifest(app);
+    const report = tools.find((tool) => tool.name === 'get_report');
+
+    report?.inputSchema.properties.should.deep.equal({
+      format: { type: 'string' },
+      verbose: { type: 'boolean' },
+    });
+    // The same flag `openapiSpec` emits and `withRouteValidation` gates.
+    (report?.inputSchema.required ?? []).should.deep.equal(['format']);
+  });
 });
 
 describe('createMcpHandler (JSON-RPC surface)', () => {

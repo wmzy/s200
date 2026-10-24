@@ -33,10 +33,10 @@ await streamForm(ctx, (part) => {
 
 ## 上传
 
-`s200/upload` 的 `uploadForm(ctx, sink, options)` 是 `streamForm` 之上的落地助手：字段收集进 `fields`（parseQuery 语义 —— 单值 `string`，重复 `string[]`），文件部分通过 `accept`（前缀列表或回调；未命中回答 `415`）、`maxFiles`/`maxFileSize`（`413`，指明触发的约束）后到达你注入的 `sink` —— 零依赖，磁盘只是一行 `node:fs/promises` `writeFile` 之遥（见其 JSDoc）。`sink` 的返回字符串成为结果中文件的 `id`；抛出的 `sink` 将整个上传中止到错误边界。文件部分逐部分缓冲 —— 大文件请直接用 `streamForm`：
+`s200/upload` 的 `uploadForm(ctx, sink, options)` 是 `streamForm` 之上的落地助手：字段收集进 `fields`（parseQuery 语义 —— 单值 `string`，重复 `string[]`），文件部分通过 `accept`（前缀列表或回调；未命中回答 `415`）、`maxFiles`/`maxFileSize`（`413`，指明触发的约束）后到达你注入的 `sink` —— 零依赖，磁盘只是一行 `node:fs/promises` `writeFile` 之遥（见其 JSDoc）。`sink` 的返回字符串成为结果中文件的 `id`；抛出的 `sink` 将整个上传中止到错误边界。`file.filename` 是原始客户端输入 —— 拼进路径前先过 `uploadForm` 的 `safeFilename`（它折叠路径分隔符、`..` 片段与控制字符：`../../etc/passwd` 落地为 `passwd`）。文件部分逐部分缓冲 —— 大文件请直接用 `streamForm`：
 
 ```ts
 const { files, fields } = await uploadForm(ctx,
-  async (file) => (await writeFile(join(dir, file.filename ?? file.name), file.data), file.filename),
+  async (file) => (await writeFile(join(dir, safeFilename(file.filename)), file.data), file.filename),
   { limit: 10 * 1024 * 1024, maxFileSize: 5 * 1024 * 1024, accept: ['image/'] });
 ```

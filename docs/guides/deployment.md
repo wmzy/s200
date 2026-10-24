@@ -140,33 +140,23 @@ import { createHandler } from 's200/cloudflare';
 export default createHandler(app);
 ```
 
-Vercel/Netlify-style runtimes that want a `fetch` export are the contract written out by hand:
+Vercel — `s200/vercel` builds the platform's entry from the same app: `createVercelHandler(app)` is `handle` under the Web Standard `fetch` export, for both the Edge Runtime and Node.js (Fluid Compute included):
 
 ```ts
-import { createApp, handle } from 's200';
-
-const app = createApp();
-export default { fetch: (request) => handle(app, request) };
+// api/index.ts
+import { createVercelHandler } from 's200/vercel';
+export default createVercelHandler(app);
 ```
 
-AWS Lambda has no adapter shipped — the honest gap. The bridge is a dozen lines: wrap the API Gateway HTTP event into a `Request` and hand it to `handle`; mind base64-encoded bodies:
+AWS Lambda — `s200/aws-lambda` translates the API Gateway HTTP event both ways (payload format v2 only): `cookies` are joined into the request's `Cookie` header and a base64-flagged `body` is decoded on the way in; on the way out, each `Set-Cookie` becomes its own `cookies` array entry, textual bodies go back as strings, and everything else returns base64-encoded:
 
 ```ts
-export async function handler(event) {
-  const request = new Request(
-    `https://${event.requestContext.domainName}${event.rawPath}?${event.rawQueryString}`,
-    {
-      method: event.requestContext.http.method,
-      headers: event.headers,
-      body: event.isBase64Encoded
-        ? atob(event.body)          // binary payloads arrive base64-encoded
-        : event.body,
-    },
-  );
-  const response = await handle(app, request);
-  return { statusCode: response.status, body: await response.text() };
-}
+// src/lambda.ts
+import { createLambdaHandler } from 's200/aws-lambda';
+export const handler = createLambdaHandler(app);
 ```
+
+Point the function at `<file>.handler` — a function URL or an HTTP API Lambda proxy integration both work. The full event/result mapping is on the [serverless adapters](/api/serverless) page. Any runtime without a shipped adapter still speaks the plain `handle(app, request)` contract above — wire it into whatever entry shape the platform wants.
 
 ## Bun
 

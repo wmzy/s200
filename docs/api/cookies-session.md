@@ -41,7 +41,7 @@ Cookie names live in the RFC 6265 token alphabet (stricter than values); values 
 
 `createSession({ secret, store? })` returns a middleware (plus `close()` for the default store's sweep timer). The client only ever holds an opaque signed id (HMAC via the cookies battery — one signing convention framework-wide); data lives server-side in the pluggable `store`. Tampered, missing, or expired ids all look identical: a fresh empty session, never an error.
 
-Mutations (`set`/`delete`/`clear`/`touch`) persist and (re)issue the cookie on the unwind; `destroy()` deletes from the store and expires the cookie; read-only requests write nothing — no store write, no `Set-Cookie`.
+Mutations (`set`/`delete`/`clear`/`touch`) persist and (re)issue the cookie on the unwind; `destroy()` deletes from the store and expires the cookie; `regenerate()` rotates to a fresh id with the old one deleted on the spot; read-only requests write nothing — no store write, no `Set-Cookie`.
 
 ```ts
 const { middleware, close } = createSession({ secret: SECRET, cookie: { maxAge: 3600 } });
@@ -75,6 +75,26 @@ get(app, '/', (ctx) => {
 | `isNew` | Stable for the request — true when no valid cookie + store hit restored data |
 | `get(key)` / `set(key, value)` / `delete(key)` / `clear()` | Data access; mutations persist on the unwind |
 | `touch()` | Renews the expiry of an existing session (no-op on a new one) |
+| `regenerate(keepData?)` | Session-fixation defense at login/privilege change: rotates to a fresh id (old id deleted from the store immediately — a stolen cookie dies even if the response never lands) and the unwind persists + (re)issues the cookie under the new one. Default drops the data (express-session semantics); `regenerate(true)` keeps it. `isNew` keeps its stable value; no-op after `destroy()` |
 | `destroy()` | Deletes from the store; the unwind expires the cookie. Terminal — mutations after `destroy()` are discarded |
 
 `SessionData`: `Record<string, unknown>` — plain JSON-shaped records, opaque to the store.
+
+### Login rotation
+
+`regenerate()` is the session-fixation defense: an id an attacker fixed onto the browser before login dies in the store the moment login rotates it. Pairs naturally with the CSRF battery's `bind` — folding the session id into the token's HMAC retires tokens minted for the old id:
+
+```ts
+const csrf = createCsrf({
+  secret: SECRET,
+  bind: (ctx) => (ctx.state.session as Session).id ?? '',
+});
+
+post(app, '/login', async (ctx) => {
+  const session = ctx.state.session as Session;
+  await session.regenerate();   // fresh id, data dropped
+  session.set('user', 'alice'); // the upgrade itself
+  await csrf.issueToken(ctx);   // fresh token bound to the new id
+  return json(ctx, { ok: true });
+});
+```

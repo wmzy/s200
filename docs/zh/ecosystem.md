@@ -32,7 +32,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | `s200/rate-limit`     | `rateLimit` —— 滑动窗口限流器，存储可注入                      |
 | `s200/trust-proxy`    | `trustProxy` —— 代理之后如实还原客户端 IP                      |
 | `s200/version`        | `apiVersion` —— header/Accept API 版本门，`ctx.state.version`  |
-| `s200/als`            | `als`、`currentCtx` —— 经 `node:async_hooks` 的环境 `ctx`（node/bun/deno；非 edge） |
+| `s200/als`            | `als`、`currentCtx` —— 经 `node:async_hooks` 的环境 `ctx`（node/bun；非 edge） |
 
 ### 认证与会话
 
@@ -63,6 +63,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | `s200/websocket`        | `upgradeWebSocket` —— 运行时中立的 WS upgrade           |
 | `s200/websocket/node`   | `createUpgradeHandler` —— node http 服务器一侧           |
 | `s200/websocket/bun`    | `createBunWebSocketBridge` —— Bun 一侧                   |
+| `s200/websocket/cloudflare` | `createCloudflareWebSocketBridge` —— Workers 一侧    |
 
 ### 内省与工具
 
@@ -117,9 +118,8 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | 入口             | 提供什么                                                           |
 | ----------------- | ------------------------------------------------------------------ |
 | `s200/node`       | `serve`（light 模式、TLS/HTTP2、WSS upgrade）+ 文件读取器          |
-| `s200/bun`        | `serve` + Bun 文件读取器                                            |
-| `s200/deno`       | `serve` 构建于 `Deno.serve` 之上                                    |
-| `s200/cloudflare` | `createHandler` —— module worker 的默认导出                         |
+| `s200/bun`        | `serve` + Bun 文件读取器                                          |
+| `s200/cloudflare` | `createHandler` —— module worker 的 default 导出                  |
 
 ### 配方
 

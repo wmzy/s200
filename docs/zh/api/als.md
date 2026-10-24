@@ -26,4 +26,4 @@ storage 是模块级单例 —— 最简的形状，且可 tree-shaking：只导
 
 ### 运行时边界
 
-`node:async_hooks` 存在于 **Node、Bun 与 Deno**（Node 兼容层）。**Cloudflare Workers 没有 async_hooks** —— 在那里导入 `s200/als` 会在打包/启动时失败，因此让该入口远离 edge 产物（`s200/cloudflare` 应用干脆不导入它）。显式 ctx 传递不需要回退方案：必须到处运行的代码就把 `ctx` 作为参数。
+`node:async_hooks` 存在于 **Node 与 Bun**。**Cloudflare Workers 没有 async_hooks** —— 在那里导入 `s200/als` 会在打包/启动时失败，因此让该入口远离 edge 产物（`s200/cloudflare` 应用干脆不导入它）。显式 ctx 传递不需要回退方案：必须到处运行的代码就把 `ctx` 作为参数。

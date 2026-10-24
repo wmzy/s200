@@ -178,7 +178,10 @@ describe('queryParams with a Standard Schema', () => {
     );
     const res = await handle(app, new Request('http://localhost/?page=999'));
     res.status.should.equal(422);
-    (await res.json()).should.deep.equal({ error: 'page out of range' });
+    (await res.json()).should.deep.equal({
+      error: 'page out of range',
+      issues: [{ path: 'page', message: 'page out of range' }],
+    });
   });
 
   it('brands the client query with the schema input', () => {

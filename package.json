@@ -189,6 +189,16 @@
         "default": "./dist/websocket-bun.cjs"
       }
     },
+    "./websocket/cloudflare": {
+      "import": {
+        "types": "./dist/types/websocket-cloudflare.d.mts",
+        "default": "./dist/websocket-cloudflare.mjs"
+      },
+      "require": {
+        "types": "./dist/types/websocket-cloudflare.d.ts",
+        "default": "./dist/websocket-cloudflare.cjs"
+      }
+    },
     "./etag": {
       "import": {
         "types": "./dist/types/etag.d.mts",
@@ -307,16 +317,6 @@
       "require": {
         "types": "./dist/types/openapi.d.ts",
         "default": "./dist/openapi.cjs"
-      }
-    },
-    "./deno": {
-      "import": {
-        "types": "./dist/types/deno.d.mts",
-        "default": "./dist/deno.mjs"
-      },
-      "require": {
-        "types": "./dist/types/deno.d.ts",
-        "default": "./dist/deno.cjs"
       }
     },
     "./cloudflare": {
@@ -583,8 +583,6 @@
     "bench": "pnpm build && node scripts/bench-router.mjs",
     "bench:http": "pnpm build && node scripts/bench-http.mjs",
     "bench:memory": "pnpm build && node scripts/bench-memory.mjs",
-    "prepublish:jsr": "node scripts/prep-jsr.mjs",
-    "publish:jsr": "pnpm build && pnpm prepublish:jsr && npx jsr publish",
     "verify:tree-shaking": "node scripts/verify-tree-shaking.mjs",
     "check:paradigm": "node scripts/check-paradigm.mjs",
     "smoke": "node scripts/smoke.mjs && node scripts/smoke-dev.mjs && bun scripts/smoke.mjs",
@@ -674,13 +672,13 @@
       "name": "timeout battery (min+gz)",
       "path": "dist/timeout.mjs",
       "gzip": true,
-      "limit": "0.6 KB"
+      "limit": "0.62 KB"
     },
     {
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
-      "limit": "2.95 KB"
+      "limit": "3 KB"
     },
     {
       "name": "response-check battery (min+gz)",
@@ -704,14 +702,14 @@
       "name": "mcp battery (min+gz)",
       "path": "dist/mcp.mjs",
       "gzip": true,
-      "limit": "5.15 KB"
+      "limit": "5.2 KB"
     },
     {
       "name": "openapi battery: meta + openapi (min+gz)",
       "path": "src/openapi.ts",
       "import": "{ openapiSpec, openapiJson }",
       "gzip": true,
-      "limit": "3.1 KB"
+      "limit": "3.5 KB"
     },
     {
       "name": "dev battery (min+gz)",

@@ -22,6 +22,9 @@
  * fully in memory by the time the sink sees it — right for typical
  * uploads, and `streamForm` remains the tool for truly huge files.
  *
+ * Filenames arrive exactly as the client sent them. `safeFilename`
+ * strips one down to a safe basename before it meets a path.
+ *
  * @module
  */
 
@@ -63,11 +66,15 @@ export type UploadFile = {
  * bubbles. Sync sinks work too; the return type just accepts them.
  *
  * Plain disk landing, user side — s200 itself never touches `node:`
- * modules, so the sink is the one place a runtime belongs:
+ * modules, so the sink is the one place a runtime belongs. The filename
+ * is raw client input: splicing it straight into a path is a traversal
+ * footgun (an `../../etc/cron.d/x` upload would escape the directory),
+ * so route it through {@link safeFilename} first:
  *
  * ```ts
+ * import { join } from 'node:path';
  * import { writeFile } from 'node:fs/promises';
- * uploadForm(ctx, (f) => writeFile(`/tmp/${f.filename}`, f.data));
+ * uploadForm(ctx, (f) => writeFile(join(dir, safeFilename(f.filename)), f.data));
  * ```
  */
 export type UploadSink = (file: UploadFile) => Promise<string | void> | string | void;
@@ -139,6 +146,42 @@ function accepted(part: FormPart, accept: UploadAccept): boolean {
   return (
     type !== undefined && accept.some((prefix) => type.startsWith(prefix.toLowerCase()))
   );
+}
+
+/**
+ * Collapses a client-controlled filename to a safe basename — the thing
+ * to call before the name meets a path. `../../etc/passwd` → `passwd`,
+ * `/etc/shadow` → `shadow`, `..\..\win.ini` → `win.ini`,
+ * `C:\Users\me\report.pdf` → `report.pdf`.
+ *
+ * Pipeline: control characters (NUL, C0, DEL, C1) go first — before the
+ * split, so one can't weld two path segments together; both separators
+ * (`/` and `\` — Windows clients send backslashes) then split the rest
+ * and only the last non-empty segment survives; leading/trailing runs
+ * of dots and spaces are trimmed, so `..`, `.` and `report.` (a win32
+ * alias of `report`) never land, and neither do dotfiles (`.env` →
+ * `env`, `.htaccess` → `htaccess`). An empty result — an empty name,
+ * `../..`, `///`, nothing but control characters — returns the
+ * deterministic `'upload'` instead, so a sink always has a usable name.
+ *
+ * Everything else passes through untouched: unicode letters and digits,
+ * `.-_`, spaces, parentheses — a normal filename never deforms.
+ *
+ * Deliberately NOT covered: Windows reserved device names (`CON`,
+ * `NUL`, `COM1`, …) and NTFS alternate data streams (`file.txt:ads`
+ * keeps its colon — a legal filename elsewhere) pass through as-is, and
+ * there is no length cap. None of those traverse; enforce them in the
+ * sink if the target platform cares.
+ */
+export function safeFilename(name: string): string {
+  // Control characters (C0/C1) are stripped on purpose — the sanitizer's
+  // job — so the lint rule that guards against accidental control chars
+  // is disabled for this one pattern.
+  // eslint-disable-next-line no-control-regex
+  const cleaned = name.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
+  const segments = cleaned.split(/[/\\]+/).filter((s) => s !== '');
+  const base = (segments[segments.length - 1] ?? '').replace(/^[ .]+|[ .]+$/g, '');
+  return base !== '' ? base : 'upload';
 }
 
 /**

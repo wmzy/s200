@@ -33,11 +33,11 @@ await streamForm(ctx, (part) => {
 
 ## Uploads
 
-`s200/upload`'s `uploadForm(ctx, sink, options)` is the landing helper over `streamForm`: fields collect into `fields` (parseQuery semantics — single value `string`, repeats `string[]`), and file parts pass through `accept` (prefix list or callback; a miss answers `415`), `maxFiles`/`maxFileSize` (`413`, naming which constraint tripped) before reaching your injected `sink` — zero-dependency, disk is a one-line `node:fs/promises` `writeFile` away (see its JSDoc). The sink's return string becomes the file's `id` in the result; a throwing sink aborts the whole upload to the error boundary. File parts are buffered per-part — for huge files stay on `streamForm` directly:
+`s200/upload`'s `uploadForm(ctx, sink, options)` is the landing helper over `streamForm`: fields collect into `fields` (parseQuery semantics — single value `string`, repeats `string[]`), and file parts pass through `accept` (prefix list or callback; a miss answers `415`), `maxFiles`/`maxFileSize` (`413`, naming which constraint tripped) before reaching your injected `sink` — zero-dependency, disk is a one-line `node:fs/promises` `writeFile` away (see its JSDoc). The sink's return string becomes the file's `id` in the result; a throwing sink aborts the whole upload to the error boundary. `file.filename` is raw client input — pass it through `uploadForm`'s `safeFilename` before joining it into a path (it collapses separators, `..` fragments, and control characters: `../../etc/passwd` lands as `passwd`). File parts are buffered per-part — for huge files stay on `streamForm` directly:
 
 ```ts
 const { files, fields } = await uploadForm(ctx,
-  async (file) => (await writeFile(join(dir, file.filename ?? file.name), file.data), file.filename),
+  async (file) => (await writeFile(join(dir, safeFilename(file.filename)), file.data), file.filename),
   { limit: 10 * 1024 * 1024, maxFileSize: 5 * 1024 * 1024, accept: ['image/'] });
 ```
 

@@ -140,33 +140,23 @@ import { createHandler } from 's200/cloudflare';
 export default createHandler(app);
 ```
 
-想要 `fetch` 导出的 Vercel/Netlify 风格运行时，就是把契约手写出来：
+Vercel —— `s200/vercel` 用同一个应用构造平台入口：`createVercelHandler(app)` 就是 Web 标准 `fetch` 导出形状下的 `handle`，Edge Runtime 与 Node.js（含 Fluid Compute）都适用：
 
 ```ts
-import { createApp, handle } from 's200';
-
-const app = createApp();
-export default { fetch: (request) => handle(app, request) };
+// api/index.ts
+import { createVercelHandler } from 's200/vercel';
+export default createVercelHandler(app);
 ```
 
-AWS Lambda 没有内置适配器 —— 这是诚实的缺口。桥接只需十几行：把 API Gateway 的 HTTP 事件包装成 `Request` 交给 `handle`；注意 base64 编码的请求体：
+AWS Lambda —— `s200/aws-lambda` 双向转换 API Gateway 的 HTTP 事件（仅 payload 格式 v2）：入向把 `cookies` 拼进请求的 `Cookie` 头、带 base64 标记的 `body` 解码；出向每个 `Set-Cookie` 单独成 `cookies` 数组项，文本体以字符串返回，其余一律 base64 编码返回：
 
 ```ts
-export async function handler(event) {
-  const request = new Request(
-    `https://${event.requestContext.domainName}${event.rawPath}?${event.rawQueryString}`,
-    {
-      method: event.requestContext.http.method,
-      headers: event.headers,
-      body: event.isBase64Encoded
-        ? atob(event.body)          // binary payloads arrive base64-encoded
-        : event.body,
-    },
-  );
-  const response = await handle(app, request);
-  return { statusCode: response.status, body: await response.text() };
-}
+// src/lambda.ts
+import { createLambdaHandler } from 's200/aws-lambda';
+export const handler = createLambdaHandler(app);
 ```
+
+把函数指向 `<file>.handler` —— function URL 与 HTTP API 的 Lambda 代理集成都可用。完整的事件/结果映射见 [serverless 适配器](/api/serverless) 页。没有内置适配器的运行时仍然说着上面那个纯 `handle(app, request)` 契约 —— 把它接进平台想要的任何入口形状即可。
 
 ## Bun
 

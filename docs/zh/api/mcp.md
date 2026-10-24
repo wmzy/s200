@@ -31,12 +31,12 @@ const { tools } = toolManifest(app);
 **输入 schema** —— 一个扁平对象，三个来源按固定顺序合并（后写的组覆盖先前同名的属性，因此让参数名在来源之间保持唯一）：
 
 1. **路径参数** —— `{ type: 'string' }`，除 `:param?` 外都 required；通配符恒为 required。
-2. **Query 参数**（`meta.query`）—— 可选：query 参数在 HTTP 层永远不是必需的，且 `RouteMeta` 没有按 query 声明 required 的标记。
+2. **Query 参数**（`meta.query`）—— 默认可选；`{ schema, required: true }` 标记形态把该名字列入 `required` —— 与 `openapiSpec` 输出的 `parameters[].required`、`withRouteValidation` 的 422 是同一个标记，工具调用方因此会发送路由要求的键。
 3. **Body**（`meta.body`）—— object schema 把自己的 `properties` 与 `required` 展平进顶层；其他形状嵌在必需的 `body` 键下。
 
-合并后的 `required` 列表按首次出现顺序去重：路径参数与 body schema 同名要求的字段只要求一次，因此生成的 JSON Schema 始终合法（`required` 的名字必须唯一）。
+合并后的 `required` 列表按首次出现顺序去重（先路径参数、再 query 标记、后 body 名）：路径参数与 body schema 同名要求的字段只要求一次，因此生成的 JSON Schema 始终合法（`required` 的名字必须唯一）。
 
-schema 经 `toJsonSchema`（`s200/serialize`）转换 —— 与 OpenAPI 发射器同一条直通管道，覆盖 `SerializeSchema` DSL 携带的全部内容（`type`、`properties`/`required`、`items`、`nullable`）。
+schema 经 `toJsonSchema`（`s200/serialize`）转换 —— 与 OpenAPI 发射器同一条直通管道，覆盖 `SerializeSchema` DSL 携带的全部内容（`type`、`properties`/`required`、`items`、`nullable`、`title`）。
 
 ## 处理器（`createMcpHandler`）
 

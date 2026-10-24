@@ -1,5 +1,7 @@
 # rest-jwt — JWT-protected mini API
 
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/fork/github/wmzy/s200/tree/main/examples/rest-jwt)
+
 A tiny article API behind bearer tokens. Demonstrates the **`s200/jwt`**
 battery (`signJwt`/`jwtAuth`) and **`s200/validate`** (`jsonBody` wrapping a
 hand-rolled parse fn — no schema library), plus two core contracts:

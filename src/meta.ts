@@ -23,8 +23,16 @@ export type RouteMeta = {
   /** OpenAPI tags — group operations in the rendered docs. */
   readonly tags?: readonly string[];
   readonly deprecated?: boolean;
-  /** Query-string parameter schemas, keyed by parameter name. */
-  readonly query?: Record<string, SerializeSchema>;
+  /**
+   * Query-string parameter schemas, keyed by parameter name. Each entry
+   * is the parameter's {@link SerializeSchema} bare (optional — the
+   * default), or the `{ schema, required: true }` marker form when the
+   * request must carry the key: `openapiSpec` emits
+   * `parameters[].required: true`, `withRouteValidation` answers a
+   * missing key with a 422, and `s200/mcp`'s tool input schema lists
+   * the name under `required` — one flag, three synchronized views.
+   */
+  readonly query?: Record<string, QueryParam>;
   /** JSON request-body schema (`content: application/json`). */
   readonly body?: SerializeSchema;
   /** Responses by status code; a missing schema = no content declared. */
@@ -47,6 +55,27 @@ export type AppMeta = {
   readonly version?: string;
   readonly description?: string;
 };
+
+/**
+ * One query parameter's annotation: the bare {@link SerializeSchema}
+ * (optional — the default, matching the HTTP norm), or the
+ * `{ schema, required: true }` marker form when the key must be present.
+ * The marker never changes the value's shape — only its presence.
+ */
+export type QueryParam =
+  | SerializeSchema
+  | { readonly schema: SerializeSchema; readonly required?: boolean };
+
+/** The query entry's schema, unwrapping the marker form. */
+export function querySchemaOf(entry: QueryParam): SerializeSchema {
+  return 'schema' in entry ? entry.schema : entry;
+}
+
+/** True when the query entry is marked required (`false` for the bare
+ * schema form — optional stays the default). */
+export function isQueryRequired(entry: QueryParam): boolean {
+  return 'schema' in entry && entry.required === true;
+}
 
 // Stored beside the app, never on it: importing s200/meta is the only way
 // metadata exists (same pattern as s200/websocket's registry).

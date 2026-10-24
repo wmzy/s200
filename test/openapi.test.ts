@@ -1,9 +1,14 @@
+
+import type { SerializeSchema } from '../src/serialize';
+
+import type { App } from '../src/app';
+
 import { describe, it, vi } from 'vitest';
 
 import { all, createApp, get, handle, post } from '../src/app';
 import { throws } from '../src/errors';
 import { describeApp, describeRoute } from '../src/meta';
-import { openapiJson, openapiSpec } from '../src/openapi';
+import { openapiJson, openapiSpec, type OpenApiDocument } from '../src/openapi';
 import { json } from '../src/respond';
 
 describe('openapi (spec emission)', () => {
@@ -212,7 +217,7 @@ describe('openapi (spec emission)', () => {
       { url: 'https://api.example', description: 'production' },
       { url: 'http://localhost:3000' },
     ]);
-    spec.components?.securitySchemes.should.deep.equal({
+    spec.components!.securitySchemes!.should.deep.equal({
       bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
       apiKey: { type: 'apiKey', name: 'X-API-Key', in: 'header' },
     });
@@ -225,6 +230,30 @@ describe('openapi (spec emission)', () => {
     minimal.should.not.have.property('components');
   });
 
+  it('emits query required from the marker form — optional stays the default', () => {
+    const app = createApp();
+    const withGet = get(app, '/search', (ctx) => ctx);
+    describeRoute(withGet, 'GET', '/search', {
+      query: {
+        format: { schema: { type: 'string' }, required: true },
+        verbose: { type: 'boolean' },
+      },
+    });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+    const parameters = (
+      spec.paths['/search']?.get as {
+        parameters: { name: string; in: string; required: boolean; schema: unknown }[];
+      }
+    ).parameters;
+
+    const format = parameters.find((p) => p.in === 'query' && p.name === 'format');
+    format?.required.should.equal(true);
+    (format?.schema as Record<string, unknown>).should.deep.equal({ type: 'string' });
+    parameters.find((p) => p.in === 'query' && p.name === 'verbose')?.required.should.equal(
+      false
+    );
+  });
+
   it('openapiJson answers a spec document over the wire', async () => {
     const app = createApp();
     describeApp(app, { title: 'Wire API', version: '2.0.0' });
@@ -235,5 +264,182 @@ describe('openapi (spec emission)', () => {
     const body = (await res.json()) as { openapi: string; info: { title: string } };
     body.openapi.should.equal('3.1.0');
     body.info.title.should.equal('Wire API');
+  });
+});
+
+describe('openapi (components.schemas dedup)', () => {
+  /** The shared shape, rebuilt per call — distinct objects, structurally
+   * equal, so dedup must key on the emitted JSON, not identity. */
+  function userShape(): SerializeSchema {
+    return {
+      type: 'object',
+      properties: { id: { type: 'integer' }, name: { type: 'string' } },
+      required: ['id', 'name'],
+    };
+  }
+
+  /** The same shape, self-named — `title` names the hoisted entry. */
+  function titledShape(): SerializeSchema {
+    return {
+      type: 'object',
+      title: 'User',
+      properties: { id: { type: 'integer' }, name: { type: 'string' } },
+      required: ['id', 'name'],
+    };
+  }
+
+  /** One route answering `schema` at 200, on its own pattern. */
+  function responding(app: App, path: string, schema: SerializeSchema) {
+    const withGet = get(app, path, (ctx) => ctx);
+    describeRoute(withGet, 'GET', path, {
+      responses: { 200: { description: 'ok', schema } },
+    });
+    return app;
+  }
+
+  /** The response schema object a path's GET declares. */
+  function responseSchema(spec: OpenApiDocument, path: string): Record<string, unknown> {
+    const item = spec.paths[path]?.get as
+      | { responses: { 200?: { content: { 'application/json': { schema: unknown } } } } }
+      | undefined;
+    return item?.responses[200]?.content['application/json'].schema as Record<string, unknown>;
+  }
+
+  it('hoists a schema that occurs twice into one components entry, both sites $ref', () => {
+    const app = responding(responding(createApp(), '/one', userShape()), '/two', userShape());
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+    (spec.components?.schemas?.Schema1 as Record<string, unknown>).should.deep.equal({
+      type: 'object',
+      properties: { id: { type: 'integer' }, name: { type: 'string' } },
+      required: ['id', 'name'],
+    });
+    spec.components?.should.not.have.property('securitySchemes');
+    responseSchema(spec, '/one').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    responseSchema(spec, '/two').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+  });
+
+  it('names a hoisted schema by its title, synthetic names in first-occurrence order', () => {
+    const app = createApp();
+    responding(app, '/one', titledShape());
+    responding(app, '/two', titledShape());
+    responding(app, '/three', userShape());
+    responding(app, '/four', userShape());
+    // A single occurrence stays inline, titled or not.
+    responding(app, '/five', { type: 'string', nullable: true, title: 'Lonely' });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['User', 'Schema1']);
+    responseSchema(spec, '/one').should.deep.equal({ $ref: '#/components/schemas/User' });
+    responseSchema(spec, '/two').should.deep.equal({ $ref: '#/components/schemas/User' });
+    responseSchema(spec, '/three').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    responseSchema(spec, '/four').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    responseSchema(spec, '/five').should.deep.equal({
+      type: ['string', 'null'],
+      title: 'Lonely',
+    });
+  });
+
+  it('disambiguates colliding titles with _2 in registration order', () => {
+    const app = createApp();
+    // Two distinct shapes, both titled `Tag`, each occurring twice.
+    responding(app, '/a1', { type: 'string', title: 'Tag' });
+    responding(app, '/a2', { type: 'string', title: 'Tag' });
+    responding(app, '/b1', { type: 'integer', title: 'Tag' });
+    responding(app, '/b2', { type: 'integer', title: 'Tag' });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Tag', 'Tag_2']);
+    responseSchema(spec, '/a1').should.deep.equal({ $ref: '#/components/schemas/Tag' });
+    responseSchema(spec, '/a2').should.deep.equal({ $ref: '#/components/schemas/Tag' });
+    responseSchema(spec, '/b1').should.deep.equal({ $ref: '#/components/schemas/Tag_2' });
+    responseSchema(spec, '/b2').should.deep.equal({ $ref: '#/components/schemas/Tag_2' });
+  });
+
+  it('counts two occurrences inside one route — body and response alike', () => {
+    const app = createApp();
+    const withPost = post(app, '/echo', (ctx) => ctx);
+    describeRoute(withPost, 'POST', '/echo', {
+      body: userShape(),
+      responses: { 200: { description: 'ok', schema: userShape() } },
+    });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+    const item = spec.paths['/echo']?.post as {
+      requestBody: { content: { 'application/json': { schema: Record<string, unknown> } } };
+      responses: { 200: { content: { 'application/json': { schema: Record<string, unknown> } } } };
+    };
+    item.requestBody.content['application/json'].schema.should.deep.equal({
+      $ref: '#/components/schemas/Schema1',
+    });
+    item.responses[200].content['application/json'].schema.should.deep.equal({
+      $ref: '#/components/schemas/Schema1',
+    });
+  });
+
+  it('dedups query parameter schemas across routes too', () => {
+    const app = createApp();
+    const one = get(app, '/one', (ctx) => ctx);
+    const two = get(app, '/two', (ctx) => ctx);
+    describeRoute(one, 'GET', '/one', { query: { verbose: { type: 'boolean' } } });
+    describeRoute(two, 'GET', '/two', { query: { verbose: { type: 'boolean' } } });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+    const schemaOf = (path: string): Record<string, unknown> =>
+      (
+        (spec.paths[path]?.get as { parameters: { name: string; schema: unknown }[] })
+          .parameters
+      ).find((p) => p.name === 'verbose')?.schema as Record<string, unknown>;
+    schemaOf('/one').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    schemaOf('/two').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+  });
+
+  it('keeps distinct and single-use schemas inline — no components at all', () => {
+    const app = responding(createApp(), '/one', userShape());
+    responding(app, '/two', {
+      type: 'object',
+      properties: { other: { type: 'string' } },
+    });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    spec.should.not.have.property('components');
+    responseSchema(spec, '/one').should.deep.equal({
+      type: 'object',
+      properties: { id: { type: 'integer' }, name: { type: 'string' } },
+      required: ['id', 'name'],
+    });
+  });
+
+  it('refSchemas: false keeps repeated schemas inline', () => {
+    const app = responding(createApp(), '/a', userShape());
+    responding(app, '/b', userShape());
+    const spec = openapiSpec(app, { title: 't', version: '1', refSchemas: false });
+
+    spec.should.not.have.property('components');
+    const inline = {
+      type: 'object',
+      properties: { id: { type: 'integer' }, name: { type: 'string' } },
+      required: ['id', 'name'],
+    };
+    responseSchema(spec, '/a').should.deep.equal(inline);
+    responseSchema(spec, '/b').should.deep.equal(inline);
+  });
+
+  it('merges hoisted schemas beside securitySchemes in one components object', () => {
+    const app = responding(createApp(), '/a', userShape());
+    responding(app, '/b', userShape());
+    const spec = openapiSpec(app, {
+      title: 't',
+      version: '1',
+      securitySchemes: { bearer: { type: 'http', scheme: 'bearer' } },
+    });
+
+    spec.components!.securitySchemes!.should.deep.equal({
+      bearer: { type: 'http', scheme: 'bearer' },
+    });
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
   });
 });

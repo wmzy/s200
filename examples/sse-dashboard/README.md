@@ -1,5 +1,7 @@
 # sse-dashboard — SSE ticker + static page
 
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/fork/github/wmzy/s200/tree/main/examples/sse-dashboard)
+
 A live-ticker dashboard: a static HTML page fed by a Server-Sent Events
 endpoint. Demonstrates the **`s200/streaming`** battery (`streamSSE` with
 `writeSSE`/`heartbeat`) and **`serveStatic`** over the node adapter's

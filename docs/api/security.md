@@ -49,7 +49,7 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 
 ## Auth (`s200/auth`)
 
-`basicAuth` / `bearerAuth` gates: the `verify` function decides; failures answer `401` + `WWW-Authenticate` in place and the chain below never runs. Credential comparison inside `verify` is yours — use a constant-time compare for secrets.
+`basicAuth` / `bearerAuth` gates: the `verify` function decides; failures throw a 401 `HttpError` carrying the `WWW-Authenticate` challenge into the error boundary — the default mapping answers `401 {"error":"Unauthorized"}` + challenge, and a configured `onError` takes over. The chain below never runs. Credential comparison inside `verify` is yours — use a constant-time compare for secrets.
 
 ```ts
 use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
@@ -165,7 +165,7 @@ Embed the same nonce in the HTML (`<script nonce="…">`) so the policy and the 
 
 ## Rate limit (`s200/rate-limit`)
 
-True sliding-window gate per client key: every hit expires `windowMs` after it landed (no fixed boundary, so window edges can't burst). The over-limit request is answered in place with `429` + `Retry-After`; the chain below never runs.
+True sliding-window gate per client key: every hit expires `windowMs` after it landed (no fixed boundary, so window edges can't burst). The over-limit request throws a 429 `HttpError` into the error boundary — the default mapping answers `429 {"error":"Too Many Requests"}` + `Retry-After`, and a configured `onError` takes over; the chain below never runs.
 
 ```ts
 use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
@@ -182,6 +182,8 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 | `store` | in-process deque per key | Shared counters across instances: a `RateLimitStore` — `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` — must be atomic per key (the Redis INCR + PEXPIRE shape) |
 
 `RateLimitHit`: `{ count: number; retryAt: number }` — live count and the earliest retry time. The default store is per-instance; shared limits need an injected `store`.
+
+The 429 carries the IETF rate-limit headers (`RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` — draft-ietf-httpapi-ratelimit-headers) alongside `Retry-After`: integer strings, limit / `0` when blocked / seconds until the oldest blocking hit expires (same remainder as `Retry-After`). Header names are lowercase on the wire, like every HTTP/2 response header.
 
 ## Trust proxy (`s200/trust-proxy`)
 

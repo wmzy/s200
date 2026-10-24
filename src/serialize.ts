@@ -32,7 +32,9 @@ export type PrimitiveType = 'string' | 'number' | 'integer' | 'boolean' | 'null'
 /**
  * The supported schema subset. `type: 'object'` requires `properties`;
  * `required` names the non-optional keys (absent = every key optional).
- * `nullable: true` widens a primitive to `T | null`.
+ * `nullable: true` widens a primitive to `T | null`. `title` is an
+ * optional annotation carried into `toJsonSchema` output (and used to
+ * name hoisted `components.schemas` entries — see `s200/openapi`).
  */
 export type SerializeSchema =
   | {
@@ -40,9 +42,12 @@ export type SerializeSchema =
       // eslint-disable-next-line @typescript-eslint/consistent-indexed-object-style -- the index-signature form is required: `Record<string, X>` erases the literal keys, which would flatten the inferred input type to an index signature
       readonly properties: { readonly [key: string]: SerializeSchema };
       readonly required?: readonly string[];
+      /** Annotation only — carried into `toJsonSchema` output verbatim;
+       * serialization and validation ignore it. */
+      readonly title?: string;
     }
-  | { readonly type: 'array'; readonly items: SerializeSchema }
-  | { readonly type: PrimitiveType; readonly nullable?: boolean };
+  | { readonly type: 'array'; readonly items: SerializeSchema; readonly title?: string }
+  | { readonly type: PrimitiveType; readonly nullable?: boolean; readonly title?: string };
 
 /** The object member of the schema union — named so mapped types can
  * constrain over `properties` access. */
@@ -101,6 +106,9 @@ export type InferSchema<S extends SerializeSchema> =
  * forward, so none are invented.
  */
 export function toJsonSchema(schema: SerializeSchema): Record<string, unknown> {
+  // `title` rides along as a JSON Schema annotation — it names hoisted
+  // `components.schemas` entries in `s200/openapi`.
+  const title = schema.title !== undefined ? { title: schema.title } : {};
   switch (schema.type) {
     case 'object': {
       const properties: Record<string, unknown> = {};
@@ -113,14 +121,15 @@ export function toJsonSchema(schema: SerializeSchema): Record<string, unknown> {
         ...(schema.required !== undefined && schema.required.length > 0
           ? { required: schema.required }
           : {}),
+        ...title,
       };
     }
     case 'array':
-      return { type: 'array', items: toJsonSchema(schema.items) };
+      return { type: 'array', items: toJsonSchema(schema.items), ...title };
     default:
       return schema.nullable === true
-        ? { type: [schema.type, 'null'] }
-        : { type: schema.type };
+        ? { type: [schema.type, 'null'], ...title }
+        : { type: schema.type, ...title };
   }
 }
 

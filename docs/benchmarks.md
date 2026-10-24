@@ -23,7 +23,6 @@ hono-patched  hello    14130 req/s   param    13762 req/s
 express       hello     6476 req/s   param     6355 req/s
 fastify       hello    14115 req/s   param    14064 req/s
 elysia        hello    14420 req/s   param    14135 req/s
-s200-deno  not measured on the reference machine (auto-skipped: deno not installed)
 ```
 
 Machine: AMD Ryzen 7 8745HS, Fedora 42, Node 22.23.2, 2026-09-21.
@@ -33,22 +32,6 @@ Scenarios:
 
 - `hello` — `GET /` → `{ "message": "hello" }`
 - `param` — `GET /users/:id` → `{ "id": "42", "name": "ada" }`
-
-### The `s200-deno` scenario
-
-`pnpm bench:http` also knows an eighth scenario, `s200-deno`: the **same
-built core** (`dist/index.mjs`) served through `Deno.serve`. s200's core is
-plain Web Standard code, so the identical bundle runs on Deno with no
-adapter. The script writes a small entry file to the OS temp dir (importing
-the built core by `file://` URL), spawns `deno run` on it as its own
-process, and measures it with the same node keep-alive client as every other
-row — the only structural difference is that client and server sit in two
-processes instead of one.
-
-The scenario **auto-skips** when no `deno` binary is on `PATH`: the run
-prints one skip line (the row above is that line, from the reference
-machine) and continues; it never fails the benchmark. To enable it, install
-[Deno](https://deno.com) ≥ 2.x and re-run `pnpm bench:http`.
 
 Readings:
 
@@ -345,8 +328,7 @@ lower):
 | fastify       | 17590 req/s      | 16681   | −5%         |
 | elysia        | 16846 req/s      | 15428   | −8%         |
 
-`s200-deno` auto-skipped (no `deno` binary on this machine, same as the
-reference run). Individual `hello` cells wobble up to ~±10% run to run, so
+Individual `hello` cells wobble up to ~±10% run to run, so
 read single-cell deltas as approximate and the ordering as the signal.
 
 #### What it measures — and what it does not

@@ -11,7 +11,7 @@ import { serve } from 's200/bun';
 const server = serve(app, { port: 3000 });
 ```
 
-Both adapters expose the identical `serve(app, options)` surface; the core's `handle(app, request)` is the entire integration contract for any runtime with a fetch-shaped handler — `s200/deno` (`serve(app)` over `Deno.serve`) and `s200/cloudflare` (`createHandler(app)` as the module worker's default export) are the one-line adapters for those runtimes.
+Both adapters expose the identical `serve(app, options)` surface; the core's `handle(app, request)` is the entire integration contract for any runtime with a fetch-shaped handler — `s200/cloudflare` (`createHandler(app)` as the module worker's default export) is the one-line adapter for that runtime.
 
 ## Light mode
 

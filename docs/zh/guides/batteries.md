@@ -20,6 +20,7 @@ import { timeout } from 's200/timeout';
 import { upgradeWebSocket } from 's200/websocket';
 import { createUpgradeHandler } from 's200/websocket/node';
 import { createBunWebSocketBridge } from 's200/websocket/bun';
+import { createCloudflareWebSocketBridge } from 's200/websocket/cloudflare';
 import { etag } from 's200/etag';
 import { secureHeaders } from 's200/secure-headers';
 import { basicAuth, bearerAuth } from 's200/auth';
@@ -34,7 +35,6 @@ import { toolManifest, createMcpHandler } from 's200/mcp';
 import { signJwt, verifyJwt, jwtAuth } from 's200/jwt';
 import { cache } from 's200/cache';
 import { trustProxy } from 's200/trust-proxy';
-import { serve as serveDeno } from 's200/deno';
 import { createHandler } from 's200/cloudflare';
 import { trace } from 's200/otel';
 import { generateClient } from 's200/codegen';
@@ -84,7 +84,7 @@ createRouteTable(app);
 
 ## OpenAPI
 
-路由表就是 API 面，因此 OpenAPI 3.1 文档直接出自它：`describeRoute` 标注（summary、tags、`SerializeSchema` DSL 的 query/body schema、响应形状），`openapiSpec` 发出 spec，未标注的路由仍以其参数和裸 200 出现：
+路由表就是 API 面，因此 OpenAPI 3.1 文档直接出自它：`describeRoute` 标注（summary、tags、`SerializeSchema` DSL 的 query/body schema、响应形状），`openapiSpec` 发出 spec，未标注的路由仍以其参数和裸 200 出现。出现 ≥2 次（结构化 JSON 相等）的 schema 被提升进 `components.schemas` 并以 `$ref` 引用 —— 名字取 schema 的可选 `title`，否则按首次出现顺序合成 `Schema1`、`Schema2`、……（`refSchemas: false` 保持全部内联）。query 条目可自标记 required（`query: { format: { schema: { type: 'string' }, required: true } }`）：spec 输出 `parameters[].required: true`，下方闸门拒绝该键缺失 —— 两个视图保持同构。
 
 ```ts
 describeApp(app, { title: 'Users API', version: '1.0.0' });
@@ -96,7 +96,7 @@ describeRoute(app, 'GET', '/users/:id', {
 get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
 ```
 
-同一套标注可以变成运行时门：`withRouteValidation(app)` 是纯数据变换（mount 家族），只重建带 `body` 或 `query` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 —— `serialize()` 的读取侧孪生，覆盖完全相同的 DSL 子集。违规以 `422` 应答并点名第一个出问题的路径（`{"error":"body.tags.1: expected string, got number"}`）；合法输入原样流过 —— 什么都不落到 `ctx.state`，什么都不强制转换（query 值保持字符串，因此 `?page=2` 对上 `{ type: 'integer' }` 是 422 —— 想要解析时用 `s200/query` 的 `queryParams`）。spec 与门共享一个来源：标注被重新挂到重建的路由上，因此 `openapiSpec(gated)` 继续记录它们。在 `mount` 之后于父应用上标注挂载的子应用（元数据注册表按路由身份寻址）。
+同一套标注可以变成运行时门：`withRouteValidation(app)` 是纯数据变换（mount 家族），只重建带 `body` 或 `query` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 —— `serialize()` 的读取侧孪生，覆盖完全相同的 DSL 子集。违规以 `422` 应答并点名每一条出问题的路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），体的 `issues` 数组携带全量列表，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入原样流过 —— 什么都不落到 `ctx.state`，什么都不强制转换（query 值保持字符串，因此 `?page=2` 对上 `{ type: 'integer' }` 是 422 —— 想要解析时用 `s200/query` 的 `queryParams`）。spec 与门共享一个来源：标注被重新挂到重建的路由上，因此 `openapiSpec(gated)` 继续记录它们。在 `mount` 之后于父应用上标注挂载的子应用（元数据注册表按路由身份寻址）。
 
 为 spec 配上文档 UI —— `swaggerUi` 服务 Scalar API Reference 页面（资源从固定的 CDN 加载，因此 s200 保持零依赖）：
 
@@ -169,7 +169,7 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 });
 ```
 
-Standard Schema 值无需包装：任何带 `~standard` prop 的东西（zod、valibot、typebox、arktype…）都可以直接交给 `jsonBody`/`queryParams`。门在解析后的请求体/记录上调用 `validate()` —— 报告的第一个问题成为携带其消息的 `422 HttpError`；空的 `issues` 数组算成功。schema 的幻影 `types` prop 免费标注两侧：`types.input` 是调用方发送的东西（`jsonBody(schema)` 要求并标注客户端的 `init.body`，`queryParams(schema)` 以同样方式标注 `init.query` —— 都是输入侧，因此转换型 schema 端到端诚实），而解析后的 `types.output` 产物落到处理器的 `ctx.state.validated`；`standardValidate(schema, data)` 为你自己的门导出完全相同的 422 语义。
+Standard Schema 值无需包装：任何带 `~standard` prop 的东西（zod、valibot、typebox、arktype…）都可以直接交给 `jsonBody`/`queryParams`。门在解析后的请求体/记录上调用 `validate()` —— 任何被报告的问题都成为 `422 HttpError`，其体携带全量列表与格式化后的路径（`error` 保留第一条消息，`issues: [{ "path": "user.tags[0]", "message": "…" }]`）；空的 `issues` 数组算成功。schema 的幻影 `types` prop 免费标注两侧：`types.input` 是调用方发送的东西（`jsonBody(schema)` 要求并标注客户端的 `init.body`，`queryParams(schema)` 以同样方式标注 `init.query` —— 都是输入侧，因此转换型 schema 端到端诚实），而解析后的 `types.output` 产物落到处理器的 `ctx.state.validated`；`standardValidate(schema, data)` 为你自己的门导出完全相同的 422 语义。
 
 ## Query
 
@@ -197,6 +197,7 @@ upgradeWebSocket(app, '/chat/:room', (socket, ctx) => {
 
 await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });            // node
 serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
+// workers：ws.upgrade(request) ?? createHandler(app).fetch(…) —— 见 WebSocket API 页
 ```
 
 node 服务器实现协议 —— 握手、文本/二进制（含分片）、ping/pong、关闭握手、`maxPayload` 预算（默认 4 MiB，超出为 1009，在帧头解析时强制执行）—— 外加可选的子协议协商与 permessage-deflate（RFC 7692，双向 no-context-takeover），以及心跳面（`socket.ping()` / `socket.onPong()`）：
@@ -227,7 +228,7 @@ use(app, secureHeaders({ strictTransportSecurity: 'max-age=31536000' }));  // HS
 
 ## Auth
 
-`basicAuth`/`bearerAuth` 门：注入的 `verify` 函数决定，失败就地应答 `401` + `WWW-Authenticate`，其下的链永不运行：
+`basicAuth`/`bearerAuth` 门：注入的 `verify` 函数决定，失败抛出携带 `WWW-Authenticate` 质询的 401 `HttpError` 进入错误边界（含 `onError`；默认映射应答 `401` + 质询），其下的链永不运行：
 
 ```ts
 use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
@@ -288,7 +289,7 @@ const type = want.type(['application/json', 'text/html']) ?? 'application/json';
 
 ## Rate limit
 
-每客户端键的真正滑动窗口门：每次命中在落地 `windowMs` 后过期（无固定边界，因此窗口边缘不能突发），超限请求就地以 `429` + `Retry-After` 应答，其下的链永不运行：
+每客户端键的真正滑动窗口门：每次命中在落地 `windowMs` 后过期（无固定边界，因此窗口边缘不能突发），超限请求抛出 429 `HttpError` 进入错误边界（含 `onError`；默认映射应答 `429` + `Retry-After` + IETF `RateLimit-Limit`/`RateLimit-Remaining`/`RateLimit-Reset`），其下的链永不运行：
 
 ```ts
 use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
@@ -327,7 +328,7 @@ use(app, responseCheck(app, {
 
 ## Compress
 
-通过 Web Standard `CompressionStream` 的 gzip/deflate 响应压缩（无 `node:zlib` —— 适用于 Node 18+、Bun、Deno），外加通过注入编码器的可选 brotli（`CompressionStream` 没有 brotli；`s200/node` 经 `node:zlib` 提供 `brotliCompress`）。协商 `Accept-Encoding` q 值，跳过无请求体/已编码/`no-transform` 响应与小请求体（当 content-length 已知时），并维护 `Vary: Accept-Encoding`：
+通过 Web Standard `CompressionStream` 的 gzip/deflate 响应压缩（无 `node:zlib` —— 适用于 Node 18+、Bun），外加通过注入编码器的可选 brotli（`CompressionStream` 没有 brotli；`s200/node` 经 `node:zlib` 提供 `brotliCompress`）。协商 `Accept-Encoding` q 值，跳过无请求体/已编码/`no-transform` 响应与小请求体（当 content-length 已知时），并维护 `Vary: Accept-Encoding`：
 
 ```ts
 use(app, compress({ minBytes: 1024 }));
@@ -359,7 +360,7 @@ use(app, requestId({ header: 'x-trace', generator: () => nanoid() }));
 
 ## ALS
 
-环境 ctx 访问 —— 显式 ctx 传递的可选补充，面向无法沿途传递它的调用栈（日志 sink、深层遗留助手）。`als()` 把下方链包进 `node:async_hooks` 的 `AsyncLocalStorage`，`currentCtx()` 在该范围内的任何位置解析出正在执行的请求的 ctx —— 深层 await、`setTimeout` 回调、从未见过参数的代码。交错的请求保持隔离；请求之外 `currentCtx()` 是 `undefined`。仅限 Node/Bun/Deno —— Cloudflare Workers 没有 async_hooks，在那里导入该入口会失败（让它远离 edge 产物）：
+环境 ctx 访问 —— 显式 ctx 传递的可选补充，面向无法沿途传递它的调用栈（日志 sink、深层遗留助手）。`als()` 把下方链包进 `node:async_hooks` 的 `AsyncLocalStorage`，`currentCtx()` 在该范围内的任何位置解析出正在执行的请求的 ctx —— 深层 await、`setTimeout` 回调、从未见过参数的代码。交错的请求保持隔离；请求之外 `currentCtx()` 是 `undefined`。仅限 Node/Bun —— Cloudflare Workers 没有 async_hooks，在那里导入该入口会失败（让它远离 edge 产物）：
 
 ```ts
 import { als, currentCtx } from 's200/als';

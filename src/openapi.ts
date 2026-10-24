@@ -17,8 +17,16 @@
  * process lifetime, not per build; dynamic-pattern routes emit with their
  * pattern verbatim.
  *
+ * Schemas occurring ≥2 times (structural JSON equality) are hoisted into
+ * `components.schemas` and referenced with `$ref`s — titled via the DSL's
+ * optional `title`, else `Schema1`, `Schema2`, … in first-occurrence
+ * order (`refSchemas: false` keeps everything inline). Query entries may
+ * mark themselves required (`{ schema, required: true }`): the spec
+ * emits `parameters[].required: true` and the validation gate rejects
+ * the key's absence with a 422 — the two views stay isomorphic.
+ *
  * {@link withRouteValidation} is the runtime twin: the same annotations
- * become request gates — a 422 naming the first violation's path — while
+ * become request gates — a 422 naming every violation's path — while
  * `openapiSpec` keeps describing them, one source of truth for both.
  *
  * @module
@@ -37,12 +45,19 @@ import type {
 } from './types';
 
 import { readJson } from './body';
-import { httpError } from './errors';
-import { describeRoute, getAppMeta, getRouteMeta, type RouteMeta } from './meta';
+import {
+  describeRoute,
+  getAppMeta,
+  getRouteMeta,
+  isQueryRequired,
+  querySchemaOf,
+  type RouteMeta,
+} from './meta';
 import { parseQuery } from './query';
 import { json } from './respond';
 import { createRoute } from './router';
-import { compileValidator, toJsonSchema, type ValidationIssue } from './serialize';
+import { compileValidator, toJsonSchema } from './serialize';
+import { validationError } from './validate';
 
 /**
  * One named security scheme — OpenAPI 3.1's `Security Scheme Object`
@@ -76,6 +91,16 @@ export type OpenApiSpecOptions = {
   /** Named schemes — emitted under `components.securitySchemes` and
    * referenced by `RouteMeta.security` entries. */
   readonly securitySchemes?: Readonly<Record<string, SecuritySchemeObject>>;
+  /**
+   * Hoist repeated schemas into `components.schemas` and reference them
+   * with `$ref`s — the default. Pass `false` to keep every schema
+   * inline. Hoisting applies to any schema that occurs ≥2 times in the
+   * document (structural JSON equality, query/body/response schemas
+   * alike): it lands under its `title` when the DSL carries one, else a
+   * synthetic `Schema1`, `Schema2`, … in first-occurrence order.
+   * Single-use schemas stay inline.
+   */
+  readonly refSchemas?: boolean;
 };
 
 /** The emitted document — OpenAPI 3.1.0, JSON-compatible by construction. */
@@ -88,7 +113,11 @@ export type OpenApiDocument = {
   };
   readonly servers?: readonly { readonly url: string; readonly description?: string }[];
   readonly components?: {
-    readonly securitySchemes: Readonly<Record<string, SecuritySchemeObject>>;
+    readonly securitySchemes?: Readonly<Record<string, SecuritySchemeObject>>;
+    /** Schemas hoisted by the `refSchemas` dedup (see
+     * {@link OpenApiSpecOptions.refSchemas}), named by `title` or
+     * synthetic first-occurrence order. */
+    readonly schemas?: Readonly<Record<string, unknown>>;
   };
   readonly paths: Record<string, Record<string, unknown>>;
 };
@@ -118,16 +147,33 @@ function pathParameters(segments: readonly Segment[]): unknown[] {
   return out;
 }
 
-/** Query-level parameters from {@link RouteMeta.query}. */
-function queryParameters(meta: RouteMeta): unknown[] {
+/**
+ * One materialized schema site: the emitted JSON (the structural dedup
+ * key) and the object holding it under its `schema` key — the hoist pass
+ * swaps the repeated ones to `$ref`s in place.
+ */
+type SchemaSite = { readonly json: string; readonly holder: { schema: unknown } };
+
+/** `~` and `/` are structural in JSON pointers — escape them in names. */
+function escapePointer(name: string): string {
+  return name.replaceAll('~', '~0').replaceAll('/', '~1');
+}
+
+/** Query-level parameters from {@link RouteMeta.query}: `required` is
+ * `true` only where the annotation's marker form says so (`false` is the
+ * query default, and the gate enforces exactly this flag). */
+function queryParameters(meta: RouteMeta, sites: SchemaSite[]): unknown[] {
   const out: unknown[] = [];
-  for (const [name, schema] of Object.entries(meta.query ?? {})) {
-    out.push({
+  for (const [name, entry] of Object.entries(meta.query ?? {})) {
+    const schema = toJsonSchema(querySchemaOf(entry));
+    const param = {
       name,
       in: 'query',
-      required: false,
-      schema: toJsonSchema(schema),
-    });
+      required: isQueryRequired(entry),
+      schema,
+    };
+    sites.push({ json: JSON.stringify(schema), holder: param });
+    out.push(param);
   }
   return out;
 }
@@ -203,7 +249,11 @@ function exampleToJsonSchema(example: unknown): Record<string, unknown> | undefi
  * `meta.responses` wins (its description and schema were written for the
  * spec, the gate's example is only an inference seed).
  */
-function responsesOf(meta: RouteMeta | undefined, route: Route): Record<string, unknown> {
+function responsesOf(
+  meta: RouteMeta | undefined,
+  route: Route,
+  sites: SchemaSite[]
+): Record<string, unknown> {
   const declared = meta?.responses;
   const gates = throwsErrors(route);
   const out: Record<string, unknown> = {};
@@ -211,15 +261,15 @@ function responsesOf(meta: RouteMeta | undefined, route: Route): Record<string, 
     out[200] = { description: 'Successful response' };
   }
   for (const [status, entry] of Object.entries(declared ?? {})) {
+    if (entry.schema === undefined) {
+      out[status] = { description: entry.description };
+      continue;
+    }
+    const media: { schema: unknown } = { schema: toJsonSchema(entry.schema) };
+    sites.push({ json: JSON.stringify(media.schema), holder: media });
     out[status] = {
       description: entry.description,
-      ...(entry.schema === undefined
-        ? {}
-        : {
-            content: {
-              'application/json': { schema: toJsonSchema(entry.schema) },
-            },
-          }),
+      content: { 'application/json': media },
     };
   }
   for (const [status, example] of Object.entries(gates)) {
@@ -256,9 +306,20 @@ const warnedAllPatterns = new WeakMap<App, Set<string>>();
  * each distinct pattern warns once per app for the process lifetime:
  * `[s200] openapi: route /x uses ALL — expand to explicit methods to
  * document it`. Dynamic-pattern routes emit with their pattern verbatim.
+ *
+ * Repeated schemas are deduplicated: any query/body/response schema
+ * that occurs ≥2 times (structural JSON equality) is hoisted into
+ * `components.schemas` and referenced with `$ref`s — named by the
+ * schema's `title` when the DSL carries one, else `Schema1`, `Schema2`,
+ * … in first-occurrence order. `refSchemas: false` keeps everything
+ * inline. `components.securitySchemes` merges into the same
+ * `components` object untouched.
  */
 export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocument {
   const paths: Record<string, Record<string, unknown>> = {};
+  // Every schema site materialized below lands here; the hoist pass
+  // turns the repeated ones into `components.schemas` `$ref`s.
+  const sites: SchemaSite[] = [];
   let warnedAll = warnedAllPatterns.get(app);
   if (warnedAll === undefined) {
     warnedAll = new Set<string>();
@@ -278,8 +339,14 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
     const path = openapiPath(route.pattern);
     const parameters = [
       ...pathParameters(route.segments),
-      ...queryParameters(meta ?? {}),
+      ...queryParameters(meta ?? {}, sites),
     ];
+    let requestBody: Record<string, unknown> | undefined;
+    if (meta?.body !== undefined) {
+      const media: { schema: unknown } = { schema: toJsonSchema(meta.body) };
+      sites.push({ json: JSON.stringify(media.schema), holder: media });
+      requestBody = { content: { 'application/json': media } };
+    }
     const item: Record<string, unknown> = {
       ...(meta?.summary !== undefined ? { summary: meta.summary } : {}),
       ...(meta?.description !== undefined ? { description: meta.description } : {}),
@@ -287,20 +354,53 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
       ...(meta?.deprecated === true ? { deprecated: true } : {}),
       ...(parameters.length > 0 ? { parameters } : {}),
       ...(meta?.security !== undefined ? { security: meta.security } : {}),
-      ...(meta?.body !== undefined
-        ? {
-            requestBody: {
-              content: {
-                'application/json': { schema: toJsonSchema(meta.body) },
-              },
-            },
-          }
-        : {}),
-      responses: responsesOf(meta, route),
+      ...(requestBody !== undefined ? { requestBody } : {}),
+      responses: responsesOf(meta, route, sites),
     };
     paths[path] ??= {};
     paths[path][route.method.toLowerCase()] = item;
   }
+  // The dedup: group sites by structural JSON equality, hoist every
+  // group of ≥2 under one name (its `title` when the DSL carries one,
+  // else `Schema1`, `Schema2`, … in first-occurrence order — so builds
+  // are reproducible), and swap each site's schema for the `$ref`.
+  // Colliding names (same `title`, different JSON) get `_2`, `_3`, … in
+  // registration-order, mirroring `s200/mcp`'s tool slugs.
+  const schemas: Record<string, unknown> = {};
+  if (options.refSchemas !== false) {
+    const groups = new Map<string, SchemaSite[]>();
+    for (const site of sites) {
+      const group = groups.get(site.json);
+      if (group === undefined) groups.set(site.json, [site]);
+      else group.push(site);
+    }
+    const taken = new Set<string>();
+    let seq = 0;
+    for (const [json, group] of groups) {
+      if (group.length < 2) continue;
+      const parsed = JSON.parse(json) as { title?: unknown };
+      const base =
+        typeof parsed.title === 'string' && parsed.title !== ''
+          ? parsed.title
+          : `Schema${(seq += 1)}`;
+      let name = base;
+      let n = 2;
+      while (taken.has(name)) {
+        name = `${base}_${n}`;
+        n += 1;
+      }
+      taken.add(name);
+      schemas[name] = parsed;
+      const ref = { $ref: `#/components/schemas/${escapePointer(name)}` };
+      for (const { holder } of group) holder.schema = ref;
+    }
+  }
+  const components: Record<string, unknown> = {
+    ...(options.securitySchemes !== undefined
+      ? { securitySchemes: options.securitySchemes }
+      : {}),
+    ...(Object.keys(schemas).length > 0 ? { schemas } : {}),
+  };
   return {
     openapi: '3.1.0',
     info: {
@@ -311,9 +411,7 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
     ...(options.servers !== undefined && options.servers.length > 0
       ? { servers: options.servers }
       : {}),
-    ...(options.securitySchemes !== undefined
-      ? { components: { securitySchemes: options.securitySchemes } }
-      : {}),
+    ...(Object.keys(components).length > 0 ? { components } : {}),
     paths,
   };
 }
@@ -322,7 +420,7 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
  * The spec as a JSON response helper — pairs with {@link openapiSpec} for
  * the `/openapi.json` route. Uses the app-level metadata (`describeApp`)
  * when the caller omitted `info`-block fields; every other option
- * (`servers`, `securitySchemes`) passes through verbatim.
+ * (`servers`, `securitySchemes`, `refSchemas`) passes through verbatim.
  */
 export function openapiJson(ctx: Ctx, app: App, options?: OpenApiSpecOptions): Response {
   const appMeta = getAppMeta(app);
@@ -332,17 +430,6 @@ export function openapiJson(ctx: Ctx, app: App, options?: OpenApiSpecOptions): R
     version: options?.version ?? appMeta?.version ?? '0.0.0',
     description: options?.description ?? appMeta?.description,
   }));
-}
-
-/** The 422 message: the scope-qualified path of the first issue plus its
- * reason — `'body.items.2.name: expected string, got number'`. Callers
- * arrive only with a non-empty list; the fallbacks keep the helper total
- * under `noUncheckedIndexedAccess`. */
-function summarize(scope: string, issues: readonly ValidationIssue[]): string {
-  const first = issues[0];
-  const path = first?.path ?? '';
-  const message = first?.message ?? '';
-  return path === '' ? `${scope}: ${message}` : `${scope}.${path}: ${message}`;
 }
 
 /**
@@ -355,25 +442,32 @@ function summarize(scope: string, issues: readonly ValidationIssue[]): string {
 function validationGate(meta: RouteMeta): Middleware {
   const body = meta.body !== undefined ? compileValidator(meta.body) : undefined;
   const query = Object.entries(meta.query ?? {}).map(
-    ([key, schema]) => [key, compileValidator(schema)] as const
+    ([key, entry]) =>
+      [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
   );
   return async (ctx, next) => {
     if (body !== undefined) {
       const issues = body(await readJson(ctx));
       if (issues.length > 0) {
-        throw httpError(422, summarize('body', issues));
+        throw validationError('body', issues);
       }
     }
     if (query.length > 0) {
       const record = parseQuery(ctx);
-      for (const [key, validate] of query) {
+      for (const [key, validate, required] of query) {
         const value = record[key];
-        // Absent keys pass — query parameters are always optional (the
-        // spec emits `required: false` for every one of them).
-        if (value === undefined) continue;
+        // Absent keys pass — optional is the query default. A `required`
+        // marker flips it: the spec's `parameters[].required: true` and
+        // the gate reject the same requests (422, `validationError`).
+        if (value === undefined) {
+          if (required) {
+            throw validationError(`query.${key}`, [{ path: '', message: 'required' }]);
+          }
+          continue;
+        }
         const issues = validate(value);
         if (issues.length > 0) {
-          throw httpError(422, summarize(`query.${key}`, issues));
+          throw validationError(`query.${key}`, issues);
         }
       }
     }
@@ -392,12 +486,18 @@ function validationGate(meta: RouteMeta): Middleware {
  *
  * Semantics: `body` is read once via `readJson` (cached like any other
  * body read) and checked with `compileValidator`; each annotated `query`
- * key present in the request is checked against its schema. Values are
+ * key present in the request is checked against its schema, and a key
+ * marked required (`{ schema, required: true }` — the flag the spec
+ * emits as `parameters[].required`) answers its absence with the same
+ * 422 `validationError` (`'query.<key>: required'`). Values are
  * seen verbatim — query strings live in the string domain, so
  * `{ type: 'integer' }` rejects `?page=2`; annotate string shapes or use
  * `s200/query`'s `queryParams` when you want coercion. Any issue rejects
- * the chain with a 422 `HttpError` naming the first violation
- * (`'body.address.city: required'`). Nothing is written to `ctx.state`
+ * the chain with a 422 `HttpError` built by `validationError` from
+ * `s200/validate`: `error` names the first violation
+ * (`'body.address.city: required'`) and the body's `issues` array
+ * carries the full list, each entry's path scope-qualified the same
+ * way. Nothing is written to `ctx.state`
  * and nothing is coerced: this is the documented schema's runtime
  * cash-in, not a second typed input channel — for that, use
  * `s200/validate`'s `jsonBody` gate.

@@ -30,7 +30,7 @@ features:
     details: cors、logger、compress、websocket、jwt 等都住在独立的包入口 —— 只导入用到的那个，核心保持精简。
   - icon: 🌍
     title: 多运行时
-    details: node · bun · deno · edge。提供 s200/node、s200/bun、s200/deno、s200/cloudflare 的适配器；核心直接消费 Web Standard 的 Request/Response。
+    details: node · bun · edge。提供 s200/node、s200/bun、s200/cloudflare 的适配器；核心直接消费 Web Standard 的 Request/Response。
   - icon: 🛡️
     title: 由路由表派生的类型安全客户端
     details: "createClient(app) 从应用自身的路由表派生出类型安全的 fetch 客户端 —— 路径限定为已注册的模式字面量、参数类型由其推导、请求体类型来自 schema 输入、声明的错误分支并入 json() 与状态码。"

@@ -2,6 +2,8 @@ import { describe, it } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
 import { basicAuth, bearerAuth } from '../src/auth';
+import { isHttpError } from '../src/errors';
+import { json } from '../src/respond';
 
 /** UTF-8-aware basic credential encoding (what browsers send). */
 function basic(username: string, password: string): string {
@@ -96,6 +98,29 @@ describe('basicAuth', () => {
     const res = await handle(app, new Request('http://localhost/'));
     res.headers.get('www-authenticate')!.should.equal('Basic realm="api"');
   });
+
+  it('hands the 401 rejection to a configured onError, challenge on the error', async () => {
+    const seen: unknown[] = [];
+    const app = createApp({
+      onError: (ctx, error) => {
+        seen.push(error);
+        json(ctx, { reason: 'denied by policy' }, { status: 403 });
+      },
+    });
+    use(app, basicAuth(() => false));
+    get(app, '/', () => new Response('ok'));
+    const res = await handle(app, new Request('http://localhost/'));
+    // The policy owns the wire answer.
+    res.status.should.equal(403);
+    (await res.json()).should.deep.equal({ reason: 'denied by policy' });
+    // What it saw was the gate's 401 with the challenge tagged onto it.
+    const err = seen[0];
+    isHttpError(err).should.be.true;
+    if (isHttpError(err)) {
+      err.status.should.equal(401);
+      (err.headers?.['www-authenticate'] ?? '').should.equal('Basic realm="s200"');
+    }
+  });
 });
 
 describe('bearerAuth', () => {
@@ -129,5 +154,29 @@ describe('bearerAuth', () => {
       new Request('http://localhost/', { headers: { authorization: 'bearer t' } })
     );
     res.status.should.equal(200);
+  });
+
+  it('hands the 401 rejection to a configured onError, challenge on the error', async () => {
+    const seen: unknown[] = [];
+    const app = createApp({
+      onError: (ctx, error) => {
+        seen.push(error);
+        json(ctx, { reason: 'denied by policy' }, { status: 403 });
+      },
+    });
+    use(app, bearerAuth(() => false));
+    get(app, '/', () => new Response('ok'));
+    const res = await handle(
+      app,
+      new Request('http://localhost/', { headers: { authorization: 'Bearer nope' } })
+    );
+    res.status.should.equal(403);
+    (await res.json()).should.deep.equal({ reason: 'denied by policy' });
+    const err = seen[0];
+    isHttpError(err).should.be.true;
+    if (isHttpError(err)) {
+      err.status.should.equal(401);
+      (err.headers?.['www-authenticate'] ?? '').should.equal('Bearer realm="s200"');
+    }
   });
 });

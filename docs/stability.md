@@ -119,9 +119,12 @@ throws({ 422: { issues: string[] } });       // with structured body shapes
 ```
 
 Errors are tagged data checked structurally, so they survive bundle
-boundaries. `httpError(status, message, body?)` carries an optional payload
-rendered verbatim; without one the response keeps the `{ error: message }`
-envelope. Handlers may throw or **return** them — a returned `HttpError`
+boundaries. `httpError(status, message, body?, headers?)` carries an
+optional payload rendered verbatim, and optional response headers
+(`WWW-Authenticate`, `Retry-After`, IETF `RateLimit-*`, …) merged onto the
+error response; without a payload the response keeps the
+`{ error: message }` envelope. Handlers may throw or **return** them — a
+returned `HttpError`
 takes the exact error-boundary path a thrown one does, and its type infers
 the client's error branch (no declaration needed). The `throws` gate is the
 declaration channel for branches the type layer cannot see (thrown from
@@ -165,7 +168,7 @@ shapes may gain fields. New batteries may be **added** (a minor).
 ```
 s200                (the core barrel: createApp, registrars, respond
                      helpers, error model, routing)
-s200/node  s200/bun  s200/deno  s200/cloudflare          (adapters)
+s200/node  s200/bun  s200/cloudflare               (adapters)
 s200/cors  s200/logger  s200/cookies  s200/validate  s200/query
 s200/rate-limit  s200/compress  s200/etag  s200/request-id  s200/timeout
 s200/websocket  s200/websocket/node  s200/websocket/bun
@@ -195,6 +198,7 @@ s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
 s200/config  s200/schedule  s200/version  s200/events  s200/als
 s200/response-check  s200/aws-lambda  s200/vercel  s200/mcp
+s200/websocket/cloudflare
 s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
 ```
 
@@ -234,12 +238,16 @@ semantic-release overwrites — versions are never hand-edited.
 An honest list. These areas may still change within minors, including
 before the 1.0 cutover:
 
+- **The `withState` state channel** — `withState` / `StateMiddleware<X, S>` /
+  `StateOf<Ms>` (core barrel) brand a middleware with the state it injects
+  and thread it through `use` into the app's `S`. Additive and stable, but
+  new: the exact generic shapes and the collection surface (which `use`
+  forms thread it, how route chains treat it) may still adjust within
+  minors.
 - **Light mode details** — `serve(app, { light: true })` in `s200/node` is
   an opt-in fast path with duck-typed request/response objects. The
   *default* Web Standard contract is frozen; the light path's coverage and
   internals may still grow and shift.
-- **JSR publishing flow** — `jsr.json` and `pnpm publish:jsr` exist, but
-  the published module graph and cadence are not yet pinned.
 - **Codegen output format** — `generateClient(app)` emits a standalone
   TypeScript module today; the emitted shape may change (it is generated
   code — regenerate rather than hand-edit).

@@ -16,7 +16,7 @@ This tutorial builds a real API from zero: scaffold, routes, batteries, validati
 - **Node.js ≥ 20.3** is the runtime floor for s200 itself (compiled JavaScript).
 - This tutorial (and the scaffold) runs `.ts` sources directly through Node's native type stripping. That needs **Node ≥ 23.6, or ≥ 22.18**, with no flags; on Node 22.6–22.17 prefix commands with `NODE_OPTIONS=--experimental-strip-types`; older Node cannot run `.ts` at all.
 - Or skip all of the above: the scaffold works the same, and any bundler workflow (vite, tsup, esbuild) compiles to plain JS first.
-- Bun, Deno, and edge runtimes work too — pick them at step 1 (see [adapters](/guides/adapters)).
+- Bun and edge runtimes work too — pick them at step 1 (see [adapters](/guides/adapters)).
 
 ## 1. Scaffold the project
 
@@ -29,7 +29,7 @@ npm install
 In an interactive terminal the scaffolder asks one question:
 
 ```text
-Target runtime (node/bun/deno/cloudflare):
+Target runtime (node/bun/cloudflare):
 ```
 
 Pick `node` to follow this tutorial verbatim (the non-interactive default). Flags exist for CI: `--runtime node`, `--template rest` (a fuller REST slice; `minimal` is the default), `--force`.
@@ -269,7 +269,7 @@ This loop — **route table → OpenAPI → validation → typed client → test
 
 - **Node** — `npm start` is already the shape. For production wire `lifecycle` for graceful drain plus a health endpoint: [deployment](/guides/deployment).
 - **Bun** — swap the adapter: `import { serve } from 's200/bun'`. Same app, same routes.
-- **Cloudflare Workers / Deno** — `s200/cloudflare` and `s200/deno` wrap `handle(app, request)` for the platform's event shape; the scaffold offers both as runtime choices.
+- **Cloudflare Workers** — `s200/cloudflare` wraps `handle(app, request)` for the platform's event shape; the scaffold offers it as a runtime choice.
 
 Everything about production — Dockerfiles, drain ordering, readiness gates, bind/host knobs — lives in the [deployment guide](/guides/deployment).
 

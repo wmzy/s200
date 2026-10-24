@@ -33,7 +33,7 @@ budgets (`pnpm size`).
 | `s200/rate-limit`     | `rateLimit` — sliding-window limiter with an injectable store |
 | `s200/trust-proxy`    | `trustProxy` — honest client IPs behind a proxy               |
 | `s200/version`        | `apiVersion` — header/Accept API versioning gate, `ctx.state.version` |
-| `s200/als`            | `als`, `currentCtx` — ambient `ctx` over `node:async_hooks` (node/bun/deno; not edge) |
+| `s200/als`            | `als`, `currentCtx` — ambient `ctx` over `node:async_hooks` (node/bun; not edge) |
 
 ### Auth & sessions
 
@@ -64,6 +64,7 @@ budgets (`pnpm size`).
 | `s200/websocket`        | `upgradeWebSocket` — runtime-neutral WS upgrade          |
 | `s200/websocket/node`   | `createUpgradeHandler` — the node http server side       |
 | `s200/websocket/bun`    | `createBunWebSocketBridge` — the Bun side                |
+| `s200/websocket/cloudflare` | `createCloudflareWebSocketBridge` — the Workers side |
 
 ### Introspection & tooling
 
@@ -121,7 +122,6 @@ Not middleware — one line each to serve the same app on another runtime:
 | ----------------- | ---------------------------------------------------------------- |
 | `s200/node`       | `serve` (light mode, TLS/HTTP2, WSS upgrade) + file readers      |
 | `s200/bun`        | `serve` + the Bun file readers                                   |
-| `s200/deno`       | `serve` over `Deno.serve`                                        |
 | `s200/cloudflare` | `createHandler` — the module worker's default export             |
 
 ### Recipes

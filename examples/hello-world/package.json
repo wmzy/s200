@@ -1,0 +1,16 @@
+{
+  "name": "@s200-example/hello-world",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node app.ts",
+    "smoke": "node smoke.ts"
+  },
+  "dependencies": {
+    "s200": "workspace:*"
+  }
+}

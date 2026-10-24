@@ -29,6 +29,9 @@ type SerializeSchema =
   | { type: 'object'; properties: { [key: string]: SerializeSchema }; required?: readonly string[] }
   | { type: 'array'; items: SerializeSchema }
   | { readonly type: PrimitiveType; readonly nullable?: boolean };
+// 每个节点还接受可选 `title?: string` —— 纯注解：`toJsonSchema` 把它带入
+// 输出的 JSON Schema（在 `s200/openapi` 里为去重后的 `components.schemas`
+// 条目命名）；序列化与校验忽略它。
 ```
 
 `PrimitiveType` 命名叶子备选：`'string' | 'number' | 'integer' | 'boolean' | 'null'`。

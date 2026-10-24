@@ -31,12 +31,12 @@ A collision (same method and alphanumeric skeleton — e.g. `/a-b` vs `/a_b`) ge
 **Input schema** — one flat object, three sources merged in a fixed order (later groups overwrite same-named earlier properties, so keep argument names unique across them):
 
 1. **Path params** — `{ type: 'string' }`, required unless `:param?`; wildcards always required.
-2. **Query params** (`meta.query`) — optional: a query param is never required at the HTTP layer, and `RouteMeta` declares no per-query required flag.
+2. **Query params** (`meta.query`) — optional by default; the `{ schema, required: true }` marker form lists the name under `required` — the same flag `openapiSpec` emits as `parameters[].required` and `withRouteValidation` enforces with a 422, so tool callers send what the route demands.
 3. **Body** (`meta.body`) — an object schema flattens its `properties` and `required` into the top level; any other shape nests under a required `body` key.
 
-The merged `required` list is deduplicated in first-seen order: a name both a path parameter and the body schema require is required once, so the emitted JSON Schema stays valid (`required` takes unique names).
+The merged `required` list is deduplicated in first-seen order (path params, then query markers, then body names): a name both a path parameter and the body schema require is required once, so the emitted JSON Schema stays valid (`required` takes unique names).
 
-Schemas convert through `toJsonSchema` (`s200/serialize`) — the same pass-through the OpenAPI emitter uses, covering exactly what the `SerializeSchema` DSL carries (`type`, `properties`/`required`, `items`, `nullable`).
+Schemas convert through `toJsonSchema` (`s200/serialize`) — the same pass-through the OpenAPI emitter uses, covering exactly what the `SerializeSchema` DSL carries (`type`, `properties`/`required`, `items`, `nullable`, `title`).
 
 ## The handler (`createMcpHandler`)
 

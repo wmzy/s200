@@ -35,7 +35,11 @@ describeRoute(app, 'GET', '/users/:id', {
 | `describeApp(app, meta)` | Annotates the app itself (the OpenAPI `info` block) |
 | `getRouteMeta(route)` / `getAppMeta(app)` | Read back what was set |
 
-`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, SerializeSchema>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`. `AppMeta`: `{ title?, version?, description? }`.
+`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`. `AppMeta`: `{ title?, version?, description? }`.
+
+A `QueryParam` is the parameter's `SerializeSchema` bare (optional — the default), or the `{ schema, required: true }` marker form when the request must carry the key. The marker is one flag with three synchronized views: `openapiSpec` emits `parameters[].required: true`, `withRouteValidation` answers a missing key with a `422` (`'query.<key>: required'`), and `s200/mcp`'s tool input schema lists the name under `required`. `querySchemaOf(entry)`/`isQueryRequired(entry)` (from `s200/meta`) unwrap either form for custom tooling.
+
+`SerializeSchema` also accepts an optional `title` on every node — a pure annotation: `toJsonSchema` carries it into the emitted JSON Schema, serialization and validation ignore it, and the spec emitter uses it to name deduplicated schemas (below).
 
 `security` is OpenAPI's requirement shape — one entry per alternative (OR), each entry mapping a scheme name to its required scopes (`[]` when the scheme needs none). It lands on the operation verbatim; declare the schemes themselves via `openapiSpec`'s `securitySchemes` option.
 
@@ -57,20 +61,23 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | `description` | — | `info.description` |
 | `servers` | — | `ReadonlyArray<{ url: string; description?: string }>` — emitted verbatim as the document's `servers` (omitted when absent or empty) |
 | `securitySchemes` | — | `Record<string, SecuritySchemeObject>` — emitted under `components.securitySchemes`, referenced by name from `RouteMeta.security` |
+| `refSchemas` | `true` | Pass `false` to disable schema dedup (see below) and keep every schema inline |
 
 `SecuritySchemeObject` is OpenAPI 3.1's scheme shape, kept permissive (s200 emits data, it does not validate it): `{ type: 'apiKey' | 'http' | 'oauth2' | 'openIdConnect' | 'mutualTLS', description?, name?, in?, scheme?, bearerFormat?, flows?, openIdConnectUrl? }` — the non-`type` fields are the ones each flavor reads.
 
 **Error responses from `throws` gates.** A route whose chain carries `throws` gates gets their statuses emitted as error responses. The bare form (`throws(401, 404)`) documents the default `{ error: string }` envelope; the record form (`throws({ 422: { issues: ['x'] } })`) infers the schema structurally from the record's example value — strings/booleans/null map directly, integrality splits `integer` from `number`, arrays describe their items when every element agrees, objects list the keys present (required-ness is unknowable from an example, so no key is `required`). Gates merge with `meta.responses` without clobbering: a status only one side declares is emitted, and on conflict **`meta.responses` wins** — its description and schema were written for the spec, the gate's example is only an inference seed. Several gates naming the same status: the later registration wins (the type layer unions body shapes; example values cannot).
 
-**Schema pass-through.** `toJsonSchema` forwarding covers exactly the fields a `SerializeSchema` carries at runtime — `type`, `properties`/`required`, `items`, `nullable`. The DSL has no `enum`/`format`/`description`/bounds markers, so none are invented.
+**Schema dedup into `components.schemas`.** Any query, body or response schema that occurs **≥2 times** in the document (structural JSON equality — distinct-but-equal objects dedup too) is hoisted into `components.schemas` and every occurrence becomes `{ "$ref": "#/components/schemas/<name>" }`. The name is the schema's `title` when the DSL carries one, else a synthetic `Schema1`, `Schema2`, … in first-occurrence order — deterministic, so specs diff cleanly across builds; colliding titles (same `title`, different JSON) get `_2`, `_3`, … suffixes. Schemas that occur once stay inline (no pointless fragmentation), and `components.securitySchemes` merges into the same `components` object untouched. Pass `refSchemas: false` to keep everything inline.
+
+**Schema pass-through.** `toJsonSchema` forwarding covers exactly the fields a `SerializeSchema` carries at runtime — `type`, `properties`/`required`, `items`, `nullable`, `title`. The DSL has no `enum`/`format`/`description`/bounds markers, so none are invented.
 
 | Function | Meaning |
 | --- | --- |
 | `openapiSpec(app, options)` | The `OpenApiDocument` — `{ openapi: '3.1.0', info, servers?, components?, paths }`, JSON-compatible by construction |
-| `openapiJson(ctx, app, options?)` | Response helper: the spec as a JSON response (`info` fields fall back to `describeApp`; `servers`/`securitySchemes` pass through verbatim) |
+| `openapiJson(ctx, app, options?)` | Response helper: the spec as a JSON response (`info` fields fall back to `describeApp`; `servers`/`securitySchemes`/`refSchemas` pass through verbatim) |
 | `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` |
 
-`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming the first offending path (`{"error":"body.tags.1: expected string, got number"}`); valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes. The response side has the same twin — [`s200/response-check`](/api/response-check) runs `responses[status].schema` against the materialized response on the unwind.
+`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while `issues` carries the full list with scope-qualified paths, all built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). Query keys marked required (`{ schema, required: true }`) are isomorphic to the spec: the key's absence answers the same 422 (`{"error":"query.format: required"}`); an empty value (`?format=`) counts as present, and a present value is still checked against its schema. The spec and the gates share one source: annotations are re-attached to the rebuilt routes. The response side has the same twin — [`s200/response-check`](/api/response-check) runs `responses[status].schema` against the materialized response on the unwind.
 
 ## Swagger UI (`s200/swagger`)
 
@@ -107,7 +114,7 @@ await writeFile('src/api/client.ts', generateClient(app, { name: 'createUsersCli
 Where the types come from — exactly what exists at runtime:
 
 - **Params** from each pattern: `/users/:id` → `args: { id: string }`, `/posts/:postId?` → `{ postId?: string }`, `*path` wildcards included.
-- **Query** from `meta.query`: `init.query` narrows to the declared keys, all optional (`{ query?: { verbose?: boolean } }`).
+- **Query** from `meta.query`: `init.query` narrows to the declared keys — optional by default (`{ query?: { verbose?: boolean } }`); a `{ schema, required: true }` marker drops the `?` (`{ query?: { format: string } }`), matching the spec's `parameters[].required` and the gate's 422.
 - **Request body** from `meta.body`: `init.body` retypes to the schema's shape and `init` becomes **required** (the route reads a body, the caller must send one). A JSON-shape body is stringified at call time with a default `content-type: application/json` unless one is set — s200/client's rule; strings and structured bodies (streams, blobs, forms, buffers) pass to fetch untouched.
 - **Responses** from `meta.responses` merged with the route's `throws` gates (meta wins a status both declare): one `Branch<S, T>` member per status — a `Response` whose `status` is the branch's literal and whose `json()` resolves to the branch's body type — so `if (res.status === 404)` narrows the body. Throws examples infer structurally, same as the spec emitter.
 

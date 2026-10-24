@@ -1,5 +1,7 @@
 # upload-app — multipart upload landing + serving
 
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/fork/github/wmzy/s200/tree/main/examples/upload-app)
+
 An image dropbox in ~70 lines. Demonstrates the **`s200/upload`** battery
 (`uploadForm`) and the **static layer** with the node adapter's file
 injections, plus the contract between them:

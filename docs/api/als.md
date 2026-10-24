@@ -26,4 +26,4 @@ The storage is a module-level singleton — the simplest shape, and tree-shakabl
 
 ### Runtime boundary
 
-`node:async_hooks` exists on **Node, Bun, and Deno** (Node compat). **Cloudflare Workers has no async_hooks** — importing `s200/als` fails there at bundle/boot time, so keep the entry out of edge bundles (a `s200/cloudflare` app simply never imports it). Explicit ctx passing needs no fallback: code that must run everywhere takes `ctx` as a parameter.
+`node:async_hooks` exists on **Node and Bun**. **Cloudflare Workers has no async_hooks** — importing `s200/als` fails there at bundle/boot time, so keep the entry out of edge bundles (a `s200/cloudflare` app simply never imports it). Explicit ctx passing needs no fallback: code that must run everywhere takes `ctx` as a parameter.

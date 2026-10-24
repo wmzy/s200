@@ -16,7 +16,7 @@ s200 是一个构建在 Web Standard 之上的数据 + 函数服务端框架 —
 - **Node.js ≥ 20.3** 是 s200 本身的运行底线（编译后的 JavaScript）。
 - 本教程（以及脚手架）用 Node 原生类型剥离直跑 `.ts` 源码。这需要 **Node ≥ 23.6 或 ≥ 22.18**（无需任何 flag）；Node 22.6–22.17 需要在命令前加 `NODE_OPTIONS=--experimental-strip-types`；更老的 Node 无法直跑 `.ts`。
 - 或者干脆绕开：脚手架怎么生成都一样，任何打包工作流（vite、tsup、esbuild）都会先编译成纯 JS。
-- Bun、Deno 与 edge 运行时同样支持 —— 在第 1 步选择即可（见[适配器](/zh/guides/adapters)）。
+- Bun 与 edge 运行时同样支持 —— 在第 1 步选择即可（见[适配器](/zh/guides/adapters)）。
 
 ## 1. 脚手架建项目
 
@@ -29,7 +29,7 @@ npm install
 在交互式终端里，脚手架只问一个问题：
 
 ```text
-Target runtime (node/bun/deno/cloudflare):
+Target runtime (node/bun/cloudflare):
 ```
 
 跟着本教程选 `node`（非交互模式的默认值）。CI 场景有现成 flag：`--runtime node`、`--template rest`（更完整的 REST 切片；默认 `minimal`）、`--force`。
@@ -268,7 +268,7 @@ await writeFile('client.ts', generateClient(app, { name: 'createMyClient' }));
 
 - **Node** —— `npm start` 已经是这个形态。生产环境再接上 `lifecycle` 做优雅排水、加一个健康检查端点：见[部署指南](/zh/guides/deployment)。
 - **Bun** —— 换适配器：`import { serve } from 's200/bun'`。同一个应用，同样的路由。
-- **Cloudflare Workers / Deno** —— `s200/cloudflare` 与 `s200/deno` 把 `handle(app, request)` 包进平台的事件形状；脚手架在运行时选择里都提供了。
+- **Cloudflare Workers** —— `s200/cloudflare` 把 `handle(app, request)` 包进平台的事件形状；脚手架在运行时选择里提供了它。
 
 关于生产的一切 —— Dockerfile、排水顺序、就绪闸门、绑定/host 选项 —— 都在[部署指南](/zh/guides/deployment)里。
 

@@ -70,6 +70,10 @@ const PLATFORM_CTORS = new Set([
   // wraps the middleware chain in the platform's AsyncLocalStorage — a
   // platform facility like Worker above, not an OOP pattern in our data.
   'AsyncLocalStorage',
+  // workerd global (src/websocket-cloudflare.ts): the Workers runtime's
+  // WebSocketPair constructor — the upgrade authority on Cloudflare, a
+  // platform facility like Request/Response above, not an OOP pattern.
+  'WebSocketPair',
   // Light-mode platform stand-ins (src/light.ts): class mimics of the
   // platform Request/Response, constructed exactly where the platform
   // constructors would be — the opt-in fast path, not an OOP pattern.

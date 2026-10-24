@@ -11,7 +11,7 @@ import { serve } from 's200/bun';
 const server = serve(app, { port: 3000 });
 ```
 
-两个适配器暴露相同的 `serve(app, options)` 面；核心的 `handle(app, request)` 是任何 fetch 形态运行时的全部集成契约 —— `s200/deno`（`Deno.serve` 之上的 `serve(app)`）和 `s200/cloudflare`（`createHandler(app)` 作为模块 worker 的默认导出）是那两个运行时的一行适配器。
+两个适配器暴露相同的 `serve(app, options)` 面；核心的 `handle(app, request)` 是任何 fetch 形态运行时的全部集成契约 —— `s200/cloudflare`（`createHandler(app)` 作为模块 worker 的默认导出）是那个运行时的一行适配器。
 
 ## 轻量模式
 

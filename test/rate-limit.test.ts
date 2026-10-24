@@ -2,6 +2,8 @@ import { describe, it } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
 import { rateLimit } from '../src/rate-limit';
+import { isHttpError } from '../src/errors';
+import { json, setHeader } from '../src/respond';
 
 function clock(start = 0): { now: () => number; advance: (ms: number) => void } {
   let t = start;
@@ -80,6 +82,67 @@ describe('rateLimit', function () {
   it('rejects non-positive window and limit at creation', function () {
     (() => rateLimit({ windowMs: 0 })).should.throw(/must be positive/);
     (() => rateLimit({ limit: 0 })).should.throw(/must be positive/);
+  });
+
+  it('tags the IETF RateLimit-* headers alongside Retry-After', async function () {
+    const time = clock();
+    const app = createApp();
+    use(app, rateLimit({ windowMs: 10_000, limit: 3, now: time.now }));
+    get(app, '/', () => new Response('ok'));
+    for (let i = 0; i < 3; i += 1) {
+      await handle(app, new Request('http://localhost/'));
+    }
+    time.advance(2_000); // oldest blocking hit still has 8s to live
+    const blocked = await handle(app, new Request('http://localhost/'));
+    blocked.status.should.equal(429);
+    (blocked.headers.get('retry-after') ?? '').should.equal('8');
+    (blocked.headers.get('ratelimit-limit') ?? '').should.equal('3');
+    (blocked.headers.get('ratelimit-remaining') ?? '').should.equal('0');
+    // Reset is the same seconds remainder as Retry-After.
+    (blocked.headers.get('ratelimit-reset') ?? '').should.equal('8');
+  });
+
+  it('hands the 429 rejection to a configured onError, RateLimit-* on the error', async function () {
+    const seen: unknown[] = [];
+    const time = clock();
+    const app = createApp({
+      onError: (ctx, error) => {
+        seen.push(error);
+        json(ctx, { error: 'slow down' }, { status: 429 });
+      },
+    });
+    use(app, rateLimit({ windowMs: 1000, limit: 1, now: time.now }));
+    get(app, '/', () => new Response('ok'));
+    await handle(app, new Request('http://localhost/'));
+    const blocked = await handle(app, new Request('http://localhost/'));
+    // The policy owns the wire answer — no gate headers unless it adds them.
+    blocked.status.should.equal(429);
+    (await blocked.json()).should.deep.equal({ error: 'slow down' });
+    (blocked.headers.get('retry-after') ?? '').should.equal('');
+    const err = seen[0];
+    isHttpError(err).should.be.true;
+    if (isHttpError(err)) {
+      err.status.should.equal(429);
+      (err.headers?.['retry-after'] ?? '').should.equal('1');
+      (err.headers?.['ratelimit-limit'] ?? '').should.equal('1');
+      (err.headers?.['ratelimit-remaining'] ?? '').should.equal('0');
+    }
+  });
+
+  it('drains setHeader-pending headers onto the 429 (newResponse funnel regression)', async function () {
+    const time = clock();
+    const app = createApp();
+    use(app, async (ctx, next) => {
+      setHeader(ctx, 'x-request-scope', 'abc');
+      await next();
+    });
+    use(app, rateLimit({ windowMs: 1000, limit: 1, now: time.now }));
+    get(app, '/', () => new Response('ok'));
+    await handle(app, new Request('http://localhost/'));
+    const blocked = await handle(app, new Request('http://localhost/'));
+    blocked.status.should.equal(429);
+    (blocked.headers.get('x-request-scope') ?? '').should.equal('abc');
+    (blocked.headers.get('ratelimit-limit') ?? '').should.equal('1');
   });
 });
 

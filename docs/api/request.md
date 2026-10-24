@@ -19,6 +19,8 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 | `requiresHeaders<K>(...keys)` | Declares the request headers a route reads — a pure pass-through gate in the `throws` mold: nothing is checked, the keys just ride the route's `in` channel so `s200/client` demands them as `init.headers` (a record with every key required). Enforcement is middleware's job — `validate(parse)` reading `ctx.req.headers` is the runtime twin |
 | `bodyShape<T>()` | Declares the structured body type a route reads (`bodyShape<FormData>()` on an upload route, `bodyShape<Blob>()` on a binary one) — same declaration-only mold; `s200/client` types (and demands) `init.body` as exactly `T` and encodes it from the runtime value: a plain object/array is JSON-stringified with a default `content-type: application/json`, while `FormData`/`Blob`/streams ride to fetch untouched. Runtime reading stays with the handler (`streamForm`, `uploadForm`, or the raw `ctx.req.body`) |
 | `standardValidate(schema, data)` | The raw Standard Schema call: `validate()` → `{ value }` or `{ issues }`; empty `issues` counts as success |
+| `validationError(scope, issues)` | The 422 every validation gate throws (shared with `withRouteValidation` from `s200/openapi`): the body's `error` key keeps the first issue's summary — scope-qualified (`'body.items.2.name: …'`) when `scope` names the request location, the raw first message otherwise — and `issues` carries the full list |
+| `formatIssuePath(path)` | Issue path array → string: object keys dotted, array indices bracketed (`['user', 'tags', 0]` → `'user.tags[0]'`); a missing or empty path formats as `''` |
 | `isStandardSchema(value)` | Structural `~standard` predicate |
 
 `ValidateOptions`: `{ key?: string }` — `ctx.state` slot for the parsed value, default `'validated'`.
@@ -30,11 +32,24 @@ type StandardSchemaV1 = { '~standard': { version: 1; vendor: string; validate(va
 type StandardSchema<T = unknown> = StandardSchemaV1 & { types?: { input: unknown; output: T } };
 type StandardIssue = { message: string; path?: readonly PropertyKey[] };
 type StandardResult = { value?: unknown; issues?: readonly StandardIssue[] };
+type ReportedIssue = { path: string; message: string };   // the 422 body's issue entry
 type InputOf<S> = …;   // schema.types.input
 type OutputOf<S> = …;  // schema.types.output
 ```
 
-The phantom `types` prop types both sides for free: `jsonBody(schema)` demands and types the client's `init.body` (the input side, so transforming schemas are honest end to end), while `types.output` is what lands on `ctx.state.validated`. `jsonBody`'s first validation issue becomes a single `422` `HttpError` carrying its message.
+The phantom `types` prop types both sides for free: `jsonBody(schema)` demands and types the client's `init.body` (the input side, so transforming schemas are honest end to end), while `types.output` is what lands on `ctx.state.validated`. On failure the gate answers `422` with every issue — `error` keeps the first message (the compat key) and `issues` carries the full list with formatted paths:
+
+```json
+{
+  "error": "expected string",
+  "issues": [
+    { "path": "user.name", "message": "expected string" },
+    { "path": "user.tags[0]", "message": "expected integer" }
+  ]
+}
+```
+
+Success paths carry no `issues` key anywhere. `queryParams` rejects the same way; `withRouteValidation` (see [OpenAPI](/api/openapi)) qualifies each path with its request location (`body.…` / `query.…`) via the same `validationError` builder.
 
 ## Query (`s200/query`)
 
@@ -96,12 +111,14 @@ Memory is bounded per part, not per body: one part's bytes accumulate until its 
 `uploadForm` parses a multipart request over `streamForm` and walks every accepted file through an injected **sink** — s200 stays zero-dependency, the sink decides where the bytes land (disk, object storage, a hash):
 
 ```ts
-import { uploadForm } from 's200/upload';
+import { uploadForm, safeFilename } from 's200/upload';
+import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 
 const result = await uploadForm(
   ctx,
-  (file) => writeFile(`/tmp/${file.filename}`, file.data),   // the sink
+  // filenames are raw client input — sanitize before they meet a path
+  (file) => writeFile(join(dir, safeFilename(file.filename)), file.data),   // the sink
   {
     limit: 10 * 1024 * 1024,          // total body budget, enforced while streaming
     maxFileSize: 5 * 1024 * 1024,     // per-file cap (413); files only, mid-stream only above the 8 MiB streaming floor
@@ -115,6 +132,7 @@ const result = await uploadForm(
 | Function | Meaning |
 | --- | --- |
 | `uploadForm(ctx, sink, options?)` | Parses, gates, and lands an upload; fields come back as text, files as buffered `UploadFile`s plus whatever id the sink returned |
+| `safeFilename(name)` | Collapses a client filename to a safe basename: control characters (NUL included) stripped, `/` and `\` reduced to the last segment, edge dots/spaces trimmed (`../../etc/passwd` → `passwd`); an empty result (`../..`, `///`) returns the deterministic `'upload'` |
 
 | Type | Meaning |
 | --- | --- |
@@ -125,4 +143,6 @@ const result = await uploadForm(
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 
-Gates: `accept` (415) and `maxFiles` (413) run at part delivery; `maxFileSize` caps FILE parts only — a file over the cap rejects with a `413` (naming the file and the limit) before the sink sees it, at part completion for a file below the 8 MiB streaming floor and mid-stream above it (the crossing byte rejects, the source is cancelled). Text fields are never bounded by it: they keep the total `limit` plus the stream's own 8 MiB per-part default. `maxParts` (default 256, fields included) rejects endless-part forms mid-stream the same way. Every rejection and any sink error aborts the upload: the parse stops, the platform source is cancelled, the error bubbles. A part is the unit of buffering: each file sits fully in memory by the time the sink sees it — for truly huge files, use `streamForm` directly.
+Gates: `accept` (415) and `maxFiles` (413) run at part delivery; `maxFileSize` caps FILE parts only — a file over the cap rejects with a `413` (naming the file and the limit) before the sink sees it, at part completion for a file below the 8 MiB streaming floor and mid-stream above it (the crossing byte rejects, the source is cancelled). Text fields are never bounded by it: they keep the total `limit` plus the stream's own 8 MiB per-part default. `maxParts` (default 256, fields included) rejects endless-part forms mid-stream the same way. Every rejection and any sink error abort the upload: the parse stops, the platform source is cancelled, the error bubbles. A part is the unit of buffering: each file sits fully in memory by the time the sink sees it — for truly huge files, use `streamForm` directly.
+
+Filenames are raw client input: never splice one into a path unsanitized — an `../../etc/cron.d/x` upload would escape the target directory. `safeFilename` is the companion for exactly that: it strips control characters (NUL included), takes the basename across both `/` and `\`, trims edge dots and spaces (so `..`, win32 dot-aliases, and dotfiles like `.env` never land), keeps unicode letters/digits and common safe punctuation untouched, and falls back to `'upload'` when nothing survives. It deliberately does not cover Windows reserved device names (`CON`, `NUL`, `COM1`, …) or NTFS alternate data streams (`file.txt:ads` keeps its colon), and sets no length cap — enforce those in the sink if the target platform needs them.

@@ -124,6 +124,22 @@ describe('withRouteValidation (body)', () => {
     (await errorOf(res)).should.contain('body.name');
   });
 
+  it('carries every issue in the body, paths scope-qualified', async () => {
+    const res = await postUser(userApp(), {
+      tags: [1],
+      address: { city: 'x' },
+    });
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({
+      error: 'body.name: required',
+      issues: [
+        { path: 'body.name', message: 'required' },
+        { path: 'body.age', message: 'required' },
+        { path: 'body.tags.0', message: 'expected string, got number' },
+      ],
+    });
+  });
+
   it('names nested required paths and array item indices', async () => {
     const nested = await postUser(userApp(), {
       name: 'a',
@@ -199,6 +215,72 @@ describe('withRouteValidation (query)', () => {
     res.status.should.equal(422);
     (await errorOf(res)).should.contain(
       'query.page: expected integer, got string'
+    );
+  });
+});
+
+describe('withRouteValidation (required query)', () => {
+  /** `/report` with a required `format` and an optional `verbose`. */
+  function reportApp() {
+    const app = get(createApp(), '/report', (ctx) =>
+      json(ctx, { format: parseQuery(ctx).format })
+    );
+    describeRoute(app, 'GET', '/report', {
+      query: {
+        format: { schema: { type: 'string' }, required: true },
+        verbose: { type: 'boolean' },
+      },
+    });
+    return withRouteValidation(app);
+  }
+
+  it('answers a missing required key with 422 and the validationError body', async () => {
+    const res = await request(reportApp(), '/report');
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({
+      error: 'query.format: required',
+      issues: [{ path: 'query.format', message: 'required' }],
+    });
+  });
+
+  it('checks every required key before the chain continues', async () => {
+    const res = await request(reportApp(), '/report?verbose=true');
+    res.status.should.equal(422);
+    (await errorOf(res)).should.contain('query.format: required');
+  });
+
+  it('passes a present required key; absent optional keys still pass', async () => {
+    const res = await request(reportApp(), '/report?format=csv');
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ format: 'csv' });
+  });
+
+  it('treats an empty value as present — only the absence is required', async () => {
+    const res = await request(reportApp(), '/report?format=');
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ format: '' });
+  });
+
+  it('still type-checks a present required key like any other', async () => {
+    // `format` passes; `verbose` fails its boolean check — the marker
+    // only decides absence, the schema still owns the value.
+    const res = await request(reportApp(), '/report?format=csv&verbose=maybe');
+    res.status.should.equal(422);
+    (await errorOf(res)).should.contain('query.verbose');
+  });
+
+  it('emits parameters[].required isomorphic to the gate', () => {
+    const spec = openapiSpec(reportApp(), { title: 't', version: '1' });
+    const parameters = (
+      spec.paths['/report']?.get as {
+        parameters: { name: string; in: string; required: boolean }[];
+      }
+    ).parameters;
+    parameters.find((p) => p.in === 'query' && p.name === 'format')?.required.should.equal(
+      true
+    );
+    parameters.find((p) => p.in === 'query' && p.name === 'verbose')?.required.should.equal(
+      false
     );
   });
 });

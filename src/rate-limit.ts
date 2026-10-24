@@ -1,7 +1,12 @@
 /**
  * Sliding-window rate limiter as a gate middleware: counts requests per key
- * (client identity) and answers the overflow in place with 429 +
- * `Retry-After` — the rest of the chain never runs.
+ * (client identity) and answers the overflow by throwing a 429 `HttpError`
+ * into the app's error boundary — the default mapping ships
+ * `{"error":"Too Many Requests"}` with `Retry-After` and the IETF
+ * `RateLimit-Limit`/`RateLimit-Remaining`/`RateLimit-Reset` headers
+ * (draft-ietf-httpapi-ratelimit-headers; reset in seconds, same remainder
+ * as `Retry-After`), and a configured `onError` takes over. The rest of
+ * the chain never runs.
  *
  * Zero dependencies: a per-key timestamp deque by default, or an injected
  * store (shared counters across instances, e.g. Redis) behind the same
@@ -11,6 +16,8 @@
  */
 
 import type { Ctx, Middleware } from './types';
+
+import { httpError } from './errors';
 
 export type RateLimitOptions = {
   /** Window length in milliseconds; default 60_000. */
@@ -115,9 +122,9 @@ function defaultKey(ctx: Ctx): string {
 
 /**
  * Rate-limit gate. Requests over `limit` inside a sliding `windowMs` window
- * are answered in place with 429 `{"error":"Too Many Requests"}` +
- * `Retry-After` (seconds until the oldest blocking hit expires), and
- * `next()` is never called.
+ * throw a 429 `HttpError` (`{"error":"Too Many Requests"}` + `Retry-After`,
+ * seconds until the oldest blocking hit expires, + IETF `RateLimit-*`
+ * headers) into the error boundary, and `next()` is never called.
  *
  * The default key trusts `x-forwarded-for` — only meaningful behind a proxy
  * that overwrites it. Any deployment reachable directly MUST pass `key`
@@ -146,11 +153,20 @@ export function rateLimit(options: RateLimitOptions = {}): Middleware {
     const { count, retryAt } = await store.hit(id, t, limit, windowMs);
     if (count > limit) {
       const retryAfter = Math.max(1, Math.ceil((retryAt - t) / 1000));
-      ctx.res = Response.json(
+      // Into the error boundary (onError can take over): the default
+      // mapping keeps the 429 envelope, now with the IETF RateLimit-*
+      // fields alongside Retry-After (reset = the same remainder).
+      throw httpError(
+        429,
+        'Too Many Requests',
         { error: 'Too Many Requests' },
-        { status: 429, headers: { 'retry-after': String(retryAfter) } }
+        {
+          'retry-after': String(retryAfter),
+          'ratelimit-limit': String(limit),
+          'ratelimit-remaining': '0',
+          'ratelimit-reset': String(retryAfter),
+        }
       );
-      return; // gate: nothing below runs, the 429 stands
     }
     return next();
   };

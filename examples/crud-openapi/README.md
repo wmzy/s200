@@ -1,5 +1,7 @@
 # crud-openapi — the route table is the spec
 
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/fork/github/wmzy/s200/tree/main/examples/crud-openapi)
+
 A `users` resource (in-memory `Map`, no database) where **one set of
 annotations feeds every consumer**: the same live route table produces
 the served API, the OpenAPI 3.1 document, the docs page, and a generated

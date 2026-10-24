@@ -28,7 +28,7 @@ export function createVercelHandler(app: App): VercelHandler {
     // threads into ctx.signal — feature-detected, absent signals fall back
     // to the shared never-aborted default. No write-completion event
     // exists, so onFinish rides the response body when callbacks exist,
-    // exactly like s200/deno: cancel → aborted, completion → finished.
+    // as on Cloudflare Workers: cancel → aborted, completion → finished.
     handle(app, request, signalInit(request)).then((response) =>
       hasFinishers(request)
         ? trackFinish(request, response, app.logError)

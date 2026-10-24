@@ -69,7 +69,7 @@ export default defineConfig({
         sidebar: [
           {
             text: '快速开始',
-            items: [{ text: '简介', link: '/zh/getting-started' }],
+            items: [{ text: '简介', link: '/zh/getting-started' }, { text: '在线演练场', link: '/zh/playground' }],
           },
           {
             text: '指南',
@@ -80,6 +80,8 @@ export default defineConfig({
               { text: '请求体解析', link: '/zh/guides/body' },
               { text: '静态文件', link: '/zh/guides/static-files' },
               { text: '错误', link: '/zh/guides/errors' },
+              { text: '测试', link: '/zh/guides/testing' },
+              { text: '数据库', link: '/zh/guides/databases' },
               { text: '适配器', link: '/zh/guides/adapters' },
               { text: '部署', link: '/zh/guides/deployment' },
               { text: '电池模块', link: '/zh/guides/batteries' },
@@ -144,6 +146,7 @@ export default defineConfig({
               { text: '从 Express', link: '/zh/migration-from-express' },
               { text: '从 Koa', link: '/zh/migration-from-koa' },
               { text: '从 Hono', link: '/zh/migration-from-hono' },
+          { text: '从 Fastify', link: '/zh/migration-from-fastify' },
             ],
           },
         ],
@@ -204,7 +207,7 @@ export default defineConfig({
     sidebar: [
       {
         text: 'Getting Started',
-        items: [{ text: 'Introduction', link: '/getting-started' }],
+        items: [{ text: 'Introduction', link: '/getting-started' }, { text: 'Playground', link: '/playground' }],
       },
       {
         text: 'Guides',
@@ -215,6 +218,8 @@ export default defineConfig({
           { text: 'Body Parsing', link: '/guides/body' },
           { text: 'Static Files', link: '/guides/static-files' },
           { text: 'Errors', link: '/guides/errors' },
+          { text: 'Testing', link: '/guides/testing' },
+          { text: 'Databases', link: '/guides/databases' },
           { text: 'Adapters', link: '/guides/adapters' },
           { text: 'Deployment', link: '/guides/deployment' },
           { text: 'Batteries', link: '/guides/batteries' },
@@ -279,6 +284,7 @@ export default defineConfig({
           { text: 'From Express', link: '/migration-from-express' },
           { text: 'From Koa', link: '/migration-from-koa' },
           { text: 'From Hono', link: '/migration-from-hono' },
+          { text: 'From Fastify', link: '/migration-from-fastify' },
         ],
       },
     ],

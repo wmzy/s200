@@ -1,5 +1,7 @@
 # db-crud — REST CRUD over SQLite
 
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/fork/github/wmzy/s200/tree/main/examples/db-crud)
+
 A `users` resource with the full CRUD verb set, backed by **real
 persistence**: Node's built-in `node:sqlite` (`DatabaseSync`) — no database
 driver, no npm dependency. Demonstrates the **`s200/serialize`** battery

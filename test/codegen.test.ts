@@ -58,7 +58,10 @@ function typedApp() {
   );
   describeRoute(users, 'GET', '/users/:id', {
     summary: 'Fetch one user',
-    query: { verbose: { type: 'boolean' } },
+    query: {
+      format: { schema: { type: 'string' }, required: true },
+      verbose: { type: 'boolean' },
+    },
     responses: {
       200: {
         description: 'ok',
@@ -209,12 +212,13 @@ describe('generateClient (typed emission)', () => {
   it('derives args, init and response types from pattern, meta and throws gates', () => {
     const source = generateClient(typedApp());
 
-    // Pattern-derived args + meta.query narrowing (optional sugar).
+    // Pattern-derived args + meta.query narrowing (a `required` marker
+    // drops the `?`; bare entries stay optional sugar).
     source.should.contain(
       'getUsersId: (args: { id: string }, init?: GetUsersIdInit): Promise<GetUsersIdResponse> =>'
     );
     source.should.contain(
-      'export type GetUsersIdInit = ClientInit & { query?: { verbose?: boolean } };'
+      'export type GetUsersIdInit = ClientInit & { query?: { format: string; verbose?: boolean } };'
     );
     // meta.responses (required list drives optionality, nullable widens)
     // merged with the throws(404) envelope branch, statuses ascending.

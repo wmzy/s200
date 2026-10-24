@@ -215,6 +215,36 @@ export type ChainErrors<Ms extends readonly unknown[]> = [PhantomErrors<Ms[numbe
     : UnionToIntersection<U>
   : never;
 
+/**
+ * A state-injecting middleware's compile-time identity: the ordinary
+ * {@link Middleware} signature — its `S` is the state the middleware may
+ * READ, the prior injections it consumes — crossed with a phantom
+ * `_state` brand naming the keys it WRITES onto `ctx.state` before
+ * `next()`. Produced by `withState` (core barrel, from `s200/middleware`'s
+ * module); `use` collects the brand into the app's `S`, so downstream
+ * middlewares and handlers read the injected keys typed — no hand-written
+ * app state interface, no global `declare module` merge.
+ */
+export type StateMiddleware<X extends State = State, S extends State = State> =
+  Middleware<S> & { readonly _state?: X };
+
+/** The phantom `_state` a middleware carries, `never` when it has none. */
+type PhantomState<M> = M extends { readonly _state?: infer X } ? X : never;
+
+/**
+ * The state a middleware list injects: every member's phantom `_state`
+ * brand (plus a possible leading prefix `string`, which carries none)
+ * intersected — `withState<{ user }>` + `withState<{ tenant }>` yields
+ * `{ user } & { tenant }`. A list with no branded members collapses to
+ * `unknown` (the intersection identity), so plain middleware chains leave
+ * the app's `S` untouched.
+ */
+export type StateOf<Ms extends readonly unknown[]> = [PhantomState<Ms[number]>] extends [infer U]
+  ? [U] extends [never]
+    ? unknown
+    : UnionToIntersection<U>
+  : never;
+
 /** Unwraps the `Promise` members of a handler's return union: `A | Promise<B>`
  * distributes into `A | B`, so sync and async branches flow alike through
  * the phantom extractors below (a tuple-guarded unwrap would lose the

@@ -168,7 +168,7 @@ export function runFinish(
 
 /**
  * Wraps the response body so its completion runs the finish callbacks —
- * the trigger for runtimes without write events (Deno, Workers, Bun):
+ * the trigger for runtimes without write events (Workers, Bun):
  * stream done → `{ aborted: false }`, cancel or source error →
  * `{ aborted: true }`. A cancel is propagated to the wrapped body's
  * reader, so a handler-side generator sees its `finally`. A null body

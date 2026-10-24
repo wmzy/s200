@@ -55,6 +55,7 @@ jobs:
       - run: pnpm --filter @s200-example/upload-app smoke
       - run: pnpm --filter @s200-example/db-crud smoke
       - run: pnpm --filter @s200-example/crud-openapi smoke
+      - run: pnpm --filter @s200-example/hello-world smoke
 
   # Floor-runtime gate: `engines` declares node >= 20.3, but the toolchain
   # (vite/vitest) may itself need newer node — that says nothing about the
@@ -91,34 +92,6 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - run: node scripts/smoke-floor.mjs
-
-  # Deno runtime gate: the core is plain Web Standard code, so the same
-  # built dist must also serve through Deno.serve — smoke-deno.mjs writes
-  # a tmp entry that serves dist/index.mjs through the real s200/deno
-  # adapter (dist/deno.mjs: serve + the deno signal feature-detect),
-  # spawns `deno run --allow-net`, and asserts the core end to end with
-  # fetch.
-  deno:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm build
-
-      - run: node scripts/smoke-deno.mjs
 
   # Cloudflare Workers gate: the s200/cloudflare module-worker fetch shape
   # (createHandler) must serve through REAL workerd. miniflare drives it —

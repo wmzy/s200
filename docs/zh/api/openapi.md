@@ -35,7 +35,11 @@ describeRoute(app, 'GET', '/users/:id', {
 | `describeApp(app, meta)` | 标注应用本身（OpenAPI `info` 块） |
 | `getRouteMeta(route)` / `getAppMeta(app)` | 读回已设内容 |
 
-`RouteMeta`：`{ summary?, description?, tags?, deprecated?, query?: Record<string, SerializeSchema>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`。`AppMeta`：`{ title?, version?, description? }`。
+`RouteMeta`：`{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`。`AppMeta`：`{ title?, version?, description? }`。
+
+`QueryParam` 是该参数的 `SerializeSchema` 裸形态（可选 —— 默认），或请求必须携带该键时的 `{ schema, required: true }` 标记形态。这个标记是一个 flag、三个同步视图：`openapiSpec` 输出 `parameters[].required: true`，`withRouteValidation` 对缺失的键回答 `422`（`'query.<key>: required'`），`s200/mcp` 的工具输入模式把该名字列入 `required`。`querySchemaOf(entry)`/`isQueryRequired(entry)`（来自 `s200/meta`）为自定义工具拆开两种形态。
+
+`SerializeSchema` 的每个节点还接受可选 `title` —— 纯注解：`toJsonSchema` 把它带入输出的 JSON Schema，序列化与校验忽略它，spec 发射器用它命名去重后的模式（见下）。
 
 `security` 即 OpenAPI 的要求形状 —— 每个条目是一个备选（OR），条目把方案名映射到其所需 scope（方案无 scope 时为 `[]`）。它原样落到 operation 上；方案本身用 `openapiSpec` 的 `securitySchemes` 选项声明。
 
@@ -57,20 +61,23 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | `description` | — | `info.description` |
 | `servers` | — | `ReadonlyArray<{ url: string; description?: string }>` —— 原样输出为文档的 `servers`（缺省或空数组时省略） |
 | `securitySchemes` | — | `Record<string, SecuritySchemeObject>` —— 输出到 `components.securitySchemes`，供 `RouteMeta.security` 按名引用 |
+| `refSchemas` | `true` | 传 `false` 关闭模式去重（见下），所有 schema 保持内联 |
 
 `SecuritySchemeObject` 是 OpenAPI 3.1 的方案形状，刻意宽松（s200 输出数据、不做校验）：`{ type: 'apiKey' | 'http' | 'oauth2' | 'openIdConnect' | 'mutualTLS', description?, name?, in?, scheme?, bearerFormat?, flows?, openIdConnectUrl? }` —— `type` 之外的字段是各形态各自读取的那些。
 
 **来自 `throws` 闸门的错误响应。** 链上带 `throws` 闸门的路由，其声明的状态码输出为错误响应。裸形式（`throws(401, 404)`）文档化默认的 `{ error: string }` 信封；记录形式（`throws({ 422: { issues: ['x'] } })`）从记录的示例值结构性推断 schema —— 字符串/布尔/null 直接映射，整数性区分 `integer` 与 `number`，元素一致时数组描述其 `items`，对象列出出现的键（示例无法知晓必选性，因此没有任何键是 `required`）。闸门与 `meta.responses` 合并不互相覆盖：只有一侧声明的状态照常输出；冲突时 **`meta.responses` 胜出** —— 它的描述与 schema 是为 spec 写的，闸门的示例只是推断种子。多个闸门声明同一状态：后注册者胜出（类型层对体形状取并集；示例值做不到）。
 
-**schema 透传。** `toJsonSchema` 的转发覆盖 `SerializeSchema` 运行时实际携带的字段 —— `type`、`properties`/`required`、`items`、`nullable`。该 DSL 没有 `enum`/`format`/`description`/数值界标记，因此一个都不发明。
+**去重进 `components.schemas`。** 文档中出现 **≥2 次** 的任何查询/体/响应模式（结构化 JSON 相等 —— 相异但等值的对象同样去重）被提升进 `components.schemas`，每个出现位置变成 `{ "$ref": "#/components/schemas/<name>" }`。名字优先取 DSL 携带的 `title`，否则按首次出现顺序合成 `Schema1`、`Schema2`、…… —— 确定性的，spec 跨构建可干净 diff；标题冲突（同 `title`、不同 JSON）加 `_2`、`_3`、…… 后缀。只出现一次的模式保持内联（不做无谓碎片化），`components.securitySchemes` 与之合入同一个 `components` 对象、互不干扰。传 `refSchemas: false` 保持全部内联。
+
+**schema 透传。** `toJsonSchema` 的转发覆盖 `SerializeSchema` 运行时实际携带的字段 —— `type`、`properties`/`required`、`items`、`nullable`、`title`。该 DSL 没有 `enum`/`format`/`description`/数值界标记，因此一个都不发明。
 
 | 函数 | 含义 |
 | --- | --- |
 | `openapiSpec(app, options)` | `OpenApiDocument` —— `{ openapi: '3.1.0', info, servers?, components?, paths }`，构造上即 JSON 兼容 |
-| `openapiJson(ctx, app, options?)` | 响应助手：spec 的 JSON 响应（`info` 字段回落到 `describeApp`；`servers`/`securitySchemes` 原样透传） |
+| `openapiJson(ctx, app, options?)` | 响应助手：spec 的 JSON 响应（`info` 字段回落到 `describeApp`；`servers`/`securitySchemes`/`refSchemas` 原样透传） |
 | `withRouteValidation(app)` | 纯数据变换（mount 家族）：只重建带 `body` 或 `query` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 |
 
-`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名首个违规路径（`{"error":"body.tags.1: expected string, got number"}`）；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。spec 与闸门共享一个来源：标注被重新挂回重建的路由。响应侧有同样的孪生 —— [`s200/response-check`](/zh/api/response-check) 在回卷时用 `responses[status].schema` 检查已物化的响应。
+`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名每一条违规路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），`issues` 携带全量列表与按请求位置限定的路径，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。标记为 required 的查询键（`{ schema, required: true }`）与 spec 同构：键缺失回答同样的 422（`{"error":"query.format: required"}`）；空值（`?format=`）算作存在，存在的值仍按其 schema 检查。spec 与闸门共享一个来源：标注被重新挂回重建的路由。响应侧有同样的孪生 —— [`s200/response-check`](/zh/api/response-check) 在回卷时用 `responses[status].schema` 检查已物化的响应。
 
 ## Swagger UI（`s200/swagger`）
 
@@ -107,7 +114,7 @@ await writeFile('src/api/client.ts', generateClient(app, { name: 'createUsersCli
 类型的来源 —— 恰好是运行时存在的东西：
 
 - **参数**来自每个模式：`/users/:id` → `args: { id: string }`，`/posts/:postId?` → `{ postId?: string }`，含 `*path` 通配。
-- **查询**来自 `meta.query`：`init.query` 收窄为声明的键，全部可选（`{ query?: { verbose?: boolean } }`）。
+- **查询**来自 `meta.query`：`init.query` 收窄为声明的键 —— 默认可选（`{ query?: { verbose?: boolean } }`）；`{ schema, required: true }` 标记去掉 `?`（`{ query?: { format: string } }`），与 spec 的 `parameters[].required` 和闸门的 422 一致。
 - **请求体**来自 `meta.body`：`init.body` 重定型为 schema 的形状，且 `init` 变为**必填**（路由读体，调用方就必须发体）。JSON 形状的体在调用时字符串化并默认盖 `content-type: application/json`（已设置则不盖）—— s200/client 的规则；字符串与结构化体（流、blob、表单、缓冲）原样传给 fetch。
 - **响应**来自 `meta.responses` 与路由的 `throws` 闸门合并（两者声明同一状态时 meta 胜出）：每个状态一个 `Branch<S, T>` 成员 —— `status` 收窄为该分支字面量、`json()` 解析为该分支体类型的 `Response` —— 因此 `if (res.status === 404)` 收窄体类型。throws 示例按结构推断，与 spec 发射器同规则。
 

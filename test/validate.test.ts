@@ -11,6 +11,7 @@ import {
   jsonBody,
   validate,
   standardValidate,
+  formatIssuePath,
   type OutputOf,
   type StandardSchema,
   type StandardSchemaV1,
@@ -141,6 +142,22 @@ const pickySchema: StandardSchema = {
   },
 };
 
+/** Multi-issue schema: reports several problems at once, deep paths
+ * included — object keys and array indices mixed. */
+const multiIssueSchema: StandardSchema = {
+  '~standard': {
+    version: 1,
+    vendor: 's200-test',
+    validate: () => ({
+      issues: [
+        { message: 'expected string', path: ['user', 'name'] },
+        { message: 'expected integer', path: ['user', 'tags', 0] },
+        { message: 'required', path: ['user', 'email'] },
+      ],
+    }),
+  },
+};
+
 /** Empty-issues schema: `{ issues: [] }` is a success, not a failure. */
 const emptyIssuesSchema: StandardSchema<string> = {
   '~standard': {
@@ -189,7 +206,7 @@ describe('jsonBody with a Standard Schema', function () {
     (await res.json()).should.deep.equal({ name: 'bob', id: 7 });
   });
 
-  it('maps the first issue to a 422 HttpError with its message', async function () {
+  it('answers 422 with the first message in error and the issue list', async function () {
     const app = createApp();
     post(app, '/x', jsonBody(userSchema), () => new Response('unreached'));
     const res = await handle(
@@ -200,7 +217,31 @@ describe('jsonBody with a Standard Schema', function () {
       })
     );
     res.status.should.equal(422);
-    (await res.json()).should.deep.equal({ error: 'expected name string' });
+    (await res.json()).should.deep.equal({
+      error: 'expected name string',
+      issues: [{ path: 'name', message: 'expected name string' }],
+    });
+  });
+
+  it('returns every issue with its formatted path, nested keys and array indices included', async function () {
+    const app = createApp();
+    post(app, '/x', jsonBody(multiIssueSchema), () => new Response('unreached'));
+    const res = await handle(
+      app,
+      new Request('http://localhost/x', {
+        method: 'POST',
+        body: JSON.stringify({ user: { name: 1, tags: ['a', 2] } }),
+      })
+    );
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({
+      error: 'expected string',
+      issues: [
+        { path: 'user.name', message: 'expected string' },
+        { path: 'user.tags[0]', message: 'expected integer' },
+        { path: 'user.email', message: 'required' },
+      ],
+    });
   });
 
   it('still answers invalid JSON with the 400 from readJson', async function () {
@@ -261,7 +302,7 @@ describe('standardValidate', function () {
     });
   });
 
-  it('throws a 422 HttpError carrying the first issue message', function () {
+  it('throws a 422 HttpError: first message in error, full list in the body', function () {
     let thrown: unknown;
     try {
       standardValidate(pickySchema, { page: 999 });
@@ -271,10 +312,46 @@ describe('standardValidate', function () {
     isHttpError(thrown).should.be.true;
     (thrown as HttpError).status.should.equal(422);
     (thrown as HttpError).message.should.equal('page out of range');
+    ((thrown as HttpError).body as { error: string; issues: unknown[] }).should.deep.equal({
+      error: 'page out of range',
+      issues: [{ path: 'page', message: 'page out of range' }],
+    });
+  });
+
+  it('reports a path-less issue at the root with an empty path', function () {
+    let thrown: unknown;
+    try {
+      standardValidate(
+        {
+          '~standard': {
+            version: 1,
+            vendor: 's200-test',
+            validate: () => ({ issues: [{ message: 'bad root' }] }),
+          },
+        },
+        'anything'
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    isHttpError(thrown).should.be.true;
+    ((thrown as HttpError).body as { issues: unknown[] }).issues.should.deep.equal([
+      { path: '', message: 'bad root' },
+    ]);
   });
 
   it('passes an empty issues array through as success', function () {
     (standardValidate(emptyIssuesSchema, 'anything') as string).should.equal('ok');
+  });
+});
+
+describe('formatIssuePath', function () {
+  it('dots object keys and brackets array indices', function () {
+    formatIssuePath(['user', 'tags', 0]).should.equal('user.tags[0]');
+    formatIssuePath(['page']).should.equal('page');
+    formatIssuePath([0]).should.equal('[0]');
+    formatIssuePath([]).should.equal('');
+    (formatIssuePath(undefined) === '').should.be.true;
   });
 });
 

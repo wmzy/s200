@@ -7,8 +7,8 @@
  * the request's async extent via `currentCtx()`, for call stacks that
  * cannot thread it (logging sinks, metrics helpers, deep legacy code).
  *
- * Runtime boundary: `node:async_hooks` exists on Node, Bun, and Deno (Node
- * compat). Cloudflare Workers has no async_hooks — importing this entry
+ * Runtime boundary: `node:async_hooks` exists on Node and Bun. Cloudflare
+ * Workers has no async_hooks — importing this entry
  * fails there, so keep it out of edge bundles.
  *
  * @module

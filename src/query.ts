@@ -64,8 +64,9 @@ export type QueryInput = Record<
  *
  * - a Standard Schema (anything with a `~standard` prop, detected with
  *   `isStandardSchema`) — `standardValidate` runs it over the parsed
- *   record, mapping issues to a 422 `HttpError` with the first message;
- *   the parsed product lands on `ctx.state[key]` while the phantom
+ *   record, mapping issues to a 422 `HttpError` (`error` keeps the
+ *   first message, the body's `issues` array carries the full list with
+ *   paths); the parsed product lands on `ctx.state[key]` while the phantom
  *   `types` prop's input side brands the gate (see below);
  * - a parse function `parse(record) => T` decides the
  *   value, its result lands on `ctx.state[key]` (typed through the schema —

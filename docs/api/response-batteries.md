@@ -29,6 +29,10 @@ type SerializeSchema =
   | { type: 'object'; properties: { [key: string]: SerializeSchema }; required?: readonly string[] }
   | { type: 'array'; items: SerializeSchema }
   | { readonly type: PrimitiveType; readonly nullable?: boolean };
+// Every node also accepts an optional `title?: string` — a pure
+// annotation: `toJsonSchema` carries it into the emitted JSON Schema
+// (naming deduplicated `components.schemas` in `s200/openapi`);
+// serialization and validation ignore it.
 ```
 
 `PrimitiveType` names the leaf alternatives: `'string' | 'number' | 'integer' | 'boolean' | 'null'`.

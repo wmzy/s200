@@ -1,7 +1,7 @@
 /**
  * Response compression middleware over the Web Standard
  * `CompressionStream` — zero dependencies and every supported runtime
- * (Node 18+, Bun, Deno, workers) provides it. gzip/deflate stream the body;
+ * (Node 18+, Bun, workers) provides it. gzip/deflate stream the body;
  * brotli is opt-in via an injected encoder (Node's CompressionStream has no
  * brotli — the node adapter ships one, see `brotliCompress` in `s200/node`).
  *

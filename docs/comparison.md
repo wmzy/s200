@@ -15,7 +15,7 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | Dimension | s200 | Hono | Express 5 | Fastify 5 | Koa | Elysia |
 |---|---|---|---|---|---|---|
 | Paradigm | data + functions, zero deps | class-based, zero deps | OOP, ~30 deps | factory, ~20 deps | minimal core, zero deps | class-chain, TS-first, 4 deps |
-| Runtimes | Node ≥ 20.3, Bun; Deno/Cloudflare/AWS Lambda/Vercel adapters | everything + adapter matrix (v5: 8 `@hono/*` pkgs) | Node only | Node only (v6 plans ≥ 24) | Node only | Bun-first; Node via srvx+crossws (h3's base), web-standard/Cloudflare via adapters |
+| Runtimes | Node ≥ 20.3, Bun; Cloudflare/AWS Lambda/Vercel adapters | everything + adapter matrix (v5: 8 `@hono/*` pkgs) | Node only | Node only (v6 plans ≥ 24) | Node only | Bun-first; Node via srvx+crossws (h3's base), web-standard/Cloudflare via adapters |
 | Middleware model | koa onion, in-chain error boundary | hono onion | connect-style | hook system | koa onion | lifecycle hooks (derive/resolve) + plugins |
 | Router | static-prefix trie, every static segment indexed | RegExpRouter / TrieRouter | path-to-regexp | find-my-way radix | koa-router (path-to-regexp) | static map + memoirist radix, JIT-compiled handlers |
 | Optional params `:id?` | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
@@ -34,12 +34,13 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | Ecosystem size | young | large | huge | large | large | fast-growing (9th most used, SoJS 2025) |
 
 Counting rule for the batteries row: the package exposes 55 entries — the
-root barrel plus 54 subpaths. Six subpaths are runtime adapters (`node`,
-`bun`, `deno`, `cloudflare`, `aws-lambda`, `vercel`) and nine are
+root barrel plus 54 subpaths. Five subpaths are runtime adapters (`node`,
+`bun`, `cloudflare`, `aws-lambda`, `vercel`) and nine are
 tooling/meta entries (`client`, `codegen`, `dev`, `meta`, `openapi`,
-`route-table`, `swagger`, `test`, `version`); the remaining 39 feature
-subpaths are 37 distinct opt-in batteries once `websocket/node` and
-`websocket/bun` fold into the `websocket` battery.
+`route-table`, `swagger`, `test`, `version`); the remaining 40 feature
+subpaths are 37 distinct opt-in batteries once `websocket/node`,
+`websocket/bun` and `websocket/cloudflare` fold into the `websocket`
+battery.
 
 ### Elysia in one paragraph
 
@@ -69,7 +70,7 @@ dependencies](https://www.npmjs.com/package/elysia) (TypeBox ships as a
 peer), and outside Bun the story is adapters rather than Hono's matrix —
 v2's Node adapter is rebuilt on srvx + crossws, the same foundation h3
 sits on, so Node is hardly second-class, but web-standard and Cloudflare
-still go through adapters and there is no Deno/edge story to speak of;
+still go through adapters and there is no edge story to speak of;
 middleware is [lifecycle
 hooks](https://elysiajs.com/essential/life-cycle) (derive/resolve), not the
 onion s200 and Koa share. If your target is Bun and you want tRPC-grade
@@ -152,7 +153,7 @@ trackers.
   and rc.1 two days later; stable has not shipped. `hono` goes ESM-only —
   the CommonJS build is removed — and requires Node ≥ 22.12; the runtime
   adapters split out into eight `@hono/*` packages (`@hono/bun`,
-  `@hono/deno`, `@hono/cloudflare-workers`, `@hono/vercel`, …); a
+  `@hono/cloudflare-workers`, `@hono/vercel`, …); a
   non-`Error` throw no longer
   escapes `app.fetch()` — it reaches `onError` wrapped in an `Error`
   (original value on `c.error.cause`); wildcard matching gains mid-path

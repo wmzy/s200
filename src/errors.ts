@@ -27,12 +27,15 @@ const STATUS_TEXT: Readonly<Record<number, string>> = {
 /** Plain tagged data — check it with {@link isHttpError}, never `instanceof`.
  * `body` is the optional structured payload: when present,
  * {@link toErrorResponse} ships it verbatim instead of the default
- * `{ error: message }` envelope. */
+ * `{ error: message }` envelope. `headers` is the optional response-header
+ * set: when present, {@link toErrorResponse} merges it onto the error
+ * response (a gate's `WWW-Authenticate` challenge, `Retry-After`, …). */
 export type HttpError = {
   readonly _tag: 'HttpError';
   readonly status: number;
   readonly message: string;
   readonly body?: unknown;
+  readonly headers?: Record<string, string>;
 };
 
 /**
@@ -47,6 +50,11 @@ export type HttpError = {
  * the return type brands it (`err.body` is `B`, not `unknown`) so callers
  * can hand structured error shapes to clients without a second envelope.
  *
+ * `headers`, when given, rides the error response verbatim too — response
+ * headers a rejection owes the client (`www-authenticate`, `retry-after`,
+ * IETF `RateLimit-*`), so a gate can throw into the error boundary instead
+ * of writing the response in place and bypassing `onError`.
+ *
  * Returning the value from a handler is sugar for throwing it: `handle`
  * rethrows a returned `HttpError` into the same error boundary, and the
  * route's phantom log infers the branch from the return type (a function
@@ -55,7 +63,8 @@ export type HttpError = {
 export function httpError<S extends number = number, B = undefined>(
   status: S,
   message?: string,
-  body?: B
+  body?: B,
+  headers?: Record<string, string>
 ): HttpError & { readonly status: S; readonly body?: B } {
   if (!Number.isInteger(status) || status < 400 || status > 599) {
     throw new Error(
@@ -70,6 +79,7 @@ export function httpError<S extends number = number, B = undefined>(
     // Spread, not `body`: the key must not exist when no body was given —
     // `deep.equal` consumers see today's exact shape either way.
     ...(body !== undefined ? { body } : {}),
+    ...(headers !== undefined ? { headers } : {}),
   };
 }
 
@@ -87,15 +97,19 @@ export function isHttpError(e: unknown): e is HttpError {
 /**
  * Terminal mapping from any thrown value to a `Response`. `HttpError` keeps
  * its status and message — and when it carries a `body`, that payload ships
- * verbatim (a structured error shape instead of the default envelope);
- * everything else becomes an anonymous 500 — the error's internals never
- * leak to the client.
+ * verbatim (a structured error shape instead of the default envelope); a
+ * `headers` record rides the response verbatim too (a gate's
+ * `WWW-Authenticate` challenge, `Retry-After`, …). Everything else becomes
+ * an anonymous 500 — the error's internals never leak to the client.
  */
 export function toErrorResponse(error: unknown): Response {
   if (isHttpError(error)) {
-    return error.body !== undefined
-      ? Response.json(error.body, { status: error.status })
-      : Response.json({ error: error.message }, { status: error.status });
+    const payload =
+      error.body !== undefined ? error.body : { error: error.message };
+    // The no-headers path keeps the single-literal init — it is the hot one.
+    return error.headers === undefined
+      ? Response.json(payload, { status: error.status })
+      : Response.json(payload, { status: error.status, headers: error.headers });
   }
   return Response.json({ error: 'Internal Server Error' }, { status: 500 });
 }

@@ -30,7 +30,7 @@ export function neverSignal(): AbortSignal {
 }
 
 /** The request's own `signal` when the runtime provides one — the fetch
- * handler's disconnect signal on Deno and Cloudflare Workers, always
+ * handler's disconnect signal on Cloudflare Workers, always
  * present on undici requests; `undefined` on runtimes whose `Request`
  * lacks the property. */
 export function requestSignal(request: Request): AbortSignal | undefined {

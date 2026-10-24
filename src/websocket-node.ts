@@ -13,10 +13,17 @@
  * const server = await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });
  * ```
  *
- * Scope is deliberately minimal: handshake, text/binary messages with
- * fragmentation, ping/pong, close handshake, a payload budget. No
- * permessage-deflate, no subprotocol negotiation — bring `ws` and wire the
- * raw `upgrade` event yourself when you need those.
+ * Scope: handshake, text/binary messages with fragmentation, ping/pong,
+ * close handshake, and a payload budget — plus the route options:
+ * subprotocol negotiation (`protocols`, server preference order — the
+ * first declared protocol the client also offered wins, echoed back as
+ * `Sec-WebSocket-Protocol`) and permessage-deflate
+ * (`perMessageDeflate: true`, RFC 7692 — accepted only as
+ * no-context-takeover in both directions: stateless per-message
+ * deflate/inflate, `server_max_window_bits` echoed only when the client
+ * offered it, decompression bounded by `maxPayload`). Bring `ws` and wire
+ * the raw `'upgrade'` event yourself only for what stays out of scope —
+ * connection limits, clustering, other extensions.
  *
  * @module
  */

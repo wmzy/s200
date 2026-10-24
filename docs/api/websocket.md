@@ -1,4 +1,4 @@
-# WebSocket (`s200/websocket`, `s200/websocket/node`, `s200/websocket/bun`)
+# WebSocket (`s200/websocket`, `s200/websocket/node`, `s200/websocket/bun`, `s200/websocket/cloudflare`)
 
 WebSocket routes in the `data + functions` shape: `upgradeWebSocket` records `pattern → handler` routes on the app (pure data), and the runtime adapters consult the registry when a connection upgrades. Patterns use the router's segment syntax (`:param`, terminal `*rest`); matching is strict and first registration wins, exactly like HTTP routes. Upgrades run the app's middleware chain and the route's middlewares before the handshake completes — [Middleware & auth on upgrades](#middleware--auth-on-upgrades).
 
@@ -8,6 +8,7 @@ WebSocket routes in the `data + functions` shape: `upgradeWebSocket` records `pa
 import { upgradeWebSocket } from 's200/websocket';
 import { createUpgradeHandler } from 's200/websocket/node';   // node
 import { createBunWebSocketBridge } from 's200/websocket/bun'; // bun
+import { createCloudflareWebSocketBridge } from 's200/websocket/cloudflare'; // workers
 
 upgradeWebSocket(app, '/chat/:room', (socket, ctx) => {
   socket.onMessage((data) => socket.send(`[${ctx.params.room}] ${data}`));
@@ -15,6 +16,7 @@ upgradeWebSocket(app, '/chat/:room', (socket, ctx) => {
 
 await serve(app, { port: 3000, upgrade: createUpgradeHandler(app) });            // node
 serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });            // bun
+// workers: ws.upgrade(request) ?? createHandler(app).fetch(…) — see below
 ```
 
 | Function | Meaning |
@@ -28,17 +30,17 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 
 `WebSocketRoute`: `{ pattern, segments, middlewares, handler, protocols?, perMessageDeflate? }` — one registry entry. The registry lives off-app (a `WeakMap` beside the app), so the core `App` shape stays HTTP-only and WebSocket state tree-shakes out of every non-WS consumer. `WebSocketMatch`: `{ route, params }` — what `matchWebSocket` returns.
 
-`WebSocketRouteOptions`: `{ protocols?: readonly string[]; perMessageDeflate?: boolean }` — subprotocols in server preference order (the first one the client also offered wins); permessage-deflate (RFC 7692) negotiated as no-context-takeover both ways (node adapter implements it; the bun bridge leaves compression to Bun's native negotiation).
+`WebSocketRouteOptions`: `{ protocols?: readonly string[]; perMessageDeflate?: boolean }` — subprotocols in server preference order (the first one the client also offered wins); permessage-deflate (RFC 7692) negotiated as no-context-takeover both ways (node adapter implements it; the bun bridge leaves compression to Bun's native negotiation; Workers does not negotiate compression, so the cloudflare bridge ignores the flag).
 
 `WsSocket` — the server side of one connection, plain function properties (no event-emitter object, no classes):
 
 | Member | Meaning |
 | --- | --- |
 | `send(data)` | Text or binary message; best-effort backpressure (the runtime queues internally) |
-| `bufferedAmount` | Bytes the transport has queued but not yet put on the wire — send-side backpressure visibility: grows while `send` outruns the network, drains back to `0` as the socket flushes (node: the socket's `writableLength`; bun: Bun's per-connection counter) |
+| `bufferedAmount` | Bytes the transport has queued but not yet put on the wire — send-side backpressure visibility: grows while `send` outruns the network, drains back to `0` as the socket flushes (node: the socket's `writableLength`; bun: Bun's per-connection counter; cloudflare: Workers exposes no counter, so it stays `0`) |
 | `close(code?, reason?)` | Starts the close handshake |
 | `protocol` | The negotiated subprotocol, when the route declared protocols and the client offered one |
-| `ping(payload?)` / `onPong(cb)` | Keep-alive primitive — pair them to detect dead peers |
+| `ping(payload?)` / `onPong(cb)` | Keep-alive primitive — pair them to detect dead peers (cloudflare: Workers manages keep-alive itself — `ping` forwards only if the runtime grows an API, `onPong` stays silent) |
 | `onMessage(cb)` | `cb(data: WsData)` — `string \| ArrayBuffer \| Uint8Array` |
 | `onClose(cb)` | Fires once with the negotiated close code (`1006` when the connection dropped without a close frame) |
 | `onError(cb)` | Transport/processing errors on this connection |
@@ -49,7 +51,7 @@ Callback signatures: `WsMessageCb` = `(data: WsData) => void`, `WsCloseCb` = `(c
 
 ## Middleware & auth on upgrades
 
-WebSocket upgrades run the app's middleware chain — the same `use(app, …)` middlewares as HTTP — and then the route's own middlewares, before the handshake completes. A middleware answers by writing `ctx.res` (or returning a `Response`, or throwing): that response rejects the upgrade and is answered as plain HTTP instead of `101` — the node adapter writes it to the socket before any protocol byte, the bun bridge returns it from the fetch handler. An auth gate is therefore one ordinary middleware:
+WebSocket upgrades run the app's middleware chain — the same `use(app, …)` middlewares as HTTP — and then the route's own middlewares, before the handshake completes. A middleware answers by writing `ctx.res` (or returning a `Response`, or throwing): that response rejects the upgrade and is answered as plain HTTP instead of `101` — the node adapter writes it to the socket before any protocol byte, the bun and cloudflare bridges return it from the fetch handler. An auth gate is therefore one ordinary middleware:
 
 ```ts
 import { httpError, use } from 's200';
@@ -90,7 +92,7 @@ The exact semantics, mirroring HTTP dispatch:
 - **Approval** — when the chain settles with `ctx.res` still `undefined`, the upgrade proceeds: the socket is the response. Middlewares observe `res: undefined` on unwind, and every `ctx.state` mutation rides into the handler's ctx (the same ctx object — `resolveUpgrade` hands it back to the adapter). A middleware that neither answers nor calls `next()` approves implicitly — call `next()` or answer, there is no third branch.
 - **The handler itself runs after approval**, outside the chain: errors it throws do not pass through the middlewares again (they surface through `socket.onError` + close 1011, the pre-existing behavior).
 
-`resolveUpgrade(app, route, request, url, params)` is the shared decision helper both adapters call — `WsUpgradeDecision` is `{ ok: true; ctx: Ctx }` or `{ ok: false; response: Response }`. It exists for adapter authors; applications get the same behavior from `serve` + `createUpgradeHandler` / `createBunWebSocketBridge`.
+`resolveUpgrade(app, route, request, url, params)` is the shared decision helper every adapter calls — `WsUpgradeDecision` is `{ ok: true; ctx: Ctx }` or `{ ok: false; response: Response }`. It exists for adapter authors; applications get the same behavior from `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` / `createCloudflareWebSocketBridge`.
 
 ## Node (`s200/websocket/node`)
 
@@ -123,3 +125,43 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });
 | `BunWebSocketBridge` | `{ upgrade: (req, server: BunUpgrader) => Promise<boolean \| Response>; websocket: BunWsHandlers }` — `true` = upgraded, a `Response` = rejection, `false` = not a ws route |
 | `BunUpgrader` | The `server` Bun hands its fetch handler: `upgrade(request, options?) => boolean` |
 | `BunWs` / `BunWsHandlers` | Bun's per-connection socket and the `open`/`message`/`close`/`pong` callback set, narrowed to the members used |
+
+## Cloudflare (`s200/websocket/cloudflare`)
+
+The Workers counterpart: a module worker's `fetch` returns a `Response`, so the bridge composes with [`s200/cloudflare`](/api/edge)'s `createHandler` — `ws.upgrade(request)` answers WebSocket handshakes, `undefined` falls through to the HTTP fetch. Workerd implements the protocol; the bridge only routes the upgrade (the `new WebSocketPair()` + `status: 101` + `init.webSocket` idiom) and maps the pair's server half onto the `WsSocket` surface, subprotocol negotiation included (server preference order, mirrored from the node adapter; the negotiated protocol also rides the 101 response's `sec-websocket-protocol` header so the runtime completes the handshake).
+
+```ts
+import { createHandler } from 's200/cloudflare';
+import { createCloudflareWebSocketBridge } from 's200/websocket/cloudflare';
+
+const ws = createCloudflareWebSocketBridge(app);
+const worker = createHandler(app);
+
+export default {
+  fetch: (request, env, ctx) =>
+    ws.upgrade(request).then((res) => res ?? worker.fetch(request, env, ctx)),
+};
+```
+
+`upgrade(request)` answers: a `101` `Response` carrying the pair's client half (return it straight from `fetch`), the rejection `Response` when a middleware denied the handshake (plain HTTP), or `undefined` when the request carries no `Upgrade: websocket` header or matches no ws route (the HTTP chain's caller). On Workers without `WebSocketPair` (a non-workerd host importing the bridge) it answers `501` instead of crashing.
+
+| Function / Type | Meaning |
+| --- | --- |
+| `createCloudflareWebSocketBridge(app)` | `{ upgrade }` — the ws half of the worker's `fetch`; handler and ctx threading match the other bridges |
+| `CloudflareWebSocketBridge` | `{ upgrade: (request: Request) => Promise<Response \| undefined> }` — a `Response` is the answer, `undefined` falls through to HTTP |
+| `CloudflareWebSocket` / `CloudflareWebSocketPair` | One endpoint of a Workers `WebSocketPair` / the `{ 0: client, 1: server }` pair value, narrowed to the members used |
+
+Workers-specific notes: the runtime replies to close frames automatically (compatibility dates from 2026-04-07 — older dates leave the reciprocal close to the handler, so call `socket.close()` in `onClose` there); `socket.bufferedAmount` stays `0` (workerd exposes no counter); `socket.ping()` is a no-op and `onPong` never fires (workerd manages keep-alive itself — the bridge forwards both if a future runtime grows the API); `perMessageDeflate` is ignored (Workers does not negotiate compression).
+
+### The three bridges at a glance
+
+| | node (`websocket/node`) | bun (`websocket/bun`) | cloudflare (`websocket/cloudflare`) |
+| --- | --- | --- | --- |
+| Integration | `serve(app, { upgrade })` | `serve(app, { websocket })` | `ws.upgrade(request) ?? worker.fetch(…)` |
+| Protocol by | s200's zero-dependency RFC 6455 server | Bun's native ws | workerd's native ws |
+| Subprotocols | server preference order | same | same (+ header on the 101) |
+| `perMessageDeflate` | implemented (opt-in) | Bun's negotiation | ignored |
+| `bufferedAmount` | socket `writableLength` | Bun's counter | `0` (not exposed) |
+| `ping` / `onPong` | frames | frames | no-op / silent (runtime-managed) |
+| Rejection answer | written to the socket pre-handshake | returned from fetch | returned from fetch |
+| Unknown ws path | socket destroyed | falls through to HTTP | falls through to HTTP |
