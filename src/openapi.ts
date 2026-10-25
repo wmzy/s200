@@ -23,7 +23,12 @@
  * order (`refSchemas: false` keeps everything inline). Query entries may
  * mark themselves required (`{ schema, required: true }`): the spec
  * emits `parameters[].required: true` and the validation gate rejects
- * the key's absence with a 422 — the two views stay isomorphic.
+ * the key's absence with a 422 — the two views stay isomorphic. `params`
+ * entries annotate path parameters the same way: the entry's JSON Schema
+ * replaces the bare string schema a pattern-only route carries, and the
+ * validation gate checks the captured value (a `required` marker rejects
+ * an optional segment's absence; the spec's own `required` stays
+ * segment-driven, as OpenAPI pins it to the segment).
  *
  * {@link withRouteValidation} is the runtime twin: the same annotations
  * become request gates — a 422 naming every violation's path — while
@@ -132,17 +137,27 @@ function openapiPath(pattern: string): string {
     .join('/');
 }
 
-/** Path-level parameters: every `:param`/`*wildcard` capture. */
-function pathParameters(segments: readonly Segment[]): unknown[] {
+/** Path-level parameters: every `:param`/`*wildcard` capture. A
+ * {@link RouteMeta.params} entry for the segment's name swaps the bare
+ * string schema for the entry's JSON Schema (via `toJsonSchema`,
+ * registered as a hoistable schema site like query/body schemas);
+ * `required` stays segment-driven — OpenAPI pins every path parameter to
+ * the segment it fills (`:id` required, `:id?` optional). */
+function pathParameters(segments: readonly Segment[], meta: RouteMeta, sites: SchemaSite[]): unknown[] {
   const out: unknown[] = [];
   for (const segment of segments) {
     if (segment._tag === 'static') continue;
-    out.push({
+    const entry = meta.params?.[segment.name];
+    const param: { name: string; in: string; required: boolean; schema: unknown } = {
       name: segment.name,
       in: 'path',
       required: segment._tag === 'wildcard' ? true : !segment.optional,
-      schema: { type: 'string' },
-    });
+      schema: entry === undefined ? { type: 'string' } : toJsonSchema(querySchemaOf(entry)),
+    };
+    if (entry !== undefined) {
+      sites.push({ json: JSON.stringify(param.schema), holder: param });
+    }
+    out.push(param);
   }
   return out;
 }
@@ -338,7 +353,7 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
     const meta = getRouteMeta(route);
     const path = openapiPath(route.pattern);
     const parameters = [
-      ...pathParameters(route.segments),
+      ...pathParameters(route.segments, meta ?? {}, sites),
       ...queryParameters(meta ?? {}, sites),
     ];
     let requestBody: Record<string, unknown> | undefined;
@@ -445,6 +460,10 @@ function validationGate(meta: RouteMeta): Middleware {
     ([key, entry]) =>
       [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
   );
+  const params = Object.entries(meta.params ?? {}).map(
+    ([key, entry]) =>
+      [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
+  );
   return async (ctx, next) => {
     if (body !== undefined) {
       const issues = body(await readJson(ctx));
@@ -471,6 +490,25 @@ function validationGate(meta: RouteMeta): Middleware {
         }
       }
     }
+    if (params.length > 0) {
+      // The captured params record — every matched segment is present;
+      // only an optional segment (`:id?`) can leave a key absent, and a
+      // `required` marker rejects exactly that absence (422), mirroring
+      // the query branch. Values are seen verbatim (the string domain).
+      for (const [key, validate, required] of params) {
+        const value = ctx.params[key];
+        if (value === undefined) {
+          if (required) {
+            throw validationError(`params.${key}`, [{ path: '', message: 'required' }]);
+          }
+          continue;
+        }
+        const issues = validate(value);
+        if (issues.length > 0) {
+          throw validationError(`params.${key}`, issues);
+        }
+      }
+    }
     await next();
   };
 }
@@ -479,17 +517,20 @@ function validationGate(meta: RouteMeta): Middleware {
  * Runtime enforcement of the documentation schemas — a pure data transform
  * in `mount`'s family (replace the route table, never mutate an entry in
  * place) that re-reads every {@link RouteMeta} annotation and rebuilds the
- * routes carrying a `body` or `query` schema with a validation gate in
- * front of the route's own middlewares. Annotations are re-attached to the
- * rebuilt routes, so `openapiSpec` keeps describing the same schemas the
- * gates enforce.
+ * routes carrying a `body`, `query`, or `params` schema with a validation
+ * gate in front of the route's own middlewares. Annotations are re-attached
+ * to the rebuilt routes, so `openapiSpec` keeps describing the same schemas
+ * the gates enforce.
  *
  * Semantics: `body` is read once via `readJson` (cached like any other
  * body read) and checked with `compileValidator`; each annotated `query`
  * key present in the request is checked against its schema, and a key
  * marked required (`{ schema, required: true }` — the flag the spec
  * emits as `parameters[].required`) answers its absence with the same
- * 422 `validationError` (`'query.<key>: required'`). Values are
+ * 422 `validationError` (`'query.<key>: required'`); each annotated
+ * `params` key is checked against its schema the same way
+ * (`'params.<key>: …'` — a captured path parameter is always present, so
+ * only an optional segment's absence can trip the marker). Values are
  * seen verbatim — query strings live in the string domain, so
  * `{ type: 'integer' }` rejects `?page=2`; annotate string shapes or use
  * `s200/query`'s `queryParams` when you want coercion. Any issue rejects
@@ -521,7 +562,7 @@ export function withRouteValidation<
     const meta = getRouteMeta(route);
     if (
       meta === undefined ||
-      (meta.body === undefined && meta.query === undefined)
+      (meta.body === undefined && meta.query === undefined && meta.params === undefined)
     ) {
       rebuilt.push(route);
       continue;

@@ -5,15 +5,15 @@
  *
  * It also speaks the vendor-neutral Standard Schema shape
  * (`https://standardschema.dev`): anything carrying a `~standard` prop
- * slots straight into {@link jsonBody} (and into `queryParams` from
- * `s200/query`) — reported issues map to a single 422 `HttpError` whose
- * body carries every issue with its path (`error` keeps the first
- * message).
+ * slots straight into {@link jsonBody}, {@link validateParams}, and
+ * {@link validateHeaders} (and into `queryParams` from `s200/query`) —
+ * reported issues map to a single 422 `HttpError` whose body carries
+ * every issue with its path (`error` keeps the first message).
  *
  * @module
  */
 
-import type { Ctx, Middleware } from './types';
+import type { Ctx, Middleware, Params } from './types';
 
 import { readJson } from './body';
 import { httpError, type HttpError } from './errors';
@@ -231,6 +231,128 @@ export function jsonBody(
     ? (data) => standardValidate(schemaOrParse, data)
     : schemaOrParse;
   return validate(async (ctx) => parse(await readJson(ctx)), options);
+}
+
+/** The shapes a `validateParams` callback may declare: the params record
+ * itself, or any narrower read (picked names, optional keys — an optional
+ * segment may be absent at runtime). */
+export type ParamsInput = Record<string, string | undefined>;
+
+/**
+ * The path-params twin of {@link queryParams}: a gate over the route's
+ * captured `ctx.params` (`Record<string, string>` keyed by `:name` /
+ * `*name`), in the same two flavors:
+ *
+ * - a Standard Schema (detected with `isStandardSchema`) runs over the
+ *   whole params record — {@link standardValidate} maps issues to the
+ *   same 422 `HttpError` {@link jsonBody} throws (`error` keeps the first
+ *   message, the body's `issues` array carries the full list with
+ *   paths); `ctx.state[key]` holds the schema's parsed OUTPUT, while the
+ *   gate's `_in` brand carries the schema's INPUT;
+ * - a plain parse function `(params: Q) => T` decides its own failure
+ *   mode, exactly like {@link jsonBody}'s parse flavor.
+ *
+ * The return type carries a phantom `_in?: { readonly params: … }` — a
+ * type-only intersection, no runtime property. The schema flavor brands
+ * it with the schema's input ({@link InputOf}), the parse flavor with
+ * the callback's declared read `Q` (what a caller must send — the params
+ * record itself); registrars collect the brand into the route log's `in`
+ * channel (`ChainIn`) beside `jsonBody`'s `{ json }` and `queryParams`'
+ * `{ query }`. Values are seen verbatim — path params live in the string
+ * domain, so coercion (`Number(params.id)`) is the parse flavor's job.
+ *
+ * ```ts
+ * get(app, '/users/:id', validateParams(ParamsSchema), (ctx) => {
+ *   json(ctx, { id: ctx.state.validated.id });   // parsed output
+ * });
+ * ```
+ */
+export function validateParams<S extends StandardSchema>(
+  schema: S,
+  options?: ValidateOptions
+): Middleware & { readonly _in?: { readonly params: InputOf<S> } };
+export function validateParams<Q extends ParamsInput = Params, T = unknown>(
+  parse: (params: Q) => T,
+  options?: ValidateOptions
+): Middleware & { readonly _in?: { readonly params: Q } };
+export function validateParams(
+  schemaOrParse: StandardSchema | ((params: never) => unknown),
+  options: ValidateOptions = {}
+): Middleware {
+  const key = options.key ?? 'validated';
+  return async (ctx, next) => {
+    ctx.state[key] = isStandardSchema(schemaOrParse)
+      ? standardValidate(schemaOrParse, ctx.params)
+      : // The captured record is the runtime input; `Q` is the callback's
+        // declared (narrower) view of it — the cast is the type-level seam.
+        (schemaOrParse as (params: Params) => unknown)(ctx.params);
+    return next();
+  };
+}
+
+/** The record `parseHeaders` produces: header names lowercased (the
+ * platform's own normalization), one string per name — repeated headers
+ * comma-joined exactly like `headers.get(name)`. */
+export type HeaderRecord = Record<string, string>;
+
+/** The shapes a `validateHeaders` callback may declare: the header
+ * record, or any narrower read (picked names, optional keys — a header
+ * may be absent at runtime). */
+export type HeadersInput = Record<string, string | undefined>;
+
+/**
+ * Reads the request's headers into a plain record — the headers twin of
+ * `parseQuery`: names lowercased by the platform, repeated headers joined
+ * with `', '` (the `headers.get` semantics), allocation per request.
+ */
+export function parseHeaders(ctx: Ctx): HeaderRecord {
+  const record: Record<string, string> = {};
+  for (const [name, value] of ctx.req.headers) {
+    record[name] = name in record ? `${record[name]}, ${value}` : value;
+  }
+  return record;
+}
+
+/**
+ * The runtime header gate — the enforcement twin of {@link requiresHeaders}
+ * (which only declares keys for `s200/client`). Same two flavors as
+ * {@link jsonBody}: a Standard Schema runs over the {@link HeaderRecord}
+ * `parseHeaders` produces (a 422 with the identical issues envelope on
+ * failure, the parsed OUTPUT on `ctx.state[key]`, the schema's INPUT on
+ * the `_in` brand), or a plain parse function `(headers: Q) => T` decides
+ * its own failure mode. The `_in` brand rides the same `{ headers }`
+ * channel key `requiresHeaders` uses, so `s200/client` types (and
+ * demands) `init.headers` as the declared read intersected with the
+ * plain-record form.
+ *
+ * ```ts
+ * get(app, '/me', validateHeaders(HeadersSchema), (ctx) => {
+ *   json(ctx, { tenant: ctx.state.validated.tenant });   // parsed output
+ * });
+ * ```
+ */
+export function validateHeaders<S extends StandardSchema>(
+  schema: S,
+  options?: ValidateOptions
+): Middleware & { readonly _in?: { readonly headers: InputOf<S> } };
+export function validateHeaders<Q extends HeadersInput = HeaderRecord, T = unknown>(
+  parse: (headers: Q) => T,
+  options?: ValidateOptions
+): Middleware & { readonly _in?: { readonly headers: Q } };
+export function validateHeaders(
+  schemaOrParse: StandardSchema | ((headers: never) => unknown),
+  options: ValidateOptions = {}
+): Middleware {
+  const key = options.key ?? 'validated';
+  return async (ctx, next) => {
+    const record = parseHeaders(ctx);
+    ctx.state[key] = isStandardSchema(schemaOrParse)
+      ? standardValidate(schemaOrParse, record)
+      : // The header record is the runtime input; `Q` is the callback's
+        // declared (narrower) view of it — the cast is the type-level seam.
+        (schemaOrParse as (headers: HeaderRecord) => unknown)(record);
+    return next();
+  };
 }
 
 /**

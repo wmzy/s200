@@ -88,6 +88,7 @@ export default defineConfig({
               { text: '包导出清单', link: '/zh/guides/package-surface' },
               { text: '编写电池模块', link: '/zh/guides/battery-authoring' },
               { text: '分布式存储', link: '/zh/guides/distributed-stores' },
+              { text: 'OIDC 登录', link: '/zh/guides/oidc' },
               { text: '分片与调度', link: '/zh/guides/sharding' },
             ],
           },
@@ -113,6 +114,7 @@ export default defineConfig({
               { text: 'MCP', link: '/zh/api/mcp' },
               { text: '生命周期 · 健康 · 热重载', link: '/zh/api/lifecycle' },
               { text: '分片与执行', link: '/zh/api/sharding' },
+              { text: '代理', link: '/zh/api/proxy' },
             ],
           },
           {
@@ -226,6 +228,7 @@ export default defineConfig({
           { text: 'Package Surface', link: '/guides/package-surface' },
           { text: 'Battery Authoring', link: '/guides/battery-authoring' },
           { text: 'Distributed Stores', link: '/guides/distributed-stores' },
+          { text: 'OIDC Login', link: '/guides/oidc' },
           { text: 'Sharding & Scheduling', link: '/guides/sharding' },
         ],
       },
@@ -251,6 +254,7 @@ export default defineConfig({
           { text: 'MCP', link: '/api/mcp' },
           { text: 'Lifecycle · Health · Hot Reload', link: '/api/lifecycle' },
           { text: 'Sharding & Execution', link: '/api/sharding' },
+          { text: 'Proxy', link: '/api/proxy' },
         ],
       },
       {

@@ -1,6 +1,6 @@
-# 可观测性（`s200/logger`、`s200/request-id`、`s200/otel`、`s200/version`）
+# 可观测性（`s200/logger`、`s200/request-id`、`s200/timing`、`s200/otel`、`s200/version`）
 
-请求日志、关联 ID、OpenTelemetry 形状的追踪/指标与 API 版本协商。
+请求日志、关联 ID、服务器耗时、OpenTelemetry 形状的追踪/指标与 API 版本协商。
 
 ## 日志（`s200/logger`）
 
@@ -31,6 +31,25 @@ use(app, requestId());
 | --- | --- | --- |
 | `header` | `'x-request-id'` | 请求/响应头名 |
 | `generator` | `crypto.randomUUID()` | `() => string` |
+
+## 服务器耗时（`s200/timing`）
+
+每请求一个 RFC 8006 §7.2 `Server-Timing` 头：命名 span 按注册顺序，随后是总耗时。在 unwind 时经延迟头机制（`setHeader`）刻写，因此 404/405/500 与映射错误响应同样携带 —— 链内边界在 unwind 运行前物化所有响应。
+
+```ts
+use(app, timing());
+const stop = startTiming(ctx, 'db');
+const rows = await query(sql);
+stop(); // Server-Timing: db;dur=5.2, total;dur=18.3
+```
+
+`startTiming(ctx, name)` 在任何持有 `ctx` 的地方可用 —— handler 与下游中间件皆可。stop 函数从未运行的 span 在头刻写时闭合（其时长覆盖到 unwind）；stop 调用两次只记录第一次的时长。span 名必须是 RFC 7230 token（不含空格、逗号、分号）。未安装该中间件时调用 `startTiming` 无害 —— 每请求的 span 列表弱键引用，随请求消亡。时长为毫秒、一位小数（亚毫秒精度）。
+
+`TimingOptions`：
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `total` | `'total'` | 总耗时条目的名字 |
 
 ## OTel（`s200/otel`）
 

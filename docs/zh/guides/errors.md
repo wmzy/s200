@@ -25,7 +25,22 @@ throw httpError(401, 'Unauthorized', { error: 'Unauthorized' }, {
 });
 ```
 
-错误模型就是三个函数加一条规则：`httpError(status, message, body?, headers?)` 构建带标记的值（`status` 为 `[400, 599]` 内的整数，`body` 原样搭载、替代默认的 `{ "error": message }` 信封），`isHttpError(error)` 结构化检查标记，`toErrorResponse(error)` 把任何被抛出的值映射为 `Response` —— 与边界应用的映射相同，在链外就地应答错误时有用。那条规则：**throw，不要手工返回** —— 被抛出的 `HttpError` 能到达 `onError` 并参与 unwind 盖章；你自己写的响应只是一个响应。
+第五个参数附带 `cause` —— 被包装的根源（502 之下的数据库错误、网关超时之下的上游故障）。它是诊断信息，绝不是 payload：`toErrorResponse` 不序列化它，客户端 body 与没有 cause 时完全一致。它原封不动地流入错误边界，你的 `onError` 在那里读到它（`error.cause`），日志 sink 呈现它：
+
+```ts
+const app = createApp({
+  onError: (ctx, error) => {
+    if (isHttpError(error)) {
+      json(ctx, { error: error.message }, { status: error.status });
+      report(error.cause); // the wrapped origin — off the client body
+    }
+  },
+});
+```
+
+随之而来的一条规则翻转：不带 cause 的 `HttpError` 是刻意的客户端错误，保持不记录；携带 `cause` 的那个则是主动要求 —— 边界把它路由给 `logError`（默认 sink 在 `console.error` 行末追加 cause），同时仍以错误自身的状态码与 body 应答客户端。
+
+错误模型就是三个函数加一条规则：`httpError(status, message?, body?, headers?, cause?)` 构建带标记的值（`status` 为 `[400, 599]` 内的整数，`body` 原样搭载、替代默认的 `{ "error": message }` 信封，`cause` 则搭载到日志 sink 一侧），`isHttpError(error)` 结构化检查标记，`toErrorResponse(error)` 把任何被抛出的值映射为 `Response` —— 与边界应用的映射相同，在链外就地应答错误时有用。那条规则：**throw，不要手工返回** —— 被抛出的 `HttpError` 能到达 `onError` 并参与 unwind 盖章；你自己写的响应只是一个响应。
 
 ## 默认映射
 
@@ -46,6 +61,8 @@ use(app, async (ctx, next) => {
   logger.info(`${ctx.req.method} ${ctx.url.pathname} → ${ctx.res?.status}`);
 });
 ```
+
+要彻底去掉 `?.`，`resOf(ctx)`（核心 barrel 导出）返回该响应，若在 `next()` 之前调用则抛出一个点名误用的普通 `Error` —— 而 `SettledCtx` 为只在 next() 之后运行的辅助函数提供类型（见 [`s200` 响应助手](/zh/api/respond#响应助手)）。
 
 排在崩溃 handler 前面的中间件在 unwind 上观察到真实的错误响应：`logger` 记录它、`cors` 盖章它、`request-id` 命名它。这也是为什么 `onError` 是应用选项而不是事后 hook —— 它作为同一次物化的一部分在链内运行。路由链外崩溃的中间件（应用级 `use`）由外层边界捕获并经同一条路径映射。
 

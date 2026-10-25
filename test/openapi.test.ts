@@ -254,6 +254,61 @@ describe('openapi (spec emission)', () => {
     );
   });
 
+  it('emits params schemas as path-parameter JSON Schemas — unannotated params stay strings', () => {
+    const app = createApp();
+    const withGet = get(app, '/users/:id/posts/:slug?', (ctx) => ctx);
+    describeRoute(withGet, 'GET', '/users/:id/posts/:slug?', {
+      params: { id: { type: 'string', title: 'UserId' } },
+    });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+    // `:slug?` templates as `{slug?}` — the optional marker rides along.
+    const item = spec.paths['/users/{id}/posts/{slug?}']?.get as {
+      parameters: { name: string; in: string; required: boolean; schema: unknown }[];
+    };
+
+    // The annotated param carries its converted schema; the sibling
+    // without an entry keeps the bare string schema.
+    const id = item.parameters.find((p) => p.in === 'path' && p.name === 'id');
+    (id?.schema as Record<string, unknown>).should.deep.equal({
+      type: 'string',
+      title: 'UserId',
+    });
+    // `required` stays segment-driven — OpenAPI pins it to the segment.
+    id?.required.should.equal(true);
+    const slug = item.parameters.find((p) => p.in === 'path' && p.name === 'slug');
+    (slug?.schema as Record<string, unknown>).should.deep.equal({ type: 'string' });
+    slug?.required.should.equal(false);
+  });
+
+  it('dedups params schemas across routes into components.schemas', () => {
+    const app = createApp();
+    const one = get(app, '/users/:id', (ctx) => ctx);
+    const two = get(app, '/orders/:id', (ctx) => ctx);
+    describeRoute(one, 'GET', '/users/:id', {
+      params: { id: { type: 'integer' } },
+    });
+    describeRoute(two, 'GET', '/orders/:id', {
+      params: { id: { type: 'integer' } },
+    });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+    const ref = { $ref: '#/components/schemas/Schema1' };
+    const first = (
+      spec.paths['/users/{id}']?.get as {
+        parameters: { name: string; schema: unknown }[];
+      }
+    ).parameters;
+    const second = (
+      spec.paths['/orders/{id}']?.get as {
+        parameters: { name: string; schema: unknown }[];
+      }
+    ).parameters;
+    (first.find((p) => p.name === 'id')?.schema as Record<string, unknown>).should.deep.equal(ref);
+    (second.find((p) => p.name === 'id')?.schema as Record<string, unknown>).should.deep.equal(ref);
+    (
+      (spec.components?.schemas as Record<string, unknown>).Schema1 as Record<string, unknown>
+    ).should.deep.equal({ type: 'integer' });
+  });
+
   it('openapiJson answers a spec document over the wire', async () => {
     const app = createApp();
     describeApp(app, { title: 'Wire API', version: '2.0.0' });

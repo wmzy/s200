@@ -82,14 +82,17 @@ await supervisor.stop();
 import { createUnitMetrics, unitMetricsEndpoint } from 's200/unit-metrics';
 const m = createUnitMetrics({ maxConcurrency: 64 });
 use(app, m.middleware);                       // 尽早注册 —— 在路由之前
-get(app, '/metrics', unitMetricsEndpoint(m)); // 报告单元总量
+get(app, '/metrics', unitMetricsEndpoint(m)); // JSON（默认）
+get(app, '/metrics', unitMetricsEndpoint(m, { format: 'prometheus' })); // Prometheus 文本 0.0.4
 ```
 
 `createUnitMetrics(options?)` → `{ middleware, snapshot(): UnitMetrics, reset(): void }`。尽早注册 `middleware`，使每个请求 —— 已处理的、404、错误的 —— 在进入与退出时都被计数；出错的请求仍计为*已完成*。`UnitMetricsOptions`：`{ maxConcurrency?（*分发器*宣告的并发 —— 塑造 `queueDepth`）, warmAfter?（默认 1） }`。
 
 `UnitMetrics`：`{ inFlight, maxInFlight（单元实际吸收的峰值）, requests（完成数而非到达数）, queueDepth（`max(0, inFlight - maxConcurrency)`，未宣告上限时恒 0）, eventLoopUtilization, rss, heapUsed, warm（粘性：`requests` 达到 `warmAfter` 后为 true，直到 `reset()`）, startedAt }`。
 
-`unitMetricsEndpoint(m)`：把 `snapshot()` 服务为 JSON 的 handler —— 在 `m.middleware` 之前或之后挂载都正确（未包装时报告总量；包装时诚实显示自身为当前在途的那一个请求）。
+`unitMetricsEndpoint(m)`（或 `unitMetricsEndpoint(m, { format })`）：把 `snapshot()` 服务出去的 handler —— 默认为 JSON，或以 `format: 'prometheus'` 服务 Prometheus 文本曝光格式。在 `m.middleware` 之前或之后挂载都正确（未包装时报告总量；包装时诚实显示自身为当前在途的那一个请求）。prometheus 形态以 `Content-Type: text/plain; version=0.0.4; charset=utf-8` 服务 —— 把 Prometheus 抓取器指向同一条 `/metrics` 路由即可。
+
+`prometheusText(snapshot)`：该形态背后的纯字符串化函数 —— 把快照渲染为 Prometheus 文本曝光格式 0.0.4：`# HELP`/`# TYPE` 行加每个字段一个 gauge，无标签，顺序确定（`UnitMetrics` 声明顺序）。指标名为 `s200_unit_*`，camelCase 字段转 snake_case（`inFlight` → `s200_unit_in_flight`）；字节量带 `_bytes` 基本单位后缀（`rss` → `s200_unit_rss_bytes`、`heapUsed` → `s200_unit_heap_used_bytes`）；`startedAt` 重标度为 unix 秒（`s200_unit_started_at_seconds`）；`warm` 映射为 0/1。该格式没有 `NaN`/`Infinity` 字面量 —— 非有限读数退化为 `0`，不会毒化整个抓取。`PROMETHEUS_CONTENT_TYPE` 是导出的 content-type 常量。
 
 ## 开发调度器（`s200/shard-dev`）
 

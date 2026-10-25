@@ -14,6 +14,7 @@ html<S>(ctx, body, init?): StatusedResponse<S>      // text/html; charset=utf-8 
 redirect<S>(ctx, location, status?): StatusedResponse<S>  // default 302
 setHeader(ctx, name, value)                         // direct, or deferred pre-response
 setHeaders(ctx, { name: value })                    // many at once, insertion order
+resOf(ctx): Response                                // post-next() res read, misuse-naming throw
 escapeHtml(value): string                            // & < > " '
 utf8Length(value): number                            // ASCII fast path, no encoder allocation
 newResponse(ctx, body, init?): Response             // LightResponse on the light path
@@ -24,6 +25,7 @@ drainPendingHeaders(ctx, res)                       // low-level: see below
 | --- | --- |
 | `StatusedResponse<S>` | `Response & { _status?: S }` — the status literal its builder used (compile-time only) |
 | `JsonResponse<T, S>` | `Response & { _out?: T; _status?: S }` — brands the body type for `client.get(...).json()` |
+| `SettledCtx<S>` | `Ctx & { res: Response }` — the ctx as it exists after `await next()` settles, `res` narrowed off `undefined` (compile-time only) |
 
 Notes:
 
@@ -39,6 +41,25 @@ Notes:
 - **Before the response exists** (top of the middleware, or inside `onError`) the header is deferred and stamped onto whichever response the request first materializes — handler response, `404`/`405`/`500` fallback, or error response. A deferred value overrides the response's own header of the same name: middleware policy (`x-powered-by`, `cache-control`, security headers) wins over what the handler built.
 
 `drainPendingHeaders(ctx, res)` is the low-level drain hook behind that contract — `newResponse`, the bare-`Response` adoption, and the error mapping call it. Battery/adapter authors adopting a response that bypassed `newResponse` call it too; application code never needs it.
+
+### Post-`next()` narrowing
+
+The same invariant powers two reading helpers. `resOf(ctx)` returns `ctx.res` — after `await next()` settles it always exists (handler's, fallback, or error response — the chain materializes all of them in-band), so middleware on the unwind skips the `?.`:
+
+```ts
+use(app, async (ctx, next) => {
+  await next();
+  logger.info(`${ctx.req.method} ${ctx.url.pathname} → ${resOf(ctx).status}`);
+});
+```
+
+Calling it before a response exists is a programmer error and throws a plain `Error` naming the misuse (not an `HttpError` — it never reaches the client; use `setHeader`/`setHeaders` for pre-response header work). `SettledCtx<S>` is the type-level twin: `Ctx & { res: Response }`, for helpers that only ever run post-`next()`:
+
+```ts
+function statusLine(ctx: SettledCtx): string {
+  return `${ctx.req.method} ${ctx.url.pathname} → ${ctx.res.status}`;
+}
+```
 
 ## Body reading
 

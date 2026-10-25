@@ -82,14 +82,17 @@ One point-in-time reading of a unit. All counters are cumulative since the last 
 import { createUnitMetrics, unitMetricsEndpoint } from 's200/unit-metrics';
 const m = createUnitMetrics({ maxConcurrency: 64 });
 use(app, m.middleware);                       // register early — before routes
-get(app, '/metrics', unitMetricsEndpoint(m)); // reports the unit's totals
+get(app, '/metrics', unitMetricsEndpoint(m)); // JSON (default)
+get(app, '/metrics', unitMetricsEndpoint(m, { format: 'prometheus' })); // Prometheus text 0.0.4
 ```
 
 `createUnitMetrics(options?)` → `{ middleware, snapshot(): UnitMetrics, reset(): void }`. Register `middleware` early so every request — handled, 404, or errored — is counted on both entry and exit; a request that errored still counts as *completed*. `UnitMetricsOptions`: `{ maxConcurrency? (the concurrency the *dispatcher* announced — shapes `queueDepth`), warmAfter? (default 1) }`.
 
 `UnitMetrics`: `{ inFlight, maxInFlight (the peak the unit actually absorbed), requests (completions, not arrivals), queueDepth (`max(0, inFlight - maxConcurrency)`, always 0 when no cap was announced), eventLoopUtilization, rss, heapUsed, warm (sticky: true once `requests` reached `warmAfter`, until `reset()`), startedAt }`.
 
-`unitMetricsEndpoint(m)`: a handler serving `snapshot()` as JSON — mount it before or after `m.middleware`, it stays correct either way (unwrapped it reports totals; wrapped it honestly shows itself as the one request currently in flight).
+`unitMetricsEndpoint(m)` (or `unitMetricsEndpoint(m, { format })`): a handler serving `snapshot()` — as JSON by default, or as Prometheus text exposition with `format: 'prometheus'`. Mount it before or after `m.middleware`, it stays correct either way (unwrapped it reports totals; wrapped it honestly shows itself as the one request currently in flight). The prometheus flavor is served with `Content-Type: text/plain; version=0.0.4; charset=utf-8` — point a Prometheus scraper at the same `/metrics` route.
+
+`prometheusText(snapshot)`: the pure stringifier behind that flavor — renders a snapshot as Prometheus text exposition format 0.0.4: `# HELP`/`# TYPE` lines plus one gauge per field, no labels, deterministic order (the `UnitMetrics` declaration order). Metric names are `s200_unit_*` with camelCase fields snake_cased (`inFlight` → `s200_unit_in_flight`); byte measures carry the `_bytes` base-unit suffix (`rss` → `s200_unit_rss_bytes`, `heapUsed` → `s200_unit_heap_used_bytes`), `startedAt` is rescaled to unix seconds (`s200_unit_started_at_seconds`), and `warm` maps to 0/1. The format has no `NaN`/`Infinity` literals — a non-finite reading degrades to `0` rather than poison the scrape. `PROMETHEUS_CONTENT_TYPE` is the exported content-type constant.
 
 ## Dev dispatcher (`s200/shard-dev`)
 

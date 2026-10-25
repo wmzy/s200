@@ -10,6 +10,25 @@ get(app, '/files/*path', (ctx) => text(ctx, ctx.params.path)); // captures the r
 get(app, '/users/:id?', (ctx) => json(ctx, { id: ctx.params.id ?? null })); // id is optional
 ```
 
+## Registration styles
+
+The functional registrars are the recommended primary style — `get(app, pattern, handler)` takes the app as its first argument and returns it, so registration is ordinary, greppable code:
+
+```ts
+get(app, '/users/:id', getUser);
+post(app, '/users', createUser);
+```
+
+`routes(app)` is the chainable alternative for grouped or fluent registration — pure sugar, every builder method delegates 1:1 to the same registrar and registers immediately:
+
+```ts
+routes(app)
+  .get('/users/:id', getUser)
+  .post('/users', createUser);
+```
+
+Rule of thumb: plain registrars when registrations are spread across files or interleaved with middleware; `routes(app)` when one cohesive block of routes wants the fluent shape. Both register identically — first registration wins either way.
+
 ## Wildcards
 
 `*name` must be the **final** segment — `/files/*path` is valid, while

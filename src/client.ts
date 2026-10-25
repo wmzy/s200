@@ -32,6 +32,21 @@ export type ClientInit = RequestInit & {
   >;
 };
 
+/**
+ * One client middleware: receives the built `Request` (URL filled, query
+ * string appended, JSON bodies stringified, effective signal stamped) and
+ * `next`, which runs the rest of the chain — the innermost `next` is the
+ * fetch itself. Return (a promise of) the `Response` the call resolves
+ * with; `next` may be awaited more than once (retry), and the request it
+ * takes may be a rebuilt copy (`new Request(req, { ... })`) — headers,
+ * signal and body can all be swapped per attempt. Onion order: the first
+ * registered entry is the outermost layer.
+ */
+export type ClientMiddleware = (
+  req: Request,
+  next: (req: Request) => Promise<Response>
+) => Promise<Response>;
+
 export type ClientOptions = {
   /** Base URL prepended to every path (origin + optional prefix, no query). */
   baseUrl?: string;
@@ -49,6 +64,21 @@ export type ClientOptions = {
    * it (the Node floor, 20.3, does; older runtimes link manually).
    */
   timeoutMs?: number;
+  /**
+   * Middleware wrapping every call's fetch — onion order (the first
+   * entry is the outermost layer), applied after URL/header/body
+   * building, so each entry sees a fully built `Request` and the
+   * innermost `next` is the fetch itself. With middleware set, each call
+   * is materialized as a `Request` before the chain runs — a relative
+   * path then needs a base the runtime can resolve (`baseUrl`, or a
+   * runtime `location`) even when `fetch` is injected; absolute patterns
+   * are unaffected. Abort semantics are unchanged: the effective signal
+   * (per-call `init.signal`, else `signal`, raced with `timeoutMs`) is
+   * stamped on the `Request` and aborts the *whole call* — a retried
+   * `next` shares it, and the `timeoutMs` window is one window per call,
+   * not per attempt. Non-function entries throw at creation time.
+   */
+  middleware?: readonly ClientMiddleware[];
 };
 
 /** One route's call signature: params required exactly when the pattern
@@ -317,6 +347,10 @@ const ALL_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 
 type PathFn = (args: Params | undefined, init: ClientInit | undefined) => Promise<Response>;
 
+/** The chain's link shape — one `Request` in, the call's `Response` out;
+ * the innermost link is the fetch, the outermost the first middleware. */
+type ClientDispatch = (req: Request) => Promise<Response>;
+
 /**
  * Two signals raced as one: `AbortSignal.any` where the runtime has it
  * (Node >= 20.3 — the floor), manual listener linkage elsewhere. The
@@ -391,7 +425,7 @@ function buildPathFn(
   pattern: string,
   method: string,
   segments: readonly Segment[],
-  fetcher: typeof fetch,
+  send: (path: string, init: RequestInit) => Promise<Response>,
   resolveSignal: (init: AbortSignal | null | undefined) => AbortSignal | undefined
 ): PathFn {
   return (args, init) => {
@@ -456,11 +490,11 @@ function buildPathFn(
       if (!headers.has('content-type')) {
         headers.set('content-type', 'application/json');
       }
-      return fetcher(path, { ...rest, headers, body: JSON.stringify(rest.body), method, signal });
+      return send(path, { ...rest, headers, body: JSON.stringify(rest.body), method, signal });
     }
     // The method group rides every init — a client built from the route
     // table speaks the table's methods (a stray `method` in init loses).
-    return fetcher(path, { ...rest, method, signal });
+    return send(path, { ...rest, method, signal });
   };
 }
 
@@ -489,6 +523,15 @@ function buildPathFn(
  * `baseUrl` the client needs a URL base it can resolve against: browsers
  * and edges have `globalThis.location`, but in Node `createClient` without
  * `baseUrl` (or an injected `fetch`) throws at creation time.
+ *
+ * `options.middleware` wraps every call's fetch in an onion — the first
+ * entry outermost, each entry a `(req, next) => Promise<Response>` over
+ * the fully built `Request` (URL, query, JSON body, effective signal);
+ * the innermost `next` is the fetch itself. The chain sees one signal
+ * per *call*: aborting it (user signal or `timeoutMs`) ends the whole
+ * call — retries included — so per-attempt timing is a middleware's own
+ * concern (`new Request(req, { signal: ... })` swaps it per attempt).
+ * Non-function entries throw at creation.
  */
 export function createClient<
   S extends State = State,
@@ -507,6 +550,31 @@ export function createClient<
   }
   const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   const fetcher = options.fetch ?? globalThis.fetch;
+  // Middleware entries are an options-level contract (like baseUrl), so a
+  // malformed one fails at creation with the remedy, not per-request.
+  const list = options.middleware;
+  const chain =
+    list === undefined || list.length === 0
+      ? undefined
+      : list.reduceRight<ClientDispatch>(
+          (inner, middleware, i) => {
+            if (typeof middleware !== 'function') {
+              throw new Error(
+                `createClient: options.middleware[${i}] is not a function (got ${typeof middleware}) — each entry is (req, next) => Promise<Response>`
+              );
+            }
+            // Onion order: reduceRight folds the last entry into the fetch,
+            // so the FIRST registered entry ends up outermost.
+            return (req) => middleware(req, inner);
+          },
+          (req) => fetcher(req)
+        );
+  // Without middleware no Request is materialized — the fetcher takes
+  // (path, init) exactly as before, zero impact on the no-hook client.
+  const send =
+    chain === undefined
+      ? (path: string, init: RequestInit) => fetcher(path, init)
+      : (path: string, init: RequestInit) => chain(new Request(path, init));
   const resolveSignal = signalOf(options);
   const byMethod = new Map<string, Map<string, { fn: PathFn; hasParams: boolean }>>();
   const compile = (method: string, pattern: string, segments: readonly Segment[]): void => {
@@ -526,7 +594,7 @@ export function createClient<
       }
     }
     group.set(pattern, {
-      fn: buildPathFn(base, pattern, method, segments, fetcher, resolveSignal),
+      fn: buildPathFn(base, pattern, method, segments, send, resolveSignal),
       hasParams,
     });
   };

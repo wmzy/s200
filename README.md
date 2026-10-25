@@ -68,7 +68,7 @@ The full API documentation lives on the docs site — [wmzy.github.io/s200](http
 
 ## Community
 
-Bugs go to [GitHub Issues](https://github.com/wmzy/s200/issues) — include the runtime and a minimal repro. Ideas, questions, and usage discussion belong in [GitHub Discussions](https://github.com/wmzy/s200/discussions).
+Bugs go to [GitHub Issues](https://github.com/wmzy/s200/issues) — include the runtime and a minimal repro. Ideas, questions, and usage discussion belong in [GitHub Discussions](https://github.com/wmzy/s200/discussions). Vulnerabilities are reported privately — see [SECURITY.md](SECURITY.md). To contribute code, docs, or benchmarks, start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Stability & versioning
 

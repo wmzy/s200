@@ -15,13 +15,16 @@ barrel 还再导出[响应助手、请求体读取与 `serveStatic`](/zh/api/res
 | `Middleware<S>` | `(ctx: Ctx<Params, S>, next: Next) => Promise<void> \| void` |
 | `StateMiddleware<X, S>` | `Middleware<S> & { readonly _state?: X }` —— state 注入器的编译期身份：`S` 是它读取的，`_state` 幻影声明它写入 `ctx.state` 的键；由 `withState` 产出、`use` 收集 |
 | `StateOf<Ms>` | 中间件列表注入的 state —— 各成员 `_state` 品牌的交集（无品牌时为 `unknown`，即交集的单位元） |
+| `ScopedState<Prefix, X>` | `{ prefix, state }` —— `App` 幻影 `G` 日志中的一条前缀作用域注入（来自 `use(app, prefix, branded)`） |
+| `ScopedOf<G, P>` | 匹配路由模式 `P` 的作用域品牌之交集（无匹配时为 `unknown`） |
+| `ScopedPush<G, Prefix, X>` | 一次前缀作用域 `use` 追加合并品牌后的 `G` 日志（无品牌时不变） |
 | `Handler<P, S, O>` | `(ctx: Ctx<P, S>) => O \| Promise<O>` —— 可返回 `Response`（收养为 `ctx.res`）、`JsonResponse`（带品牌）或空 |
 | `Ctx<P, S>` | `{ req, url, params, query, state, signal, route, res? }` —— 每请求的可变单元；`route` 是匹配到的路由本体（404/405 回退时为 `undefined`） |
 | `Segment` | `{ _tag: 'static'; value } \| { _tag: 'param'; name; optional } \| { _tag: 'wildcard'; name }` |
 | `RouteDef` | `{ method, pattern, … }` —— 一次注册的编译期签名 |
 | `Registrar<M>` | 每个方法注册器（`get`、`post`、…）共享的签名：字面量模式与动态模式两个重载，追加一个 `RouteDef` |
 | `AddRoute` | 动态方法注册器的签名 —— `addRoute(app, method, pattern, chain)`，def 的方法标记为 `Uppercase<M>` |
-| `RoutesBuilder<S, R>` | `routes(app)` 返回的可链式 builder —— 每个注册器一个方法外加 `use`/`mount`，各自返回追加了幻影日志的 builder，`.app` 暴露类型化的 `App` |
+| `RoutesBuilder<S, R, G>` | `routes(app)` 返回的可链式 builder —— 每个注册器一个方法外加 `use`/`mount`，各自返回追加了幻影日志的 builder，`.app` 暴露类型化的 `App` |
 | `Route` | `createRoute` 产出的不可变注册项 |
 | `MatchResult` | `{ route, params } \| { allowedMethods }` —— 后者供给 405 的 `Allow` 列表 |
 | `MatchFn` | `(routes, method, pathname) => MatchResult \| undefined` —— 可替换路由器 |
@@ -37,6 +40,7 @@ handler/闸门的返回类型携带编译期品牌（绝非运行时数据）：
 - `ResolveOut<O>` / `ResolveStatus<O>` —— handler 返回声明体/状态（来自 `JsonResponse` 的 `_out` / `_status`）
 - `ChainIn<Ms>` —— 路由闸门合并声明的输入形状（`_in` 幻影 —— `jsonBody` 的解析类型、`queryParams` 的读取、`requiresHeaders` 的键、`bodyShape` 的结构化类型）
 - `StateOf<Ms>` —— `use` 实参列表注入的 state（`_state` 幻影 —— `withState` 的品牌），交集进应用的 `S`，使 handler 类型化地读到注入键
+- `ScopedOf<G, P>` / `ScopedPush` / `MountedScoped` —— 前缀作用域 state 日志：`ScopedOf` 把 `App` 的 `G` 条目过滤到匹配某路由模式的那些（交集进该路由 handler 的 `S`），`ScopedPush` 追加一次前缀作用域 `use` 调用的品牌，`MountedScoped` 在挂载基下重定前缀
 - `ChainErrors<Ms>` / `OutErrors<O>` / `RouteErrors<Ms, O>` —— 路由可能返回的错误分支（`throws` 闸门 + 返回的 `httpError` 值）
 - `BranchesOf<O>` —— handler 返回联合声明的状态 → 体对；供 `s200/client` 消费
 - `UnionToIntersection<T>` —— 把函数类型联合转为重载集
@@ -59,7 +63,7 @@ const app = createApp<MyState>({ strict: false });
 | `onNotFound` | 404 | 自定义未匹配应答 |
 | `logError` | 上下文行 + 错误 | 未设自定义 `onError` 时，意外（非 `HttpError`）错误的汇聚点；接收 `(error, ctx)`（增量式 —— `(error) => void` 输出端继续可用）。默认先输出 `[s500] <method> <pathname>[ <request id>]` 再输出错误本身，走 `console.error` —— id 取 request-id 电池写入的 `state.requestId`（无论配置了什么 header 名），否则回退到字面 `x-request-id` 头；客户端始终看到匿名 500 |
 
-`R` 是幻影参数 —— 已注册 `method` + `pattern` 字面量的编译期日志，供 `s200/client` 消费，绝不出现于运行时形状。
+`R` 是幻影参数 —— 已注册 `method` + `pattern` 字面量的编译期日志，供 `s200/client` 消费，绝不出现于运行时形状。`G` 同为幻影 —— 前缀作用域 state 注入的日志（`use(app, '/admin', withUser)` 把品牌存在这里）；注册器按路由模式过滤它，前缀之下的 handler 类型化地读到注入键，而应用级 `S` 不受影响。
 
 ## 注册
 
@@ -80,7 +84,7 @@ routes(app)                                    // 同一批注册器的可链式
 ```
 
 - `use(app, prefix, …mws)` 按路径名前缀作用域（允许参数，如 `/users/:id`）；前缀不带中间件会抛错。
-- `use` 同时贯穿 state 通道：每个经 `withState` 打品牌的实参贡献其 `_state` 幻影，返回应用的 `S` 变为 `S & X` —— 下游中间件与 handler 类型化地读到注入键。普通中间件不贡献任何东西、类型不变；品牌收集是应用级的（前缀形式无法把它收窄到前缀下的路由），路由链也不传递它 —— 见下方 `withState(mw)` 一节。
+- `use` 同时贯穿 state 通道：全局形式把每个实参的 `_state` 幻影（来自 `withState`）交集进应用的 `S`，下游中间件与 handler 类型化地读到注入键；前缀形式则把品牌存进应用的作用域日志（`App` 的幻影 `G`），注册器只把它交集进前缀之下的路由；路由链的品牌贯穿进该路由的 handler。普通中间件不贡献任何东西、类型不变。非字面量（动态 `string`）的前缀与模式保持保守 —— 对类型不可见。见下方 `withState(mw)` 一节。
 - `mount` 拼接模式（`'/v1'` + `'/users/:id'` → `'/v1/users/:id'`），把子应用的中间件作用域到每个挂载路由，从不修改子应用。子应用的 `onError` 会被携带：每个挂载路由包在一个路由级错误边界里应用它（子 `onError` 写了响应则以它为准；放弃处理则重新抛出，由父应用的策略映射 —— 子 handler 自身崩溃同样如此）。`onNotFound` 与自定义 `match` 无法随行（父应用调度挂载路由），当子应用确实定义了它们时，每次 `mount` 调用发出一次 `console.warn` 后丢弃；空子应用的中间件会丢失。类型层，`MountedDefs<R, Base>` 记录挂载的定义 —— 模式以前缀为基（根为 `/` 的子应用坍缩为裸前缀），`out`/`status`/`in`/`errors`/`branches` 幻影通道随行 —— 因此挂载的应用保留其类型化客户端面；`MountBase` 规范化前缀，`MergeRecords` 并集重叠的幻影键。
 - 方法注册器（`get`、`post` …）按 handler 参数类型重载：`get(app, '/users/:id', (ctx) => …)` 通过 `ParamsOf<'/users/:id'>` 类型化 `ctx.params`。
 - `routes(app)` 是纯语法糖：builder 的每个方法（`get`/`post`/`put`/`patch`/`del`/`head`/`options`/`all`/`use`/`mount`）1:1 委托给普通注册器并立即在 `app` 上注册，然后返回 builder。幻影 `App` 类型像普通注册器一样贯穿链，因此 `s200/client` 推断经由 builder 的 `.app`（即传入的那个对象）完全一致地工作：`createClient(routes(app).get('/x', h).app)`。
@@ -111,7 +115,7 @@ get(app2, '/me', (ctx) => json(ctx, ctx.state.user)); // User，已类型化
 
 把中间件打品牌为 state 注入器：`X` 声明它在 `next()` 前写入 `ctx.state` 的键，`use` 把 `_state` 幻影收集进应用的 `S`（`S & X`）—— 下游中间件与 handler 类型化地读到注入键，既不需要手写应用 state 接口、也不需要全局 `declare module` 合并。（`onError`/`onNotFound` 策略回调在 `createApp` 时定型、先于任何注入 —— 它们运行时能观察到注入值，类型以其自身声明为准。）第二个类型参数（默认：全局 `State`）是中间件可**读取**的 —— 注入器消费更早注入时显式传入，`use` 随即在编译期强制注入顺序。注入沿 `use` 调用与实参按交集累积；普通中间件是恒等情形（贡献坍缩、应用类型不变）。
 
-恒等函数 —— 零运行时成本，品牌像 `throws` 的 `_errors` 一样只存在于类型上。边界：收集到的类型是应用级的（前缀限定的 `use` 形式无法收窄到前缀下的路由 —— 前缀限定注入是程序员的断言，与手写 `createApp<MyState>` 一样）；路由自身链里被打品牌的中间件照常运行，但不把品牌传递进 handler 的 `ctx.state`。长链（几十个注入）依然很快；再多建议收拢为显式 `interface MyState` —— 见[中间件指南：推断式注入](/zh/guides/middleware)。
+恒等函数 —— 零运行时成本，品牌像 `throws` 的 `_errors` 一样只存在于类型上。作用域：全局 `use` 形式加宽应用级 `S`；前缀限定形式不加宽 —— 它只类型化模式落在前缀之下的路由（按段匹配，含参数前缀；动态 `string` 前缀/模式与比前缀更宽的模式保持不可见）；路由链的品牌贯穿进该路由的 handler（链中间件看到应用 `S` 加匹配的作用域品牌，看不到更早的链内品牌）。长链（几十个注入）依然很快；再多建议收拢为显式 `interface MyState` —— 见[中间件指南：推断式注入](/zh/guides/middleware)。
 
 ## 路由原语（核心 barrel）
 
@@ -129,14 +133,14 @@ get(app2, '/me', (ctx) => json(ctx, ctx.state.user)); // User，已类型化
 ## 错误（`s200` errors）
 
 ```ts
-export type HttpError = { status: number; message: string; body?: unknown; headers?: Record<string, string> };
+export type HttpError = { status: number; message: string; body?: unknown; headers?: Record<string, string>; cause?: unknown };
 
-httpError<S extends number, B>(status, message?, body?, headers?): HttpError & { status: S; body?: B };
+httpError<S extends number, B>(status, message?, body?, headers?, cause?): HttpError & { status: S; body?: B };
 isHttpError(e): e is HttpError;          // 鸭子类型 —— 绝不用 instanceof
 toErrorResponse(error): Response;        // 任意抛出的值 → Response
 throws(401, 404);                        // 声明错误分支（类型层）
 throws<{ 401: { error: string } }>({ … });
 ```
 
-- `httpError` 要求 `[400, 599]` 的整数状态；`body` 原样穿过 `toErrorResponse`，替代默认的 `{ error: message }` 信封；`headers`（一个 `Record<string, string>`，如闸门的 `www-authenticate` 质询或 `retry-after` + IETF `RateLimit-*`）合并进错误响应，拒绝因此可以走错误边界路径（含 `onError`），而不必就地应答。
+- `httpError` 要求 `[400, 599]` 的整数状态；`body` 原样穿过 `toErrorResponse`，替代默认的 `{ error: message }` 信封；`headers`（一个 `Record<string, string>`，如闸门的 `www-authenticate` 质询或 `retry-after` + IETF `RateLimit-*`）合并进错误响应，拒绝因此可以走错误边界路径（含 `onError`），而不必就地应答。`cause`（被包装的根源）绝不序列化 —— 它经 `onError`/`logError` 呈现，其存在还为原本静默的 `HttpError` 打上日志 sink 的标记。
 - `throws(...)` 对请求处理是纯透传中间件：给路由错误通道打品牌，使 `s200/client` 的响应联合点名这些状态与体 —— 且同一声明现在运行时可读（门上的 `_errors`），`s200/openapi` 据此文档化错误分支，`s200/codegen` 据此生成进类型化客户端。

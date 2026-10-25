@@ -7,11 +7,11 @@
  */
 
 import type { App } from '../src/app';
-import type { Middleware, State } from '../src/types';
+import type { Middleware, ScopedState, State } from '../src/types';
 
 import { describe, expectTypeOf, it } from 'vitest';
 
-import { createApp, get, handle, post, routes, use } from '../src/app';
+import { createApp, get, handle, mount, post, routes, use } from '../src/app';
 import { withState } from '../src/middleware';
 import { json } from '../src/respond';
 
@@ -19,17 +19,20 @@ type User = {
   id: number;
   name: string;
 };
-type Session = {
+type MergedSession = {
   sid: string;
 };
 
 // The global-merge coexistence case: this file's module augmentation adds
-// an optional `session` key to the default State (koa's DefaultState
-// trick) — withState injections must compose with it, not replace it.
+// an optional `mergedSession` key to the default State (koa's DefaultState
+// trick) — withState injections must compose with it, not replace it. The
+// key name is deliberately not `session`: a test-file augmentation leaks
+// into every file of the tsc program, and `session` would collide with
+// `s200/session` consumers casting `ctx.state.session` (test/oidc-recipe).
 declare module '../src/types' {
   // eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- must be an interface: declaration merging only extends interfaces
   interface State {
-    session?: Session;
+    mergedSession?: MergedSession;
   }
 }
 
@@ -93,18 +96,72 @@ describe('state inference', () => {
     expectTypeOf(use(app, maybe)).branded.toEqualTypeOf<App<State, []>>();
   });
 
-  it('threads prefix-scoped injections app-wide (the documented trust)', () => {
-    // The prefix form cannot narrow S to the prefix's routes — the type is
-    // app-wide, the runtime guarantee is the prefix's. Documented contract.
+  it('scopes prefix-scoped injections to the routes under the prefix', () => {
     const scoped = use(createApp(), '/api', withUser);
-    expectTypeOf(scoped).branded.toEqualTypeOf<App<State & { user: User }, []>>();
+    // The app-wide S is untouched — only the scoped log grows.
+    expectTypeOf(scoped).branded.toEqualTypeOf<
+      App<State, [], [ScopedState<'/api', { user: User }>]>
+    >();
+    get(scoped, '/api/me', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      return new Response('ok');
+    });
+    get(scoped, '/api/users/:id', (ctx) => {
+      // Deeper under the prefix — still typed.
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      return new Response('ok');
+    });
+    // Outside the prefix the keys are invisible — the loose State view.
+    get(scoped, '/public', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      return new Response('ok');
+    });
+    // Not even a same-stem sibling: /administrator is not under /api.
+    get(scoped, '/apiv2', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      return new Response('ok');
+    });
+    // App-level middlewares still type against the plain S — the scoped
+    // brand is invisible outside the registrar's pattern filter.
+    use(scoped, async (ctx, next) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      await next();
+    });
+  });
+
+  it('scopes param prefixes segment-wise (like the runtime guard)', () => {
+    const byUser = use(createApp(), '/users/:uid', withUser);
+    get(byUser, '/users/:uid/posts', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      return new Response('ok');
+    });
+    get(byUser, '/users', (ctx) => {
+      // The prefix needs the param segment — the bare /users route is out.
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      return new Response('ok');
+    });
+  });
+
+  it('intersects multiple scoped entries and composes with app-wide S', () => {
+    const base = use(createApp(), withTenant); // app-wide
+    const scoped = use(base, '/api', withUser);
+    get(scoped, '/api/x', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      expectTypeOf(ctx.state.tenant).toEqualTypeOf<string>();
+      return new Response('ok');
+    });
+    get(scoped, '/other', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      expectTypeOf(ctx.state.tenant).toEqualTypeOf<string>();
+      return new Response('ok');
+    });
   });
 
   it('composes with declare-module State merging instead of replacing it', () => {
     const injected = use(createApp(), withUser);
     get(injected, '/s', (ctx) => {
       expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
-      expectTypeOf(ctx.state.session).toEqualTypeOf<Session | undefined>();
+      expectTypeOf(ctx.state.mergedSession).toEqualTypeOf<MergedSession | undefined>();
       return new Response('ok');
     });
   });
@@ -127,15 +184,54 @@ describe('state inference', () => {
     use(createApp(), withProfile);
   });
 
-  it('runs but does not thread branded middlewares inside a route chain', () => {
-    // Documented boundary: the _state brand is collected by use only. In
-    // a route's own chain the middleware runs (state is written at
-    // runtime) but the handler keeps the loose State view.
+  it('threads branded middlewares in a route chain into that route\'s handler', () => {
     const app = createApp();
     get(app, '/r', withUser, (ctx) => {
+      // The chain's brand is threaded into the handler — precisely scoped
+      // to this route; the app type is untouched.
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      return new Response('ok');
+    });
+    // Another route on the same app keeps the loose view.
+    get(app, '/other', (ctx) => {
       expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
       return new Response('ok');
     });
+    // Several chain brands intersect into the handler.
+    get(app, '/both', withUser, withTenant, (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      expectTypeOf(ctx.state.tenant).toEqualTypeOf<string>();
+      return new Response('ok');
+    });
+    // Chain brands compose with prefix-scoped brands.
+    const scoped = use(createApp(), '/api', withTenant);
+    get(scoped, '/api/x', withUser, plain, (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      expectTypeOf(ctx.state.tenant).toEqualTypeOf<string>();
+      return new Response('ok');
+    });
+    // A branded middleware with an explicit read-type still cannot sit in
+    // a route chain (chain middlewares type against S + scoped brands, not
+    // against earlier chain brands) — use() composition enforces that order.
+    const withProfile = withState<{ profile: string }, { user: User }>(async (_ctx, next) =>
+      next()
+    );
+    // @ts-expect-error — { user } is not visible to chain middleware typing
+    get(createApp(), '/p', withProfile, () => new Response('ok'));
+    // ...but the same chain through use() composes fine:
+    get(use(createApp(), withUser), '/p2', withUser, (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      return new Response('ok');
+    });
+  });
+
+  it('threads chain brands to the handler at runtime too (dispatch untouched)', async () => {
+    const app = createApp();
+    get(app, '/r', withUser, withTenant, (ctx) =>
+      json(ctx, { user: ctx.state.user.name, tenant: ctx.state.tenant })
+    );
+    const res = await handle(app, new Request('http://localhost/r'));
+    (await res.json()).should.deep.equal({ user: 'zoe', tenant: 'acme' });
   });
 
   it('threads state through the routes() builder like the plain use', () => {
@@ -148,6 +244,61 @@ describe('state inference', () => {
     expectTypeOf(built.app).branded.toEqualTypeOf<
       App<State & { user: User } & { tenant: string }, []>
     >();
+  });
+
+  it('threads scoped injections and chain brands through the routes() builder', () => {
+    const built = routes(createApp()).use('/api', withTenant);
+    // The builder's app-wide S stays plain; the scoped entry is in the log.
+    expectTypeOf(built.app).branded.toEqualTypeOf<
+      App<State, [], [ScopedState<'/api', { tenant: string }>]>
+    >();
+    built.get('/api/x', (ctx) => {
+      expectTypeOf(ctx.state.tenant).toEqualTypeOf<string>();
+      return new Response('ok');
+    });
+    built.get('/api/y', withUser, (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      expectTypeOf(ctx.state.tenant).toEqualTypeOf<string>();
+      return new Response('ok');
+    });
+    built.get('/out', (ctx) => {
+      expectTypeOf(ctx.state.tenant).toEqualTypeOf<unknown>();
+      return new Response('ok');
+    });
+  });
+
+  it('mounts carry the sub-app scoped log with joined prefixes', () => {
+    const sub = use(createApp(), '/admin', withUser);
+    const parent = mount(createApp(), '/v1', sub);
+    get(parent, '/v1/admin/x', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<User>();
+      return new Response('ok');
+    });
+    get(parent, '/v1/other', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      return new Response('ok');
+    });
+  });
+
+  it('keeps dynamically-typed prefixes and patterns conservative (invisible)', () => {
+    // A non-literal prefix cannot be checked at compile time: the runtime
+    // scoping still applies, the types stay loose. (The annotations are the
+    // point — they widen the literals to `string`.)
+    // eslint-disable-next-line @typescript-eslint/no-inferrable-types -- deliberate widening: a dynamic prefix is not a literal type
+    const dynamicPrefix: string = '/api';
+    const scoped = use(createApp(), dynamicPrefix, withUser);
+    get(scoped, '/api/x', (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      return new Response('ok');
+    });
+    // A dynamic pattern (plain string) is not prefix-matched either.
+    const lit = use(createApp(), '/api', withUser);
+    // eslint-disable-next-line @typescript-eslint/no-inferrable-types -- deliberate widening: a dynamic pattern is not a literal type
+    const pattern: string = '/api/dyn';
+    get(lit, pattern, (ctx) => {
+      expectTypeOf(ctx.state.user).toEqualTypeOf<unknown>();
+      return new Response('ok');
+    });
   });
 
   it('injected state reaches the handler at runtime (identity cast, dispatch untouched)', async () => {

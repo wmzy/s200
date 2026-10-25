@@ -35,9 +35,11 @@ describeRoute(app, 'GET', '/users/:id', {
 | `describeApp(app, meta)` | Annotates the app itself (the OpenAPI `info` block) |
 | `getRouteMeta(route)` / `getAppMeta(app)` | Read back what was set |
 
-`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`. `AppMeta`: `{ title?, version?, description? }`.
+`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, params?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`. `AppMeta`: `{ title?, version?, description? }`.
 
 A `QueryParam` is the parameter's `SerializeSchema` bare (optional — the default), or the `{ schema, required: true }` marker form when the request must carry the key. The marker is one flag with three synchronized views: `openapiSpec` emits `parameters[].required: true`, `withRouteValidation` answers a missing key with a `422` (`'query.<key>: required'`), and `s200/mcp`'s tool input schema lists the name under `required`. `querySchemaOf(entry)`/`isQueryRequired(entry)` (from `s200/meta`) unwrap either form for custom tooling.
+
+`params` annotates path parameters — the `id` of `/users/:id` — with the same entry forms: `openapiSpec` emits the entry's JSON Schema as the path parameter's schema (unannotated parameters keep the bare `{ type: 'string' }`), and `withRouteValidation` checks the captured value (`'params.<key>: …'` on failure; a `required` marker rejects an optional segment's absence). The emitted `required` stays segment-driven (`:id` required, `:id?` optional) — OpenAPI pins every path parameter to the segment it fills. For runtime schemas over the captured params (or headers) with a Standard Schema vendor, see `s200/validate`'s `validateParams`/`validateHeaders` gates.
 
 `SerializeSchema` also accepts an optional `title` on every node — a pure annotation: `toJsonSchema` carries it into the emitted JSON Schema, serialization and validation ignore it, and the spec emitter uses it to name deduplicated schemas (below).
 
@@ -45,7 +47,7 @@ A `QueryParam` is the parameter's `SerializeSchema` bare (optional — the defau
 
 ## OpenAPI (`s200/openapi`)
 
-The OpenAPI 3.1 document comes out of the route table directly — no code generation, no execution, no schema library. Every route becomes a path item; `RouteMeta` annotations fill in summaries, query/body schemas, security requirements, and response shapes. Unannotated routes still appear with their params and a bare 200. Error branches declared by `throws` gates on a route's chain become error `responses` too (see below). `ALL` routes are skipped (no single method to document) with one `console.warn` per distinct pattern per app (deduped for the process lifetime) — `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`; dynamic-pattern routes emit with their pattern verbatim.
+The OpenAPI 3.1 document comes out of the route table directly — no code generation, no execution, no schema library. Every route becomes a path item; `RouteMeta` annotations fill in summaries, query/params/body schemas, security requirements, and response shapes. Unannotated routes still appear with their params and a bare 200. Error branches declared by `throws` gates on a route's chain become error `responses` too (see below). `ALL` routes are skipped (no single method to document) with one `console.warn` per distinct pattern per app (deduped for the process lifetime) — `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`; dynamic-pattern routes emit with their pattern verbatim.
 
 ```ts
 import { openapiJson } from 's200/openapi';
@@ -67,7 +69,7 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 
 **Error responses from `throws` gates.** A route whose chain carries `throws` gates gets their statuses emitted as error responses. The bare form (`throws(401, 404)`) documents the default `{ error: string }` envelope; the record form (`throws({ 422: { issues: ['x'] } })`) infers the schema structurally from the record's example value — strings/booleans/null map directly, integrality splits `integer` from `number`, arrays describe their items when every element agrees, objects list the keys present (required-ness is unknowable from an example, so no key is `required`). Gates merge with `meta.responses` without clobbering: a status only one side declares is emitted, and on conflict **`meta.responses` wins** — its description and schema were written for the spec, the gate's example is only an inference seed. Several gates naming the same status: the later registration wins (the type layer unions body shapes; example values cannot).
 
-**Schema dedup into `components.schemas`.** Any query, body or response schema that occurs **≥2 times** in the document (structural JSON equality — distinct-but-equal objects dedup too) is hoisted into `components.schemas` and every occurrence becomes `{ "$ref": "#/components/schemas/<name>" }`. The name is the schema's `title` when the DSL carries one, else a synthetic `Schema1`, `Schema2`, … in first-occurrence order — deterministic, so specs diff cleanly across builds; colliding titles (same `title`, different JSON) get `_2`, `_3`, … suffixes. Schemas that occur once stay inline (no pointless fragmentation), and `components.securitySchemes` merges into the same `components` object untouched. Pass `refSchemas: false` to keep everything inline.
+**Schema dedup into `components.schemas`.** Any query, params, body or response schema that occurs **≥2 times** in the document (structural JSON equality — distinct-but-equal objects dedup too) is hoisted into `components.schemas` and every occurrence becomes `{ "$ref": "#/components/schemas/<name>" }`. The name is the schema's `title` when the DSL carries one, else a synthetic `Schema1`, `Schema2`, … in first-occurrence order — deterministic, so specs diff cleanly across builds; colliding titles (same `title`, different JSON) get `_2`, `_3`, … suffixes. Schemas that occur once stay inline (no pointless fragmentation), and `components.securitySchemes` merges into the same `components` object untouched. Pass `refSchemas: false` to keep everything inline.
 
 **Schema pass-through.** `toJsonSchema` forwarding covers exactly the fields a `SerializeSchema` carries at runtime — `type`, `properties`/`required`, `items`, `nullable`, `title`. The DSL has no `enum`/`format`/`description`/bounds markers, so none are invented.
 
@@ -75,9 +77,9 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | --- | --- |
 | `openapiSpec(app, options)` | The `OpenApiDocument` — `{ openapi: '3.1.0', info, servers?, components?, paths }`, JSON-compatible by construction |
 | `openapiJson(ctx, app, options?)` | Response helper: the spec as a JSON response (`info` fields fall back to `describeApp`; `servers`/`securitySchemes`/`refSchemas` pass through verbatim) |
-| `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` |
+| `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body`, `query` or `params` annotation, checking requests with `compileValidator` from `s200/serialize` |
 
-`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while `issues` carries the full list with scope-qualified paths, all built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). Query keys marked required (`{ schema, required: true }`) are isomorphic to the spec: the key's absence answers the same 422 (`{"error":"query.format: required"}`); an empty value (`?format=`) counts as present, and a present value is still checked against its schema. The spec and the gates share one source: annotations are re-attached to the rebuilt routes. The response side has the same twin — [`s200/response-check`](/api/response-check) runs `responses[status].schema` against the materialized response on the unwind.
+`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while `issues` carries the full list with scope-qualified paths, all built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). Query keys marked required (`{ schema, required: true }`) are isomorphic to the spec: the key's absence answers the same 422 (`{"error":"query.format: required"}`); an empty value (`?format=`) counts as present, and a present value is still checked against its schema. `params` entries check the captured path parameter the same way (`'params.<key>: …'` — captured values stay strings too); a `required` marker rejects an optional segment's absence (`{"error":"params.name: required"}`). The spec and the gates share one source: annotations are re-attached to the rebuilt routes. The response side has the same twin — [`s200/response-check`](/api/response-check) runs `responses[status].schema` against the materialized response on the unwind.
 
 ## Swagger UI (`s200/swagger`)
 
@@ -137,12 +139,32 @@ The client sends plain `fetch` requests (any base URL, any `fetch` implementatio
 
 Without a `baseUrl` the client needs a URL base to resolve against: browsers and edges have `globalThis.location` and relative URLs keep working, but in Node `createClient` **throws at creation time** with a message advising `options.baseUrl` — instead of a confusing per-request `TypeError` from fetch. An injected `fetch` owns URL resolution itself, so the guard fires only when the global `fetch` would be called.
 
+`options.middleware` is the interceptor hook — auth-header injection, retry, tracing: `ClientMiddleware[]` in **onion order** (the first entry is the outermost layer). Each entry is `(req, next) => Promise<Response>` over the **fully built** `Request` — URL filled, query appended, JSON body stringified, effective signal stamped — and the innermost `next` is the fetch itself; `next` may be awaited more than once (retry), and the request it takes may be a rebuilt copy (`new Request(req, { headers })`) so per-attempt headers, body or signal can be swapped:
+
+```ts
+const authAndRetry: ClientMiddleware[] = [
+  async (req, next) => {
+    const headers = new Headers(req.headers);
+    headers.set('authorization', `Bearer ${token}`);
+    return next(new Request(req, { headers }));
+  },
+  async (req, next) => {
+    const res = await next(req);
+    return res.status === 503 ? next(req) : res;   // one bounded retry
+  },
+];
+const client = createClient(app, { baseUrl: 'https://api.example', middleware: authAndRetry });
+```
+
+Abort semantics are unchanged and belong to the *call*, not the attempt: the effective signal (per-call `init.signal`, else `signal`, raced with `timeoutMs`) is stamped once on the `Request`, so aborting it ends the whole call — retries included — and a `timeoutMs` window is one window per call, not per attempt. A middleware wanting per-attempt limits swaps the signal itself (`new Request(req, { signal: AbortSignal.any([req.signal, AbortSignal.timeout(1000)]) })`). Two contracts to know: with middleware set every call is materialized as a `Request` before the chain, so a *relative* path needs a base the runtime can resolve (`baseUrl`, or a runtime `location`) even when `fetch` is injected — absolute patterns are unaffected; and a non-function entry is options-level misuse, thrown at `createClient` time with the offending index (the same contract as the missing-`baseUrl` guard).
+
 | Function / Type | Meaning |
 | --- | --- |
 | `createClient(app, options?)` | `Client<R>` — eight method namespaces over the app's route log; each call names a registered pattern literal with typed params |
 | `Client<R>` | Eight method namespaces — `get`, `post`, `put`, `patch`, `delete` (with the `del` alias), `head`, `options` — each holding the call signatures of that method's routes; patterns registered under other methods type as `never` |
 | `ClientInit` | `RequestInit & { query?: Record<string, string \| number \| boolean \| readonly (…)[] \| undefined> }` — array values repeat the key, `undefined` is skipped, numbers/booleans stringify |
-| `ClientOptions` | `{ baseUrl?, fetch?, signal?, timeoutMs? }` — base URL prepended to every path; injectable fetch for tests and edge runtimes; client-level abort signal; per-request timeout in milliseconds (raced with the signal, default: none) |
+| `ClientMiddleware` | `(req: Request, next: (req: Request) => Promise<Response>) => Promise<Response>` — one interceptor over the fully built request; the innermost `next` is the fetch, `next` re-issues on retry |
+| `ClientOptions` | `{ baseUrl?, fetch?, signal?, timeoutMs?, middleware? }` — base URL prepended to every path; injectable fetch for tests and edge runtimes; client-level abort signal; per-request timeout in milliseconds (raced with the signal, default: none); interceptor chain in onion order (first entry outermost, non-function entries throw at creation) |
 | `ClientResponse<S, T>` | The status-discriminated response union: `res.status` narrows `res.json()`'s type |
 | `BranchResponse<S, T>` | One branch: `{ status: S } & Response` with the body type `T` |
 

@@ -33,6 +33,20 @@ export type RouteMeta = {
    * the name under `required` — one flag, three synchronized views.
    */
   readonly query?: Record<string, QueryParam>;
+  /**
+   * Path-parameter schemas, keyed by parameter name — the `id` of
+   * `/users/:id`. Each entry is the parameter's {@link SerializeSchema}
+   * bare, or the `{ schema, required: true }` marker form when an
+   * optional segment's absence must still reject. `openapiSpec` emits the
+   * entry as the path parameter's JSON Schema (via `toJsonSchema`, with
+   * the same dedup/hoist pass as query/body schemas; parameters without
+   * an entry keep the bare string schema), and `withRouteValidation`
+   * checks the captured value against it — the two views stay
+   * isomorphic. The emitted `required` stays segment-driven (`:id`
+   * required, `:id?` optional): OpenAPI pins every path parameter to the
+   * segment it fills.
+   */
+  readonly params?: Record<string, QueryParam>;
   /** JSON request-body schema (`content: application/json`). */
   readonly body?: SerializeSchema;
   /** Responses by status code; a missing schema = no content declared. */

@@ -36,10 +36,13 @@ export function defineMiddleware<M extends (ctx: Ctx, next: Next) => Promise<voi
 
 /**
  * Brands a middleware as a state injector: `X` names the keys it writes
- * onto `ctx.state` before `next()`, so `use(app, withState<X>(mw))`
- * widens the app's `S` — every downstream middleware and handler reads
- * the injected keys typed, with no hand-written app state interface and
- * no global `declare module` merge:
+ * onto `ctx.state` before `next()`, and the brand travels by scope —
+ * `use(app, withState<X>(mw))` widens the app's `S` app-wide,
+ * `use(app, '/admin', withState<X>(mw))` types exactly the routes under
+ * `/admin`, and a route chain (`get(app, '/x', withState<X>(mw), handler)`)
+ * types that route's handler. Downstream readers see the injected keys
+ * typed, with no hand-written app state interface and no global
+ * `declare module` merging:
  *
  * ```ts
  * const withUser = withState<{ user: User }>(async (ctx, next) => {
@@ -64,10 +67,11 @@ export function defineMiddleware<M extends (ctx: Ctx, next: Next) => Promise<voi
  * Purely compile-time: the identity function, zero runtime cost — the
  * brand rides the type exactly like `throws`' `_errors` and the gates'
  * `_in`, and plain (unbranded) middlewares keep their old behavior
- * unchanged. The brand is collected by `use` — both the global and the
- * prefix-scoped form; in a route's middleware chain a branded middleware
- * still runs, but its brand is not threaded into the handler's
- * `ctx.state` (scope the injection with `use` instead).
+ * unchanged. In a route's own chain the brand threads into the handler
+ * (not into earlier chain middlewares — those still type against the
+ * app's `S` plus the prefix-scoped brands); the prefix-scoped form never
+ * widens the app-wide `S`, so handlers outside the prefix keep the loose
+ * view.
  */
 export function withState<X extends State, S extends State = State>(
   middleware: Middleware<S & X>

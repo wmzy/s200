@@ -10,6 +10,8 @@ import { json } from '../src/respond';
 import {
   jsonBody,
   validate,
+  validateHeaders,
+  validateParams,
   standardValidate,
   formatIssuePath,
   type OutputOf,
@@ -167,6 +169,54 @@ const emptyIssuesSchema: StandardSchema<string> = {
   },
 };
 
+/** Params schema: accepts `{ id }` with a digit-string id, tags a number —
+ * the params twin of userSchema's input/output split. */
+const idParamsSchema: StandardSchemaV1 & {
+  readonly types?: {
+    readonly input: { readonly id: string };
+    readonly output: { readonly id: number };
+  };
+} = {
+  '~standard': {
+    version: 1,
+    vendor: 's200-test',
+    validate: (value) => {
+      const id =
+        typeof value === 'object' && value !== null
+          ? (value as { id?: unknown }).id
+          : undefined;
+      if (typeof id !== 'string' || !/^\d+$/.test(id)) {
+        return { issues: [{ message: 'expected numeric id', path: ['id'] }] };
+      }
+      return { value: { id: Number(id) } };
+    },
+  },
+};
+
+/** Headers schema: demands a bearer `authorization`, tags the token —
+ * the headers twin of the input/output split. */
+const authHeadersSchema: StandardSchemaV1 & {
+  readonly types?: {
+    readonly input: { readonly authorization: string };
+    readonly output: { readonly token: string };
+  };
+} = {
+  '~standard': {
+    version: 1,
+    vendor: 's200-test',
+    validate: (value) => {
+      const authorization =
+        typeof value === 'object' && value !== null
+          ? (value as { authorization?: unknown }).authorization
+          : undefined;
+      if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
+        return { issues: [{ message: 'expected bearer token', path: ['authorization'] }] };
+      }
+      return { value: { token: authorization.slice('Bearer '.length) } };
+    },
+  },
+};
+
 describe('jsonBody with a Standard Schema', function () {
   it('stores the schema output on ctx.state.validated', async function () {
     const app = createApp();
@@ -290,6 +340,147 @@ describe('jsonBody with a Standard Schema', function () {
     void client.post('/users', { body: { name: 'ada' } });
     // @ts-expect-error -- id is the schema's OUTPUT side; callers send name only
     void client.post('/users', { body: { name: 'ada', id: 7 } });
+  });
+});
+
+describe('validateParams', function () {
+  it('stores the schema output on ctx.state.validated', async function () {
+    const app = createApp();
+    get(
+      app,
+      '/users/:id',
+      validateParams(idParamsSchema),
+      (ctx) => json(ctx, ctx.state.validated)
+    );
+    const res = await handle(app, new Request('http://localhost/users/7'));
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ id: 7 });
+  });
+
+  it('honors a custom state key', async function () {
+    const app = createApp();
+    get(
+      app,
+      '/users/:id',
+      validateParams(idParamsSchema, { key: 'p' }),
+      (ctx) => json(ctx, ctx.state.p)
+    );
+    const res = await handle(app, new Request('http://localhost/users/9'));
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ id: 9 });
+  });
+
+  it('answers 422 with the same envelope jsonBody produces', async function () {
+    const app = createApp();
+    get(app, '/users/:id', validateParams(idParamsSchema), () => new Response('unreached'));
+    const res = await handle(app, new Request('http://localhost/users/abc'));
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({
+      error: 'expected numeric id',
+      issues: [{ path: 'id', message: 'expected numeric id' }],
+    });
+  });
+
+  it('runs the parse flavor over the raw params record', async function () {
+    const app = createApp();
+    get(
+      app,
+      '/files/*path',
+      validateParams(
+        (p: { path: string }) => ({ segments: p.path.split('/').length }),
+        { key: 'p' }
+      ),
+      (ctx) => json(ctx, ctx.state.p)
+    );
+    const res = await handle(app, new Request('http://localhost/files/a/b/c'));
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ segments: 3 });
+  });
+
+  it('lets a throwing parse flavor reject the chain like any middleware error', async function () {
+    const app = createApp();
+    get(
+      app,
+      '/users/:id',
+      validateParams((p: { id: string }) => {
+        if (!/^\d+$/.test(p.id)) throw httpError(422, 'bad id');
+        return { id: Number(p.id) };
+      }),
+      () => new Response('unreached')
+    );
+    const res = await handle(app, new Request('http://localhost/users/x'));
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({ error: 'bad id' });
+  });
+});
+
+describe('validateHeaders', function () {
+  it('parses the header record (lowercased names) and stores the schema output', async function () {
+    const app = createApp();
+    get(app, '/me', validateHeaders(authHeadersSchema), (ctx) => json(ctx, ctx.state.validated));
+    const res = await handle(
+      app,
+      new Request('http://localhost/me', { headers: { Authorization: 'Bearer t0k3n' } })
+    );
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ token: 't0k3n' });
+  });
+
+  it('answers 422 with the same envelope jsonBody produces', async function () {
+    const app = createApp();
+    get(app, '/me', validateHeaders(authHeadersSchema), () => new Response('unreached'));
+    const res = await handle(app, new Request('http://localhost/me'));
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({
+      error: 'expected bearer token',
+      issues: [{ path: 'authorization', message: 'expected bearer token' }],
+    });
+  });
+
+  it('comma-joins repeated headers like headers.get in the parse flavor', async function () {
+    const app = createApp();
+    get(
+      app,
+      '/x',
+      validateHeaders((h: { 'x-tag'?: string }) => ({
+        tags: (h['x-tag'] ?? '').split(', '),
+      })),
+      (ctx) => json(ctx, ctx.state.validated)
+    );
+    const res = await handle(
+      app,
+      new Request('http://localhost/x', { headers: { 'x-tag': 'a', 'X-Tag': 'b' } })
+    );
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ tags: ['a', 'b'] });
+  });
+});
+
+describe('the 422 envelope is one shape across gates', function () {
+  it('yields the identical body from jsonBody, validateParams, and validateHeaders', async function () {
+    const bodyApp = createApp();
+    post(bodyApp, '/b', jsonBody(multiIssueSchema), () => new Response('unreached'));
+    const paramsApp = createApp();
+    get(paramsApp, '/p/*rest', validateParams(multiIssueSchema), () => new Response('unreached'));
+    const headersApp = createApp();
+    get(headersApp, '/h', validateHeaders(multiIssueSchema), () => new Response('unreached'));
+
+    const expected = {
+      error: 'expected string',
+      issues: [
+        { path: 'user.name', message: 'expected string' },
+        { path: 'user.tags[0]', message: 'expected integer' },
+        { path: 'user.email', message: 'required' },
+      ],
+    };
+    const body = await (
+      await handle(bodyApp, new Request('http://localhost/b', { method: 'POST', body: '{}' }))
+    ).json();
+    const params = await (await handle(paramsApp, new Request('http://localhost/p/x'))).json();
+    const headers = await (await handle(headersApp, new Request('http://localhost/h'))).json();
+    body.should.deep.equal(expected);
+    params.should.deep.equal(expected);
+    headers.should.deep.equal(expected);
   });
 });
 

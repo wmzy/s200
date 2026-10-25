@@ -10,6 +10,25 @@ get(app, '/files/*path', (ctx) => text(ctx, ctx.params.path)); // captures the r
 get(app, '/users/:id?', (ctx) => json(ctx, { id: ctx.params.id ?? null })); // id is optional
 ```
 
+## 注册风格
+
+函数式注册器是推荐的首选风格 —— `get(app, pattern, handler)` 以 app 为第一个参数并返回它，注册就是普通的、可 grep 的代码：
+
+```ts
+get(app, '/users/:id', getUser);
+post(app, '/users', createUser);
+```
+
+`routes(app)` 是可链式的替代方案，适合分组或流式注册 —— 纯语法糖，builder 的每个方法 1:1 委托给同一批注册器并立即注册：
+
+```ts
+routes(app)
+  .get('/users/:id', getUser)
+  .post('/users', createUser);
+```
+
+经验法则：注册分散在多个文件或与中间件交错时用普通注册器；一组内聚路由想要流式形态时用 `routes(app)`。两者注册行为完全一致 —— 无论哪种，先注册的胜出。
+
 ## 通配符
 
 `*name` 必须是**最后**一段 —— `/files/*path` 合法，而 `/a/*rest/b` 会在

@@ -25,7 +25,22 @@ throw httpError(401, 'Unauthorized', { error: 'Unauthorized' }, {
 });
 ```
 
-The model is three functions and one rule: `httpError(status, message, body?, headers?)` builds the tagged value (`status` an integer in `[400, 599]`, `body` riding through verbatim instead of the default `{ "error": message }` envelope), `isHttpError(error)` checks the tag structurally, and `toErrorResponse(error)` maps any thrown value to a `Response` — the same mapping the boundary applies, useful when you answer an error in place without a chain. The rule: **throw, don't hand-return** — a thrown `HttpError` reaches `onError` and stamps the unwind; a response you write yourself is just a response.
+A fifth argument attaches a `cause` — the wrapped origin (the db error under a 502, the upstream failure under a gateway timeout). It is diagnostics, never payload: `toErrorResponse` does not serialize it, so the client body stays exactly what it would be without the cause. It flows to the error boundary untouched, where your `onError` reads it (`error.cause`) and the log sink surfaces it:
+
+```ts
+const app = createApp({
+  onError: (ctx, error) => {
+    if (isHttpError(error)) {
+      json(ctx, { error: error.message }, { status: error.status });
+      report(error.cause); // the wrapped origin — off the client body
+    }
+  },
+});
+```
+
+One rule flip rides along: plain `HttpError`s are intentional client errors and stay unlogged, but one carrying a `cause` asked for it — the boundary routes it to `logError` (the default sink appends the cause to its `console.error` line) while still answering the client with the error's own status and body.
+
+The model is three functions and one rule: `httpError(status, message?, body?, headers?, cause?)` builds the tagged value (`status` an integer in `[400, 599]`, `body` riding through verbatim instead of the default `{ "error": message }` envelope, `cause` riding to the log sink instead), `isHttpError(error)` checks the tag structurally, and `toErrorResponse(error)` maps any thrown value to a `Response` — the same mapping the boundary applies, useful when you answer an error in place without a chain. The rule: **throw, don't hand-return** — a thrown `HttpError` reaches `onError` and stamps the unwind; a response you write yourself is just a response.
 
 ## Default mapping
 
@@ -46,6 +61,8 @@ use(app, async (ctx, next) => {
   logger.info(`${ctx.req.method} ${ctx.url.pathname} → ${ctx.res?.status}`);
 });
 ```
+
+To drop the `?.` entirely, `resOf(ctx)` (from the core barrel) returns the response and throws a plain `Error` naming the misuse if you call it before `next()` — and `SettledCtx` types helpers that only ever run post-`next()` (see [`s200`'s respond helpers](/api/respond#response-helpers)).
 
 Middleware listed ahead of a crashing handler observes the real error response on the unwind: `logger` logs it, `cors` stamps it, `request-id` names it. This is also why `onError` is an app option and not an after-the-fact hook — it runs as part of the same materialization, inside the chain. A crashing middleware *outside* a route chain (an app-level `use`) is caught by the outer boundary and mapped through the same path.
 

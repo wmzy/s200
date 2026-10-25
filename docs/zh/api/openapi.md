@@ -35,9 +35,11 @@ describeRoute(app, 'GET', '/users/:id', {
 | `describeApp(app, meta)` | 标注应用本身（OpenAPI `info` 块） |
 | `getRouteMeta(route)` / `getAppMeta(app)` | 读回已设内容 |
 
-`RouteMeta`：`{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`。`AppMeta`：`{ title?, version?, description? }`。
+`RouteMeta`：`{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, params?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`。`AppMeta`：`{ title?, version?, description? }`。
 
 `QueryParam` 是该参数的 `SerializeSchema` 裸形态（可选 —— 默认），或请求必须携带该键时的 `{ schema, required: true }` 标记形态。这个标记是一个 flag、三个同步视图：`openapiSpec` 输出 `parameters[].required: true`，`withRouteValidation` 对缺失的键回答 `422`（`'query.<key>: required'`），`s200/mcp` 的工具输入模式把该名字列入 `required`。`querySchemaOf(entry)`/`isQueryRequired(entry)`（来自 `s200/meta`）为自定义工具拆开两种形态。
+
+`params` 以同样的条目形态标注路径参数 —— `/users/:id` 的 `id`：`openapiSpec` 把条目的 JSON Schema 输出为该路径参数的 schema（未标注的参数保持裸的 `{ type: 'string' }`），`withRouteValidation` 检查捕获到的值（失败时 `'params.<key>: …'`；`required` 标记拒绝可选段位的缺失）。输出的 `required` 保持段位驱动（`:id` 必填、`:id?` 可选）—— OpenAPI 把每个路径参数钉死在它填充的段位上。要用 Standard Schema 厂商跑捕获参数（或请求头）的运行时模式，见 `s200/validate` 的 `validateParams`/`validateHeaders` 闸门。
 
 `SerializeSchema` 的每个节点还接受可选 `title` —— 纯注解：`toJsonSchema` 把它带入输出的 JSON Schema，序列化与校验忽略它，spec 发射器用它命名去重后的模式（见下）。
 
@@ -45,7 +47,7 @@ describeRoute(app, 'GET', '/users/:id', {
 
 ## OpenAPI（`s200/openapi`）
 
-OpenAPI 3.1 文档直接从路由表生成 —— 无代码生成、无执行、无模式库。每个路由变成一个 path item；`RouteMeta` 标注填充摘要、查询/体模式、安全要求与响应形状。未标注的路由仍以参数加裸 200 出现。路由链上 `throws` 闸门声明的错误分支同样变成错误 `responses`（见下）。`ALL` 路由被跳过（无单一方法可文档化），且对每个 app 的每个不同 pattern 只警告一次 `console.warn`（进程内去重）—— `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`；动态模式路由按原样输出。
+OpenAPI 3.1 文档直接从路由表生成 —— 无代码生成、无执行、无模式库。每个路由变成一个 path item；`RouteMeta` 标注填充摘要、查询/参数/体模式、安全要求与响应形状。未标注的路由仍以参数加裸 200 出现。路由链上 `throws` 闸门声明的错误分支同样变成错误 `responses`（见下）。`ALL` 路由被跳过（无单一方法可文档化），且对每个 app 的每个不同 pattern 只警告一次 `console.warn`（进程内去重）—— `[s200] openapi: route /x uses ALL — expand to explicit methods to document it`；动态模式路由按原样输出。
 
 ```ts
 import { openapiJson } from 's200/openapi';
@@ -67,7 +69,7 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 
 **来自 `throws` 闸门的错误响应。** 链上带 `throws` 闸门的路由，其声明的状态码输出为错误响应。裸形式（`throws(401, 404)`）文档化默认的 `{ error: string }` 信封；记录形式（`throws({ 422: { issues: ['x'] } })`）从记录的示例值结构性推断 schema —— 字符串/布尔/null 直接映射，整数性区分 `integer` 与 `number`，元素一致时数组描述其 `items`，对象列出出现的键（示例无法知晓必选性，因此没有任何键是 `required`）。闸门与 `meta.responses` 合并不互相覆盖：只有一侧声明的状态照常输出；冲突时 **`meta.responses` 胜出** —— 它的描述与 schema 是为 spec 写的，闸门的示例只是推断种子。多个闸门声明同一状态：后注册者胜出（类型层对体形状取并集；示例值做不到）。
 
-**去重进 `components.schemas`。** 文档中出现 **≥2 次** 的任何查询/体/响应模式（结构化 JSON 相等 —— 相异但等值的对象同样去重）被提升进 `components.schemas`，每个出现位置变成 `{ "$ref": "#/components/schemas/<name>" }`。名字优先取 DSL 携带的 `title`，否则按首次出现顺序合成 `Schema1`、`Schema2`、…… —— 确定性的，spec 跨构建可干净 diff；标题冲突（同 `title`、不同 JSON）加 `_2`、`_3`、…… 后缀。只出现一次的模式保持内联（不做无谓碎片化），`components.securitySchemes` 与之合入同一个 `components` 对象、互不干扰。传 `refSchemas: false` 保持全部内联。
+**去重进 `components.schemas`。** 文档中出现 **≥2 次** 的任何查询/参数/体/响应模式（结构化 JSON 相等 —— 相异但等值的对象同样去重）被提升进 `components.schemas`，每个出现位置变成 `{ "$ref": "#/components/schemas/<name>" }`。名字优先取 DSL 携带的 `title`，否则按首次出现顺序合成 `Schema1`、`Schema2`、…… —— 确定性的，spec 跨构建可干净 diff；标题冲突（同 `title`、不同 JSON）加 `_2`、`_3`、…… 后缀。只出现一次的模式保持内联（不做无谓碎片化），`components.securitySchemes` 与之合入同一个 `components` 对象、互不干扰。传 `refSchemas: false` 保持全部内联。
 
 **schema 透传。** `toJsonSchema` 的转发覆盖 `SerializeSchema` 运行时实际携带的字段 —— `type`、`properties`/`required`、`items`、`nullable`、`title`。该 DSL 没有 `enum`/`format`/`description`/数值界标记，因此一个都不发明。
 
@@ -75,9 +77,9 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 | --- | --- |
 | `openapiSpec(app, options)` | `OpenApiDocument` —— `{ openapi: '3.1.0', info, servers?, components?, paths }`，构造上即 JSON 兼容 |
 | `openapiJson(ctx, app, options?)` | 响应助手：spec 的 JSON 响应（`info` 字段回落到 `describeApp`；`servers`/`securitySchemes`/`refSchemas` 原样透传） |
-| `withRouteValidation(app)` | 纯数据变换（mount 家族）：只重建带 `body` 或 `query` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 |
+| `withRouteValidation(app)` | 纯数据变换（mount 家族）：只重建带 `body`、`query` 或 `params` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 |
 
-`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名每一条违规路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），`issues` 携带全量列表与按请求位置限定的路径，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。标记为 required 的查询键（`{ schema, required: true }`）与 spec 同构：键缺失回答同样的 422（`{"error":"query.format: required"}`）；空值（`?format=`）算作存在，存在的值仍按其 schema 检查。spec 与闸门共享一个来源：标注被重新挂回重建的路由。响应侧有同样的孪生 —— [`s200/response-check`](/zh/api/response-check) 在回卷时用 `responses[status].schema` 检查已物化的响应。
+`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名每一条违规路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），`issues` 携带全量列表与按请求位置限定的路径，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。标记为 required 的查询键（`{ schema, required: true }`）与 spec 同构：键缺失回答同样的 422（`{"error":"query.format: required"}`）；空值（`?format=`）算作存在，存在的值仍按其 schema 检查。`params` 条目以同样方式检查捕获到的路径参数（`'params.<key>: …'` —— 捕获值同样保持字符串）；`required` 标记拒绝可选段位的缺失（`{"error":"params.name: required"}`）。spec 与闸门共享一个来源：标注被重新挂回重建的路由。响应侧有同样的孪生 —— [`s200/response-check`](/zh/api/response-check) 在回卷时用 `responses[status].schema` 检查已物化的响应。
 
 ## Swagger UI（`s200/swagger`）
 
@@ -137,12 +139,32 @@ const user = await (await client.get('/users/:id', { id: '1' })).json();
 
 没有 `baseUrl` 时客户端需要一个可解析的 URL 基准：浏览器与 edge 有 `globalThis.location`，相对 URL 继续可用；但在 Node 里 `createClient` 会在**创建时**抛错并提示 `options.baseUrl` —— 而不是每次请求都撞上 fetch 莫名其妙的 `TypeError`。注入的 `fetch` 自行拥有 URL 解析，因此该守卫只在未来调用全局 `fetch` 时触发。
 
+`options.middleware` 是拦截器钩子 —— 认证头注入、重试、链路追踪：`ClientMiddleware[]` 按**洋葱序**排列（第一个条目是最外层）。每个条目是 `(req, next) => Promise<Response>`，作用于**完全构建好的** `Request` —— URL 已填充、查询串已拼接、JSON 体已字符串化、生效信号已盖章 —— 最内层的 `next` 就是 fetch 本身；`next` 可以被 await 多次（重试），传给它的请求也可以是重建的副本（`new Request(req, { headers })`），按次替换头、体或信号：
+
+```ts
+const authAndRetry: ClientMiddleware[] = [
+  async (req, next) => {
+    const headers = new Headers(req.headers);
+    headers.set('authorization', `Bearer ${token}`);
+    return next(new Request(req, { headers }));
+  },
+  async (req, next) => {
+    const res = await next(req);
+    return res.status === 503 ? next(req) : res;   // one bounded retry
+  },
+];
+const client = createClient(app, { baseUrl: 'https://api.example', middleware: authAndRetry });
+```
+
+中止语义不变，且归属于**整次调用**而非单次尝试：生效信号（单次调用的 `init.signal`，否则 `signal`，再与 `timeoutMs` 竞速）只盖章一次在 `Request` 上，中止它就结束整次调用 —— 重试也不例外 —— `timeoutMs` 窗口也是每次调用一个窗口，而非每次尝试一个。想要按次限制的中间件请自行换信号（`new Request(req, { signal: AbortSignal.any([req.signal, AbortSignal.timeout(1000)]) })`）。两个需要知道的契约：设置了 middleware 后每次调用都会先物化为 `Request` 再进链，因此**相对**路径需要一个运行时可解析的基准（`baseUrl`，或运行时的 `location`）—— 即使注入了 `fetch` 也一样 —— 绝对模式不受影响；非函数条目属于选项层的误用，在 `createClient` 时抛出并带上出错下标（与缺失 `baseUrl` 守卫同一契约）。
+
 | 函数 / 类型 | 含义 |
 | --- | --- |
 | `createClient(app, options?)` | `Client<R>` —— 覆盖应用路由日志的八个方法命名空间；每次调用点名一个带类型参数的已注册模式字面量 |
 | `Client<R>` | 八个方法命名空间 —— `get`、`post`、`put`、`patch`、`delete`（别名 `del`）、`head`、`options` —— 各自持有该方法路由的调用签名；其他方法注册的模式类型为 `never` |
 | `ClientInit` | `RequestInit & { query?: Record<string, string \| number \| boolean \| readonly (…)[] \| undefined> }` —— 数组值重复键、`undefined` 跳过、数字/布尔字符串化 |
-| `ClientOptions` | `{ baseUrl?, fetch?, signal?, timeoutMs? }` —— 拼到每个路径前的 base URL；可注入 fetch 用于测试与 edge 运行时；客户端级 abort 信号；每请求超时毫秒数（与信号竞速，默认：无） |
+| `ClientMiddleware` | `(req: Request, next: (req: Request) => Promise<Response>) => Promise<Response>` —— 作用于完全构建好的请求的一个拦截器；最内层 `next` 是 fetch，重试时再次调用 `next` 即重新发起 |
+| `ClientOptions` | `{ baseUrl?, fetch?, signal?, timeoutMs?, middleware? }` —— 拼到每个路径前的 base URL；可注入 fetch 用于测试与 edge 运行时；客户端级 abort 信号；每请求超时毫秒数（与信号竞速，默认：无）；按洋葱序的拦截器链（第一个条目最外层，非函数条目在创建时抛错） |
 | `ClientResponse<S, T>` | 状态判别响应联合：`res.status` 收窄 `res.json()` 的类型 |
 | `BranchResponse<S, T>` | 一个分支：`{ status: S } & Response`，体类型 `T` |
 

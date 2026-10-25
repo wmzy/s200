@@ -130,8 +130,9 @@ Repository-level TypeScript, deliberately **not** package exports — vendor
 the file, bring your own client, inject:
 
 | Recipe                   | For                                                             |
-| ------------------------ | --------------------------------------------------------------- |
+| ------------------------ | ---------------------------------------------------------------- |
 | [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | shared `rateLimit`/`createSession` stores over Redis — full guide: [Distributed Stores](./guides/distributed-stores.md) |
+| [`recipes/oidc.ts`](https://github.com/wmzy/s200/blob/main/recipes/oidc.ts) | `createOidc` — OIDC Authorization Code + PKCE (S256) login over `s200/cookies`/`jwt`/`session` — full guide: [OIDC Login](./guides/oidc.md) |
 
 ## Battery ideas — good first contributions
 
@@ -150,8 +151,10 @@ standard [submission template](#submission-template) applies to each.
 - More Scalar documentation knobs (layout, dark-mode default, custom CSS)
   for `s200/swagger` — beyond the shipped `url`/`title`/`theme`/`cdn`
   options.
-- OAuth providers (GitHub, Google, generic OIDC) on top of `s200/jwt` +
-  `s200/session` — the shipped `s200/auth` covers only the
+- OAuth providers (GitHub, Google, …) on top of `s200/jwt` +
+  `s200/session` — generic OIDC is covered by the
+  [`recipes/oidc.ts`](https://github.com/wmzy/s200/blob/main/recipes/oidc.ts)
+  recipe above; the shipped `s200/auth` covers only the
   challenge-carrying basics.
 - More shared stores for `s200/session` and `s200/rate-limit` — Postgres,
   SQLite, … following the injectable-store seam the

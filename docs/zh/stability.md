@@ -108,9 +108,11 @@ throws({ 422: { issues: string[] } });       // 附带结构化 body 形状
 ```
 
 错误是按结构检查的带标签数据，因此能跨越 bundle 边界存活。
-`httpError(status, message, body?, headers?)` 携带一个可选负载并按原样渲染，
+`httpError(status, message, body?, headers?, cause?)` 携带一个可选负载并按原样渲染，
 还可携带可选响应头（`WWW-Authenticate`、`Retry-After`、IETF `RateLimit-*`……）
-合并进错误响应；没有负载时响应保持 `{ error: message }` 信封。处理器可以抛出它们，也可以**返回**它们
+合并进错误响应；没有负载时响应保持 `{ error: message }` 信封。可选的 `cause`（被包装的根源）
+绝不序列化 —— 改为经 `onError`/`logError` 呈现，其存在还为原本静默的
+`HttpError` 打上日志 sink 的标记。处理器可以抛出它们，也可以**返回**它们
 ——返回的 `HttpError` 走的正是抛出者所走的同一条错误边界路径，其类型还会
 推断出客户端的错误分支（无需声明）。`throws` 门是为类型层看不见的分支（从
 辅助函数里抛出的那些）准备的声明通道：它把一条路由可能应答的状态码（及
@@ -175,6 +177,7 @@ s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
 s200/config  s200/schedule  s200/version  s200/events  s200/als
 s200/response-check  s200/aws-lambda  s200/vercel  s200/mcp
+s200/timing  s200/proxy
 s200/websocket/cloudflare
 s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
 ```
@@ -209,9 +212,11 @@ semantic-release 会覆写的占位符——版本号从不手工编辑。
 一份如实的清单。这些区域在 minor 内仍可能变化，包括 1.0 切换之前：
 
 - **`withState` state 通道** —— `withState` / `StateMiddleware<X, S>` /
-  `StateOf<Ms>`（核心 barrel）为中间件声明其注入的 state 并经 `use` 贯穿进
-  应用的 `S`。加性且稳定，但尚新：确切的泛型形状与收集面（哪些 `use` 形式
-  传递它、路由链如何对待它）在 minor 内仍可能调整。
+  `StateOf<Ms>`（核心 barrel）为中间件声明其注入的 state 并按作用域贯穿：
+  全局 `use` 形式加宽应用的 `S`，前缀形式只类型化前缀之下的路由（`App` 的
+  幻影 `G` 日志），路由链的品牌贯穿进该路由的 handler。加性且稳定，但尚新：
+  确切的泛型形状、作用域日志机制（`ScopedState`/`ScopedOf`）与保守情形
+  （动态 `string` 前缀/模式、比前缀更宽的模式）在 minor 内仍可能调整。
 - **轻量模式细节** —— `s200/node` 中的 `serve(app, { light: true })` 是一条
   可选快速路径，使用鸭子类型的请求/响应对象。*默认的* Web 标准契约已冻结；
   轻量路径的覆盖面与内部实现仍可能增长和变动。

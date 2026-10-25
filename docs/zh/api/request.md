@@ -16,7 +16,10 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 | --- | --- |
 | `validate(parse, options?)` | 纯解析函数 `(ctx) => unknown` 上的闸门 —— 接收整个上下文，可自行读取方法、请求头或手工解析的请求体；抛出的值原样拒绝链（由应用的错误路径决定状态码） |
 | `jsonBody<S>(schema)` | JSON 体模式上的闸门 —— 解析函数**或** Standard Schema 值（任何带 `~standard` 的） |
-| `requiresHeaders<K>(...keys)` | 声明路由读取的请求头 —— `throws` 同款的纯透传闸门：不检查任何东西，键只随路由的 `in` 通道走，让 `s200/client` 把它们要求为 `init.headers`（每个键必填的 record）。执法归中间件 —— 读 `ctx.req.headers` 的 `validate(parse)` 是运行时孪生 |
+| `validateParams<S>(schema)` | 路由捕获的路径参数（`ctx.params`）上的闸门 —— `queryParams` 的参数孪生：Standard Schema 跑完整个参数 record（与 `jsonBody` 同一个 422 issues 信封），解析函数 `(params: Q) => T` 自行决定失败方式；模式的解析产物落在 `ctx.state.validated`，其输入把路由的 `in` 通道品牌化为 `{ params }` |
+| `validateHeaders<S>(schema)` | 运行时请求头闸门 —— `requiresHeaders` 的执法孪生：跑在 `parseHeaders` 产出的全小写 `HeaderRecord` 上的 Standard Schema 或解析函数；同一个 422 信封，品牌走同一个 `{ headers }` 通道，让 `s200/client` 类型化（并要求）`init.headers` |
+| `parseHeaders(ctx)` | 请求头 → `HeaderRecord`（`Record<string, string>`）：键名由平台小写化，重复头按 `headers.get(name)` 的语义逗号拼接 |
+| `requiresHeaders<K>(...keys)` | 声明路由读取的请求头 —— `throws` 同款的纯透传闸门：不检查任何东西，键只随路由的 `in` 通道走，让 `s200/client` 把它们要求为 `init.headers`（每个键必填的 record）。执法归中间件 —— 读 `ctx.req.headers` 的 `validateHeaders`（或 `validate(parse)`）是运行时孪生 |
 | `bodyShape<T>()` | 声明路由读取的结构化请求体类型（上传路由 `bodyShape<FormData>()`、二进制路由 `bodyShape<Blob>()`）—— 同款纯声明模具；`s200/client` 把 `init.body` 类型化（并要求）为恰好 `T`，并按运行时的值编码：普通对象/数组会被 JSON 序列化并带上默认 `content-type: application/json`，而 `FormData`/`Blob`/流则原样传给 fetch。运行时读取留在 handler（`streamForm`、`uploadForm` 或裸 `ctx.req.body`） |
 | `standardValidate(schema, data)` | 裸 Standard Schema 调用：`validate()` → `{ value }` 或 `{ issues }`；空 `issues` 算成功 |
 | `validationError(scope, issues)` | 一切验证闸门抛出的那个 422（与 `s200/openapi` 的 `withRouteValidation` 共用）：体的 `error` 键保留第一条 issue 的单行摘要 —— 给了 `scope`（请求位置）时按它限定（`'body.items.2.name: …'`），否则为原始首条消息 —— `issues` 携带全量列表 |
@@ -49,7 +52,24 @@ type OutputOf<S> = …;  // schema.types.output
 }
 ```
 
-成功路径上任何地方都不会出现 `issues` 键。`queryParams` 以同样方式拒绝；`withRouteValidation`（见 [OpenAPI](/zh/api/openapi)）经同一个 `validationError` 构建器把每条路径按请求位置限定（`body.…` / `query.…`）。
+成功路径上任何地方都不会出现 `issues` 键。`queryParams`、`validateParams`、`validateHeaders` 以同样方式拒绝；`withRouteValidation`（见 [OpenAPI](/zh/api/openapi)）经同一个 `validationError` 构建器把每条路径按请求位置限定（`body.…` / `query.…` / `params.…`）。
+
+有了参数与请求头闸门，每个请求位置都有了运行时闸门：请求体（`jsonBody`）、查询（`queryParams`）、路径参数（`validateParams`）、请求头（`validateHeaders`）—— 同一个双风味模式（Standard Schema 或解析函数），同一个 422 信封：
+
+```ts
+get(app, '/users/:id', validateParams(IdSchema), (ctx) => {
+  json(ctx, { id: ctx.state.validated.id });   // the schema's parsed output
+});
+get(app, '/me', validateHeaders(AuthSchema), (ctx) => { … });   // same, over parseHeaders(ctx)
+```
+
+值按原样可见 —— 路径参数与请求头活在字符串域，因此强转（`Number(params.id)`）是解析风味的活。在调用方一侧，`_in` 品牌随路由日志走：`validateHeaders` 让 `s200/client` 把声明的请求头要求为 `init.headers`（与 `requiresHeaders` 恰好同一条通道），`validateParams` 则把声明的参数读取记录在模式自身的路径参数旁。
+
+| 类型 | 含义 |
+| --- | --- |
+| `ParamsInput` | `validateParams` 回调可声明的读取形状（参数 record，或任何带可选键的更窄读取） |
+| `HeaderRecord` | `Record<string, string>` —— `parseHeaders` 的产物 |
+| `HeadersInput` | `validateHeaders` 回调可声明的读取形状（请求头 record，或任何带可选键的更窄读取） |
 
 ## 查询（`s200/query`）
 

@@ -6,7 +6,9 @@
  * vitals (event-loop utilization, RSS, heap), and `reset()` for a fresh
  * measurement window (dev hot-reload re-baselining, test isolation). The
  * `unitMetricsEndpoint` handler exposes the snapshot over HTTP so a supervisor
- * can scrape the unit it dispatched work to.
+ * can scrape the unit it dispatched work to — as JSON (default) or as
+ * Prometheus text exposition format 0.0.4 (`prometheusText`,
+ * `unitMetricsEndpoint(m, { format: 'prometheus' })`).
  *
  * The library deliberately makes no scheduling decisions: `maxConcurrency`
  * here only shapes the `queueDepth` *report* (requests beyond the announced
@@ -19,12 +21,12 @@
  */
 
 
-import type { JsonResponse } from './respond';
+import type { JsonResponse, StatusedResponse } from './respond';
 import type { Handler, Middleware, Params, State } from './types';
 
 import { performance } from 'node:perf_hooks';
 
-import { json } from './respond';
+import { json, text } from './respond';
 
 /**
  * One point-in-time reading of a unit. All counters are cumulative since the
@@ -150,15 +152,112 @@ export function createUnitMetrics(options: UnitMetricsOptions = {}): {
   return { middleware, snapshot, reset };
 }
 
+/** Content-Type a Prometheus scraper expects from a `/metrics` target (text exposition format 0.0.4). */
+export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
+
 /**
- * Metrics scrape endpoint: 200 with the current {@link UnitMetrics} body.
- * Register it on the unit's own app (`get(app, '/metrics', unitMetricsEndpoint(m))`)
- * — mounted before or after `m.middleware` it stays correct: unwrapped it
- * reports the unit's totals, wrapped it honestly shows itself as the one
- * request currently in flight.
+ * A sample value Prometheus can parse: the 0.0.4 text format has no `NaN`
+ * or `Infinity` literals, so a non-finite reading degrades to `0` rather
+ * than poison the whole scrape.
+ */
+const gauge = (value: number): string =>
+  Number.isFinite(value) ? String(value) : '0';
+
+/**
+ * The exposition table: one gauge family per {@link UnitMetrics} field, in
+ * declaration order. camelCase fields become snake_case metric names; byte
+ * measures carry the Prometheus `_bytes` base-unit suffix and `startedAt` is
+ * rescaled to unix `_seconds`, so scrapers get conventional units rather
+ * than raw `Date.now()` milliseconds. Help lines echo the field JSDoc so the
+ * exposition is self-describing (they are static ASCII — nothing to escape).
+ */
+type MetricDef = {
+  readonly metric: string;
+  readonly help: string;
+  readonly render: (s: UnitMetrics) => string;
+};
+
+const METRICS: readonly MetricDef[] = [
+  {
+    metric: 's200_unit_in_flight',
+    help: 'Requests currently inside the unit\'s chain.',
+    render: (s) => gauge(s.inFlight),
+  },
+  {
+    metric: 's200_unit_max_in_flight',
+    help: 'Highest inFlight ever seen - the peak the unit actually absorbed.',
+    render: (s) => gauge(s.maxInFlight),
+  },
+  {
+    metric: 's200_unit_requests',
+    help: 'Requests that finished (handler resolved or errored) - completions, not arrivals.',
+    render: (s) => gauge(s.requests),
+  },
+  {
+    metric: 's200_unit_queue_depth',
+    help: 'max(0, inFlight - maxConcurrency); always 0 when no cap was announced.',
+    render: (s) => gauge(s.queueDepth),
+  },
+  {
+    metric: 's200_unit_event_loop_utilization',
+    help: 'Event-loop busy ratio 0..1 since the previous snapshot.',
+    render: (s) => gauge(s.eventLoopUtilization),
+  },
+  {
+    metric: 's200_unit_rss_bytes',
+    help: 'Resident set size in bytes.',
+    render: (s) => gauge(s.rss),
+  },
+  {
+    metric: 's200_unit_heap_used_bytes',
+    help: 'JS heap in use in bytes.',
+    render: (s) => gauge(s.heapUsed),
+  },
+  {
+    metric: 's200_unit_warm',
+    help: '1 once requests reached warmAfter (default 1) - until reset(), else 0.',
+    render: (s) => (s.warm ? '1' : '0'),
+  },
+  {
+    metric: 's200_unit_started_at_seconds',
+    help: 'Unix time (seconds) of the measurement window\'s start - creation or last reset().',
+    render: (s) => gauge(s.startedAt / 1000),
+  },
+];
+
+/**
+ * Renders a {@link UnitMetrics} snapshot as Prometheus text exposition
+ * format 0.0.4 — `# HELP`/`# TYPE` lines plus one gauge sample per field
+ * (booleans as 0/1), no labels, trailing newline, deterministic order (the
+ * {@link UnitMetrics} declaration order). Pure: same snapshot in, same
+ * bytes out.
+ */
+export function prometheusText(snapshot: UnitMetrics): string {
+  return (
+    METRICS.map(
+      (def) =>
+        `# HELP ${def.metric} ${def.help}\n# TYPE ${def.metric} gauge\n${def.metric} ${def.render(snapshot)}`
+    ).join('\n') + '\n'
+  );
+}
+
+/**
+ * Metrics scrape endpoint: 200 with the current {@link UnitMetrics} body —
+ * JSON by default, or Prometheus text exposition (see {@link
+ * prometheusText}) with `format: 'prometheus'`. Register it on the unit's
+ * own app (`get(app, '/metrics', unitMetricsEndpoint(m))`) — mounted before
+ * or after `m.middleware` it stays correct: unwrapped it reports the unit's
+ * totals, wrapped it honestly shows itself as the one request currently in
+ * flight.
  */
 export function unitMetricsEndpoint(
-  m: { readonly snapshot: () => UnitMetrics }
-): Handler<Params, State, JsonResponse<UnitMetrics>> {
-  return (ctx) => json(ctx, m.snapshot());
+  m: { readonly snapshot: () => UnitMetrics },
+  options: { readonly format?: 'json' | 'prometheus' } = {}
+): Handler<Params, State, JsonResponse<UnitMetrics> | StatusedResponse> {
+  return (ctx) =>
+    options.format === 'prometheus'
+      ? text(ctx, prometheusText(m.snapshot()), {
+          headers: { 'content-type': PROMETHEUS_CONTENT_TYPE },
+        })
+      : json(ctx, m.snapshot());
 }

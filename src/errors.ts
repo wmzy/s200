@@ -29,13 +29,19 @@ const STATUS_TEXT: Readonly<Record<number, string>> = {
  * {@link toErrorResponse} ships it verbatim instead of the default
  * `{ error: message }` envelope. `headers` is the optional response-header
  * set: when present, {@link toErrorResponse} merges it onto the error
- * response (a gate's `WWW-Authenticate` challenge, `Retry-After`, …). */
+ * response (a gate's `WWW-Authenticate` challenge, `Retry-After`, …).
+ * `cause` is the optional wrapped origin (the db error, the upstream
+ * fetch failure): it is server-side diagnostics only — never serialized
+ * into the response body — and flags the error for the operator sink
+ * (`logError`/`defaultLogError`) even though plain `HttpError`s stay
+ * silent. */
 export type HttpError = {
   readonly _tag: 'HttpError';
   readonly status: number;
   readonly message: string;
   readonly body?: unknown;
   readonly headers?: Record<string, string>;
+  readonly cause?: unknown;
 };
 
 /**
@@ -55,6 +61,15 @@ export type HttpError = {
  * IETF `RateLimit-*`), so a gate can throw into the error boundary instead
  * of writing the response in place and bypassing `onError`.
  *
+ * `cause`, when given (fifth argument), is the wrapped origin — the db
+ * error under a 502, the upstream failure under a gateway timeout. It is
+ * diagnostics, not payload: `toErrorResponse` never serializes it into the
+ * client body; it flows to the error boundary untouched, where `onError`
+ * reads it and the default sink (`logError`/`defaultLogError`) logs it.
+ * A `cause` also flags an otherwise-intentional `HttpError` for the
+ * operator sink — plain 4xx/5xx `HttpError`s stay unlogged, one carrying
+ * a `cause` asked to be surfaced.
+ *
  * Returning the value from a handler is sugar for throwing it: `handle`
  * rethrows a returned `HttpError` into the same error boundary, and the
  * route's phantom log infers the branch from the return type (a function
@@ -64,7 +79,8 @@ export function httpError<S extends number = number, B = undefined>(
   status: S,
   message?: string,
   body?: B,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  cause?: unknown
 ): HttpError & { readonly status: S; readonly body?: B } {
   if (!Number.isInteger(status) || status < 400 || status > 599) {
     throw new Error(
@@ -80,6 +96,7 @@ export function httpError<S extends number = number, B = undefined>(
     // `deep.equal` consumers see today's exact shape either way.
     ...(body !== undefined ? { body } : {}),
     ...(headers !== undefined ? { headers } : {}),
+    ...(cause !== undefined ? { cause } : {}),
   };
 }
 
@@ -99,7 +116,9 @@ export function isHttpError(e: unknown): e is HttpError {
  * its status and message — and when it carries a `body`, that payload ships
  * verbatim (a structured error shape instead of the default envelope); a
  * `headers` record rides the response verbatim too (a gate's
- * `WWW-Authenticate` challenge, `Retry-After`, …). Everything else becomes
+ * `WWW-Authenticate` challenge, `Retry-After`, …). A `cause` is ignored
+ * here by design — diagnostics flow to the log sink, never the client.
+ * Everything else becomes
  * an anonymous 500 — the error's internals never leak to the client.
  */
 export function toErrorResponse(error: unknown): Response {

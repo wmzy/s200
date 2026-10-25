@@ -16,7 +16,10 @@ post(app, '/articles', jsonBody(ArticleSchema.parse), (ctx) => {
 | --- | --- |
 | `validate(parse, options?)` | Gate over a plain parse function `(ctx) => unknown` — it receives the whole context, so it can read the method, headers, or a manually-parsed body itself; a thrown value rejects the chain unchanged (the app's error path decides the status) |
 | `jsonBody<S>(schema)` | Gate over a JSON-body schema — a parse function **or** a Standard Schema value (anything with `~standard`) |
-| `requiresHeaders<K>(...keys)` | Declares the request headers a route reads — a pure pass-through gate in the `throws` mold: nothing is checked, the keys just ride the route's `in` channel so `s200/client` demands them as `init.headers` (a record with every key required). Enforcement is middleware's job — `validate(parse)` reading `ctx.req.headers` is the runtime twin |
+| `validateParams<S>(schema)` | Gate over the route's captured path params (`ctx.params`) — the params twin of `queryParams`: a Standard Schema runs over the whole params record (same 422 issues envelope as `jsonBody`), a parse function `(params: Q) => T` decides its own failure mode; the schema's parsed output lands on `ctx.state.validated`, its input brands the route's `in` channel as `{ params }` |
+| `validateHeaders<S>(schema)` | The runtime header gate — `requiresHeaders`' enforcement twin: a Standard Schema or parse function over the lowercased `HeaderRecord` `parseHeaders` produces; same 422 envelope, and the brand rides the same `{ headers }` channel so `s200/client` types (and demands) `init.headers` |
+| `parseHeaders(ctx)` | Request headers → `HeaderRecord` (`Record<string, string>`): names lowercased by the platform, repeated headers comma-joined exactly like `headers.get(name)` |
+| `requiresHeaders<K>(...keys)` | Declares the request headers a route reads — a pure pass-through gate in the `throws` mold: nothing is checked, the keys just ride the route's `in` channel so `s200/client` demands them as `init.headers` (a record with every key required). Enforcement is middleware's job — `validateHeaders` (or `validate(parse)`) reading `ctx.req.headers` is the runtime twin |
 | `bodyShape<T>()` | Declares the structured body type a route reads (`bodyShape<FormData>()` on an upload route, `bodyShape<Blob>()` on a binary one) — same declaration-only mold; `s200/client` types (and demands) `init.body` as exactly `T` and encodes it from the runtime value: a plain object/array is JSON-stringified with a default `content-type: application/json`, while `FormData`/`Blob`/streams ride to fetch untouched. Runtime reading stays with the handler (`streamForm`, `uploadForm`, or the raw `ctx.req.body`) |
 | `standardValidate(schema, data)` | The raw Standard Schema call: `validate()` → `{ value }` or `{ issues }`; empty `issues` counts as success |
 | `validationError(scope, issues)` | The 422 every validation gate throws (shared with `withRouteValidation` from `s200/openapi`): the body's `error` key keeps the first issue's summary — scope-qualified (`'body.items.2.name: …'`) when `scope` names the request location, the raw first message otherwise — and `issues` carries the full list |
@@ -49,7 +52,24 @@ The phantom `types` prop types both sides for free: `jsonBody(schema)` demands a
 }
 ```
 
-Success paths carry no `issues` key anywhere. `queryParams` rejects the same way; `withRouteValidation` (see [OpenAPI](/api/openapi)) qualifies each path with its request location (`body.…` / `query.…`) via the same `validationError` builder.
+Success paths carry no `issues` key anywhere. `queryParams`, `validateParams`, and `validateHeaders` reject the same way; `withRouteValidation` (see [OpenAPI](/api/openapi)) qualifies each path with its request location (`body.…` / `query.…` / `params.…`) via the same `validationError` builder.
+
+With the params and headers gates, every request location has a runtime gate: body (`jsonBody`), query (`queryParams`), path params (`validateParams`), headers (`validateHeaders`) — one dual-flavor pattern (Standard Schema or parse function), one 422 envelope:
+
+```ts
+get(app, '/users/:id', validateParams(IdSchema), (ctx) => {
+  json(ctx, { id: ctx.state.validated.id });   // the schema's parsed output
+});
+get(app, '/me', validateHeaders(AuthSchema), (ctx) => { … });   // same, over parseHeaders(ctx)
+```
+
+Values are seen verbatim — path params and headers live in the string domain, so coercion (`Number(params.id)`) is the parse flavor's job. On the caller's side the `_in` brands ride the route log: `validateHeaders` demands its declared headers as `init.headers` on `s200/client` (exactly `requiresHeaders`' channel), and `validateParams` records the declared params read beside the pattern's own path args.
+
+| Type | Meaning |
+| --- | --- |
+| `ParamsInput` | The read shapes a `validateParams` callback may declare (the params record, or any narrower read with optional keys) |
+| `HeaderRecord` | `Record<string, string>` — what `parseHeaders` produces |
+| `HeadersInput` | The read shapes a `validateHeaders` callback may declare (the header record, or any narrower read with optional keys) |
 
 ## Query (`s200/query`)
 

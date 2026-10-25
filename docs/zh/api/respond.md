@@ -14,6 +14,7 @@ html<S>(ctx, body, init?): StatusedResponse<S>      // text/html; charset=utf-8 
 redirect<S>(ctx, location, status?): StatusedResponse<S>  // 默认 302
 setHeader(ctx, name, value)                         // 直接写入；响应未物化时挂起
 setHeaders(ctx, { name: value })                    // 一次多个，按插入顺序
+resOf(ctx): Response                                // next() 之后读取 res，误用时点名抛错
 escapeHtml(value): string                            // & < > " '
 utf8Length(value): number                            // ASCII 快速路径，不分配编码器
 newResponse(ctx, body, init?): Response             // light 路径上为 LightResponse
@@ -24,6 +25,7 @@ drainPendingHeaders(ctx, res)                       // 低层钩子：见下
 | --- | --- |
 | `StatusedResponse<S>` | `Response & { _status?: S }` —— 构建器用过的状态字面量（仅编译期） |
 | `JsonResponse<T, S>` | `Response & { _out?: T; _status?: S }` —— 为 `client.get(...).json()` 品牌化体类型 |
+| `SettledCtx<S>` | `Ctx & { res: Response }` —— `await next()` 结束后的 ctx，`res` 从 `undefined` 收窄掉（仅编译期） |
 
 注意：
 
@@ -39,6 +41,25 @@ drainPendingHeaders(ctx, res)                       // 低层钩子：见下
 - **响应尚未存在时**（中间件顶部、或 `onError` 内部）头部被挂起，盖印到请求首次物化的那个响应上 —— 处理器响应、`404`/`405`/`500` 回退或错误响应。挂起值覆盖响应自带的同名头部：中间件策略（`x-powered-by`、`cache-control`、安全头）胜过处理器构建的内容。
 
 `drainPendingHeaders(ctx, res)` 是该契约背后的低层 drain 钩子 —— `newResponse`、裸 `Response` 采用与错误映射都会调用它。绕过 `newResponse` 采用响应的电池/适配器作者也需要调用它；应用代码永远用不到。
+
+### next() 之后的收窄 {#post-next-narrowing}
+
+同一份不变量支撑两个读取助手。`resOf(ctx)` 返回 `ctx.res` —— `await next()` 结束后它必定存在（处理器的、回退的或错误的响应 —— 链内全部就地物化），unwind 上的中间件因此跳过 `?.`：
+
+```ts
+use(app, async (ctx, next) => {
+  await next();
+  logger.info(`${ctx.req.method} ${ctx.url.pathname} → ${resOf(ctx).status}`);
+});
+```
+
+在响应存在之前调用它是程序员错误，抛出一个点名误用的普通 `Error`（不是 `HttpError` —— 它永远不会到达客户端；响应前的头部工作请用 `setHeader`/`setHeaders`）。`SettledCtx<S>` 是类型层的孪生：`Ctx & { res: Response }`，面向只在 next() 之后运行的辅助函数：
+
+```ts
+function statusLine(ctx: SettledCtx): string {
+  return `${ctx.req.method} ${ctx.url.pathname} → ${ctx.res.status}`;
+}
+```
 
 ## 请求体读取
 

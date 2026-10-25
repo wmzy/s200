@@ -63,11 +63,13 @@ use(use(app, withUser), withProfile); // ok
 use(app, withProfile);                // 类型错误 —— { user } 尚未注入
 ```
 
-三条边界，均为刻意设计：
+品牌按作用域流转，另有两点保守边界：
 
-- **应用级，非路由级。** 前缀限定形式（`use(app, '/api', withUser)`）同样传递类型，但无法把类型收窄到前缀下的路由 —— 前缀之外的处理器仍会看到类型化后的键、运行时却是 `undefined`。前缀限定注入是程序员的断言，与手写 `createApp<MyState>` 完全一样。
-- **路由链不传递。** 在路由自己的中间件链里（`get(app, '/x', withUser, handler)`），中间件照常运行并在运行时写入 state，但处理器保持宽松的 `State` 视图 —— 用 `use` 来圈定注入。
-- **长链。** 每次注入都加宽 `S`，之后每个 `use`/注册器调用都会实例化累积后的交集。实测 60 个链式注入 × 60 条路由在本仓库的检查器上约一秒仍能通过 —— 真正的成本在于人体工学（悬停展示与报错信息会列出全部键），超过大约几十个注入点后建议收拢为一个显式 `interface MyState extends State` 加一次 `createApp<MyState>()`。
+- **应用级（全局形式）。** `use(app, withUser)` 为整个应用加宽 `S`；之后的每个中间件、处理器、注册器都看到累积后的交集。
+- **前缀作用域。** `use(app, '/api', withUser)` **不**加宽应用级 `S`。品牌被存进应用的编译期作用域日志（`App` 的幻影 `G` 参数），只交集进模式落在前缀之下的路由 —— 按段匹配，与运行时 guard 的分发方式一致：`/api`、`/api/users/:id`、参数前缀（`/users/:uid`）匹配各自的路由；`/apiv2` 不匹配。前缀之外的处理器保持宽松的 `State` 视图，应用级中间件仍按纯 `S` 类型化。匹配路由上的路由链中间件同样能看到作用域键 —— 它们在 guard 内部运行。
+- **路由链。** `get(app, '/x', withUser, handler)` 把链上品牌贯穿进该路由的处理器：`ctx.state` 是应用 `S`、匹配的作用域品牌、链上品牌三者的交集。贯穿止于处理器 —— 链中间件按应用 `S` 加匹配的作用域品牌类型化，看不到*更早的链内*品牌，因此带显式读取类型的 `withState<X, S>` 消费者不能进入同一条链（改用 `use` 组合，那里会强制顺序）。
+- **动态字符串保持保守。** 非字面量的前缀或模式（`string` 变量）无法在编译期做前缀匹配 —— 运行时作用域照常生效，类型保持宽松。比前缀更*宽*的路由模式（`/admin` 下的 `/:tenant/x`）同样不可见：运行时的重叠是真实的，但无法用子类型化表达。
+- **长链。** 每次全局注入都加宽 `S`，之后每个 `use`/注册器调用都会实例化累积后的交集。实测 60 个链式注入 × 60 条路由在本仓库的检查器上约一秒仍能通过 —— 真正的成本在于人体工学（悬停展示与报错信息会列出全部键），超过大约几十个注入点后建议收拢为一个显式 `interface MyState extends State` 加一次 `createApp<MyState>()`。
 
 `withState` 是恒等函数 —— 零运行时开销；品牌（`_state`）只存在于类型上，与 `throws` 的 `_errors`、gate 的 `_in` 完全一致。发布文档化 state 槽位的电池（如 `requestId`）可以用同样的方式打品牌，`defineMiddleware` 会保留完整的品牌类型。
 
@@ -101,3 +103,5 @@ use(app, '/admin', requireAuth, async (ctx, next) => {
 });
 use(app, '/users/:id', loadUser);   // param prefixes use the router's own matching
 ```
+
+这样作用域的品牌注入器只类型化前缀之下的路由 —— `use(app, '/api', withUser)` 不动应用级 `S`，只把 `ctx.state.user: User` 交给 `/api/…` 的处理器（见上方「推断式注入：`withState`」一节）。

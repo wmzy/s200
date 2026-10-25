@@ -1,6 +1,6 @@
-# Observability (`s200/logger`, `s200/request-id`, `s200/otel`, `s200/version`)
+# Observability (`s200/logger`, `s200/request-id`, `s200/timing`, `s200/otel`, `s200/version`)
 
-Request logging, correlation ids, OpenTelemetry-shaped tracing/metrics, and API version negotiation.
+Request logging, correlation ids, server timing, OpenTelemetry-shaped tracing/metrics, and API version negotiation.
 
 ## Logger (`s200/logger`)
 
@@ -31,6 +31,25 @@ use(app, requestId());
 | --- | --- | --- |
 | `header` | `'x-request-id'` | Request/response header name |
 | `generator` | `crypto.randomUUID()` | `() => string` |
+
+## Server timing (`s200/timing`)
+
+An RFC 8006 §7.2 `Server-Timing` header per request: named spans in registration order, then the total. Stamped on the unwind through the deferred-header mechanism (`setHeader`), so it lands on the 404/405/500 and mapped-error responses too — the in-chain boundary materializes every response before the unwind runs.
+
+```ts
+use(app, timing());
+const stop = startTiming(ctx, 'db');
+const rows = await query(sql);
+stop(); // Server-Timing: db;dur=5.2, total;dur=18.3
+```
+
+`startTiming(ctx, name)` works anywhere holding the `ctx` — handlers and downstream middlewares alike. A span whose stop function never runs is closed when the header is stamped (its duration then covers up to the unwind); calling stop twice records the first duration only. Span names must be RFC 7230 tokens (no spaces, commas, or semicolons). Calling `startTiming` without the middleware installed is harmless — the per-request span list is weakly keyed and dies with the request. Durations are milliseconds with one fractional digit (sub-ms precision).
+
+`TimingOptions`:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `total` | `'total'` | Name of the total-duration entry |
 
 ## OTel (`s200/otel`)
 

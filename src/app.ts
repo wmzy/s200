@@ -8,6 +8,7 @@ import type {
   Middleware,
   MountBase,
   MountedDefs,
+  MountedScoped,
   Next,
   NotFoundHandler,
   Params,
@@ -18,6 +19,9 @@ import type {
   ResolveOut,
   ResolveStatus,
   RouteFilter,
+  ScopedOf,
+  ScopedPush,
+  ScopedState,
   State,
   StateOf,
 } from './types';
@@ -45,11 +49,15 @@ export type AppOptions<S extends State = State> = {
   /**
    * Sink for unexpected (non-{@link HttpError}) errors when no custom
    * `onError` is set — the default policy logs via `console.error` and
-   * answers an anonymous 500. Receives the error and the request's `Ctx`;
-   * the second parameter is additive, so `(error) => void` sinks keep
-   * working. The default prints one leading context line —
-   * `[s500] <method> <pathname>[ <request id>]` — then the error, so a
-   * 500 is correlatable back to its request (the id is the request-id
+   * answers an anonymous 500. One exception since the `cause` channel:
+   * an `HttpError` built with a `cause` (`httpError(status, msg, body?,
+   * headers?, cause)`) is routed here too — the client still gets its
+   * status/body, the sink sees the root cause. Receives the error and
+   * the request's `Ctx`; the second parameter is additive, so
+   * `(error) => void` sinks keep working. The default prints one leading
+   * context line — `[s500] <method> <pathname>[ <request id>]` — then
+   * the error (a third `cause` argument when one is present), so a 500
+   * is correlatable back to its request (the id is the request-id
    * battery's `state.requestId`, whatever header name it uses, falling
    * back to a literal `x-request-id` header). Inject a structured logger
    * here; the client still sees the anonymous 500 either way.
@@ -74,11 +82,19 @@ export type AppOptions<S extends State = State> = {
  * route's method + pattern literal, accumulated by the registrars and
  * consumed by `s200/client`'s {@link createClient}. It never appears in the
  * runtime shape, so apps type the same with or without it.
+ *
+ * `G` is a phantom type parameter too — a compile-time log of the app's
+ * prefix-scoped state injections (`use(app, '/admin', withUser)` parks its
+ * brand there). Registrars filter it per route pattern, so handlers under
+ * the prefix read the injected keys typed while the app-wide `S` stays
+ * untouched. Never part of the runtime shape.
  */
 export type App<
   S extends State = State,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- R is a phantom type parameter: a compile-time route log consumed by s200/client, never part of the runtime shape
-  R extends readonly RouteDef[] = readonly RouteDef[]
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- G is a phantom type parameter: a compile-time log of prefix-scoped state injections, filtered per route by the registrars, never part of the runtime shape
+  G extends readonly ScopedState[] = readonly []
 > = {
   routes: readonly Route[];
   middlewares: readonly Middleware<S>[];
@@ -145,39 +161,69 @@ function groupCtx<S extends State>(ctx: Ctx<Params, S>): GroupCtx {
  * ## The state channel
  *
  * A middleware branded by `withState<X>` (core barrel) advertises the
- * keys it writes onto `ctx.state`; `use` collects every argument's brand
- * into the returned app's `S`, so downstream middlewares and handlers
- * read the injected keys typed — the counterpart of
- * Hono's `c.var`/`Env` and Elysia's `derive`, with no hand-written app
- * state interface. Plain, unbranded middlewares are the identity case:
- * their contribution collapses and the app's type is unchanged.
+ * keys it writes onto `ctx.state`, and the brand travels three ways:
  *
- * The type is app-wide — the prefix-scoped form cannot narrow it to the
- * prefix's routes (a handler outside the prefix would still see the keys
- * as typed, `undefined` at runtime), so prefix-scoped injection is a
- * programmer's assertion, exactly like a hand-written `createApp<MyState>`.
- * In a route's own middleware chain a branded middleware runs but its
- * brand is not threaded into the handler's `ctx.state` — scope injections
- * with `use`.
+ * - **Global form** (`use(app, withUser)`): every argument's brand is
+ *   collected into the returned app's `S`, so all downstream middlewares
+ *   and handlers read the injected keys typed.
+ * - **Prefix form** (`use(app, '/admin', withUser)`): the app-wide `S` is
+ *   NOT widened. The brand is parked in the app's phantom scoped log
+ *   (see `App`'s `G` parameter) and registrars intersect it into exactly
+ *   the routes whose pattern falls under the prefix — segment-wise, so
+ *   `/admin`, `/admin/x`, and param (`/users/:id`) prefixes typecheck like
+ *   they dispatch. Routes outside the prefix never see the keys (their
+ *   `ctx.state` keeps the loose view, and app-level middlewares still
+ *   type against the plain `S`). Non-literal patterns or prefixes (a
+ *   dynamic `string`) cannot be checked at compile time: the runtime
+ *   scoping still applies, the types stay conservative.
+ * - **Route chains** (`get(app, '/x', withUser, handler)`): the brands of
+ *   the chain's middlewares are threaded into that route's handler —
+ *   `ctx.state` sees the app `S`, the matching scoped brands, and the
+ *   chain's brands intersected.
+ *
+ * Plain, unbranded middlewares are the identity case everywhere: their
+ * contribution collapses and types are unchanged.
  */
 export function use<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[],
-  M extends Middleware<S> | string = Middleware<S>,
-  Ms extends readonly Middleware<S>[] = Middleware<S>[]
+  G extends readonly ScopedState[] = readonly [],
+  M extends Middleware<S> = Middleware<S>,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
-  app: App<S, R>,
+  app: App<S, R, G>,
   prefixOrMiddleware: M,
   ...middlewares: Ms
-): App<S & StateOf<[M, ...Ms]>, R>;
+): App<S & StateOf<[M, ...Ms]>, R, G>;
 export function use<
   S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  G extends readonly ScopedState[] = readonly [],
+  Prefix extends string = string,
+  Ms extends Middleware<S>[] = Middleware<S>[]
 >(
-  app: App<S, R>,
+  app: App<S, R, G>,
+  prefix: Prefix,
+  ...middlewares: Ms
+): App<
+  S & (Prefix extends '' | '/' ? StateOf<Ms> : unknown),
+  R,
+  Prefix extends '' | '/' ? G : ScopedPush<G, Prefix, StateOf<Ms>>
+>;
+export function use<
+  S extends State = State,
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  G extends readonly ScopedState[] = readonly []
+>(
+  app: App<S, R, G>,
   prefixOrMiddleware: string | Middleware<S>,
   ...middlewares: Middleware<S>[]
-): App<S, R> {
+): App<S, R, G>;
+export function use<S extends State = State>(
+  app: App<S>,
+  prefixOrMiddleware: string | Middleware<S>,
+  ...middlewares: Middleware<S>[]
+): App<S> {
   if (typeof prefixOrMiddleware === 'string') {
     const prefix = prefixOrMiddleware;
     if (middlewares.length === 0) {
@@ -261,13 +307,14 @@ export function use<
 export function removeRoute<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[],
+  G extends readonly ScopedState[] = readonly [],
   M extends string = string,
   P extends string = string
 >(
-  app: App<S, R>,
+  app: App<S, R, G>,
   method: M,
   pattern: P
-): App<S, RouteFilter<R, Uppercase<M>, P>> {
+): App<S, RouteFilter<R, Uppercase<M>, P>, G> {
   const normalized = method.toUpperCase();
   const filtered = app.routes.filter(
     (route) => !(route.method === normalized && route.pattern === pattern)
@@ -275,7 +322,7 @@ export function removeRoute<
   if (filtered.length !== app.routes.length) {
     app.routes = Object.freeze(filtered);
   }
-  return app as App<S, RouteFilter<R, Uppercase<M>, P>>;
+  return app as App<S, RouteFilter<R, Uppercase<M>, P>, G>;
 }
 
 /**
@@ -286,8 +333,9 @@ export function removeRoute<
  */
 export function usePlugin<
   S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
->(app: App<S, R>, plugin: Plugin<S>): App<S, R> {
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  G extends readonly ScopedState[] = readonly []
+>(app: App<S, R, G>, plugin: Plugin<S>): App<S, R, G> {
   plugin(app);
   return app;
 }
@@ -327,12 +375,14 @@ export function mount<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[],
   R2 extends readonly RouteDef[] = readonly RouteDef[],
-  Prefix extends string = string
+  Prefix extends string = string,
+  G extends readonly ScopedState[] = readonly [],
+  G2 extends readonly ScopedState[] = readonly []
 >(
-  app: App<S, R>,
+  app: App<S, R, G>,
   prefix: Prefix,
-  sub: App<S, R2>
-): App<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>]> {
+  sub: App<S, R2, G2>
+): App<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>], [...G, ...MountedScoped<G2, MountBase<Prefix>>]> {
   if (prefix !== '' && !prefix.startsWith('/')) {
     throw new Error(`Invalid mount prefix '${prefix}': must be empty or start with '/'`);
   }
@@ -406,7 +456,11 @@ export function mount<
     // One replacement per mount, not one per route (snapshot semantics).
     app.routes = Object.freeze([...app.routes, ...added]);
   }
-  return app as App<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>]>;
+  return app as App<
+    S,
+    [...R, ...MountedDefs<R2, MountBase<Prefix>>],
+    [...G, ...MountedScoped<G2, MountBase<Prefix>>]
+  >;
 }
 
 /**
@@ -469,6 +523,16 @@ type RouteDefEntry<
  * `ParamsOf<P>`-typed params; a plain `string` pattern (a dynamic route)
  * falls back to the loose `Params`. One shared implementation backs them
  * all (see `methodRegistrar`); every call lands in `register`.
+ *
+ * The chain's state brands thread into the handler: its `ctx.state` is
+ * the app `S` intersected with the prefix-scoped brands matching `P`
+ * (literal patterns only — a dynamic pattern cannot be prefix-matched at
+ * compile time) and with the `_state` brands of the chain's own
+ * middlewares (`get(app, '/x', withUser, handler)` types `ctx.state.user`).
+ * The chain's middlewares type against the app `S` plus the matching
+ * scoped brands (they run inside every scope guard); a branded consumer
+ * with an explicit read-type still wants the `use` order enforcement —
+ * chain middlewares do not progressively see earlier chain brands.
  */
 export type Registrar<M extends string> = {
   <
@@ -476,23 +540,25 @@ export type Registrar<M extends string> = {
     S extends State = State,
     R extends readonly RouteDef[] = readonly RouteDef[]
   ,
+    G extends readonly ScopedState[] = readonly [],
     O = unknown,
-    Ms extends Middleware<S>[] = Middleware<S>[]
+    Ms extends Middleware<S & ScopedOf<G, P>>[] = Middleware<S & ScopedOf<G, P>>[]
   >(
-    app: App<S, R>,
+    app: App<S, R, G>,
     pattern: P,
-    ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+    ...chain: [...Ms, Handler<ParamsOf<P>, S & ScopedOf<G, P> & StateOf<Ms>, O>]
   ): App<S, [...R, RouteDefEntry<M, P, Ms, O>]>;
   <
     S extends State = State,
     R extends readonly RouteDef[] = readonly RouteDef[]
   ,
+    G extends readonly ScopedState[] = readonly [],
     O = unknown,
     Ms extends Middleware<S>[] = Middleware<S>[]
   >(
-    app: App<S, R>,
+    app: App<S, R, G>,
     pattern: string,
-    ...chain: [...Ms, Handler<Params, S, O>]
+    ...chain: [...Ms, Handler<Params, S & StateOf<Ms>, O>]
   ): App<S, [...R, RouteDefEntry<M, string, Ms, O>]>;
 };
 
@@ -532,26 +598,28 @@ export type AddRoute = {
     M extends string = string,
     R extends readonly RouteDef[] = readonly RouteDef[]
   ,
+    G extends readonly ScopedState[] = readonly [],
     O = unknown,
-    Ms extends Middleware<S>[] = Middleware<S>[]
+    Ms extends Middleware<S & ScopedOf<G, P>>[] = Middleware<S & ScopedOf<G, P>>[]
   >(
-    app: App<S, R>,
+    app: App<S, R, G>,
     method: M,
     pattern: P,
-    ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
+    ...chain: [...Ms, Handler<ParamsOf<P>, S & ScopedOf<G, P> & StateOf<Ms>, O>]
   ): App<S, [...R, RouteDefEntry<Uppercase<M>, P, Ms, O>]>;
   <
     S extends State = State,
     M extends string = string,
     R extends readonly RouteDef[] = readonly RouteDef[]
   ,
+    G extends readonly ScopedState[] = readonly [],
     O = unknown,
     Ms extends Middleware<S>[] = Middleware<S>[]
   >(
-    app: App<S, R>,
+    app: App<S, R, G>,
     method: M,
     pattern: string,
-    ...chain: [...Ms, Handler<Params, S, O>]
+    ...chain: [...Ms, Handler<Params, S & StateOf<Ms>, O>]
   ): App<S, [...R, RouteDefEntry<Uppercase<M>, string, Ms, O>]>;
 };
 
@@ -571,20 +639,21 @@ export const addRoute: AddRoute = ((
 type BuilderMethod<
   M extends string,
   S extends State,
-  R extends readonly RouteDef[]
+  R extends readonly RouteDef[],
+  G extends readonly ScopedState[] = readonly []
 > = {
   <
     P extends string,
     O = unknown,
-    Ms extends Middleware<S>[] = Middleware<S>[]
+    Ms extends Middleware<S & ScopedOf<G, P>>[] = Middleware<S & ScopedOf<G, P>>[]
   >(
     pattern: P,
-    ...chain: [...Ms, Handler<ParamsOf<P>, S, O>]
-  ): RoutesBuilder<S, [...R, RouteDefEntry<M, P, Ms, O>]>;
+    ...chain: [...Ms, Handler<ParamsOf<P>, S & ScopedOf<G, P> & StateOf<Ms>, O>]
+  ): RoutesBuilder<S, [...R, RouteDefEntry<M, P, Ms, O>], G>;
   <O = unknown, Ms extends Middleware<S>[] = Middleware<S>[]>(
     pattern: string,
-    ...chain: [...Ms, Handler<Params, S, O>]
-  ): RoutesBuilder<S, [...R, RouteDefEntry<M, string, Ms, O>]>;
+    ...chain: [...Ms, Handler<Params, S & StateOf<Ms>, O>]
+  ): RoutesBuilder<S, [...R, RouteDefEntry<M, string, Ms, O>], G>;
 };
 
 /**
@@ -597,32 +666,49 @@ type BuilderMethod<
  */
 export type RoutesBuilder<
   S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  G extends readonly ScopedState[] = readonly []
 > = {
   /** The app every method registers on — typed with the chain's full log. */
-  readonly app: App<S, R>;
-  readonly get: BuilderMethod<'GET', S, R>;
-  readonly post: BuilderMethod<'POST', S, R>;
-  readonly put: BuilderMethod<'PUT', S, R>;
-  readonly patch: BuilderMethod<'PATCH', S, R>;
-  readonly del: BuilderMethod<'DELETE', S, R>;
-  readonly head: BuilderMethod<'HEAD', S, R>;
-  readonly options: BuilderMethod<'OPTIONS', S, R>;
-  readonly all: BuilderMethod<'ALL', S, R>;
-  readonly use: <
-    M extends Middleware<S> | string = Middleware<S>,
-    Ms extends readonly Middleware<S>[] = Middleware<S>[]
-  >(
-    prefixOrMiddleware: M,
-    ...middlewares: Ms
-  ) => RoutesBuilder<S & StateOf<[M, ...Ms]>, R>;
+  readonly app: App<S, R, G>;
+  readonly get: BuilderMethod<'GET', S, R, G>;
+  readonly post: BuilderMethod<'POST', S, R, G>;
+  readonly put: BuilderMethod<'PUT', S, R, G>;
+  readonly patch: BuilderMethod<'PATCH', S, R, G>;
+  readonly del: BuilderMethod<'DELETE', S, R, G>;
+  readonly head: BuilderMethod<'HEAD', S, R, G>;
+  readonly options: BuilderMethod<'OPTIONS', S, R, G>;
+  readonly all: BuilderMethod<'ALL', S, R, G>;
+  readonly use: {
+    <M extends Middleware<S>, Ms extends Middleware<S>[]>(
+      ...middlewares: [M, ...Ms]
+    ): RoutesBuilder<S & StateOf<[M, ...Ms]>, R, G>;
+    <Prefix extends string, Ms extends Middleware<S>[]>(
+      prefix: Prefix,
+      ...middlewares: Ms
+    ): RoutesBuilder<
+      S & (Prefix extends '' | '/' ? StateOf<Ms> : unknown),
+      R,
+      Prefix extends '' | '/' ? G : ScopedPush<G, Prefix, StateOf<Ms>>
+    >;
+    (prefixOrMiddleware: string | Middleware<S>, ...middlewares: Middleware<S>[]): RoutesBuilder<
+      S,
+      R,
+      G
+    >;
+  };
   readonly mount: <
     R2 extends readonly RouteDef[] = readonly RouteDef[],
-    Prefix extends string = string
+    Prefix extends string = string,
+    G2 extends readonly ScopedState[] = readonly []
   >(
     prefix: Prefix,
-    sub: App<S, R2>
-  ) => RoutesBuilder<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>]>;
+    sub: App<S, R2, G2>
+  ) => RoutesBuilder<
+    S,
+    [...R, ...MountedDefs<R2, MountBase<Prefix>>],
+    [...G, ...MountedScoped<G2, MountBase<Prefix>>]
+  >;
 };
 
 /** One type-erased registrar method on the runtime builder object. */
@@ -675,8 +761,9 @@ type RoutesBuilderBase<S extends State = State> = {
  */
 export function routes<
   S extends State = State,
-  R extends readonly RouteDef[] = readonly RouteDef[]
->(app: App<S, R>): RoutesBuilder<S, R> {
+  R extends readonly RouteDef[] = readonly RouteDef[],
+  G extends readonly ScopedState[] = readonly []
+>(app: App<S, R, G>): RoutesBuilder<S, R, G> {
   const method = (m: string): ErasedMethod<S> => (pattern, ...chain) => {
     register(app, m, pattern, chain as [...Middleware<S>[], Handler<never, S>]);
     return builder;
@@ -700,7 +787,7 @@ export function routes<
     },
     app,
   };
-  return builder as unknown as RoutesBuilder<S, R>;
+  return builder as unknown as RoutesBuilder<S, R, G>;
 }
 
 // Composed-chain caches. `compose`'s double-next `index` is created per

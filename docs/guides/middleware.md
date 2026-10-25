@@ -63,11 +63,13 @@ use(use(app, withUser), withProfile); // ok
 use(app, withProfile);                // type error — { user } not injected yet
 ```
 
-Three boundaries, by design:
+The brand travels by scope, with two caveats:
 
-- **App-wide, not route-wide.** The prefix-scoped form (`use(app, '/api', withUser)`) threads the type the same way but cannot narrow it to the prefix's routes — a handler outside the prefix still sees the keys as typed, `undefined` at runtime. Prefix-scoped injection is a programmer's assertion, exactly like a hand-written `createApp<MyState>`.
-- **Route chains don't thread it.** Inside a route's own middleware chain (`get(app, '/x', withUser, handler)`) the middleware runs and writes state at runtime, but the handler keeps the loose `State` view — scope injections with `use`.
-- **Long chains.** Each injection widens `S`, and every later `use`/registrar call instantiates the accumulated intersection. Measured, 60 chained injections × 60 routes still typecheck in about a second on the repo's checker — the real cost past a few dozen injections is ergonomics (hover display and error messages listing every key), so past roughly that size collapse them into one explicit `interface MyState extends State` and a single `createApp<MyState>()`.
+- **App-wide (the global form).** `use(app, withUser)` widens `S` for the whole app; every later middleware, handler, and registrar sees the accumulated intersection.
+- **Prefix-scoped.** `use(app, '/api', withUser)` does **not** widen the app's `S`. The brand is parked in the app's compile-time scoped log (`App`'s phantom `G` parameter) and intersected into exactly the routes whose pattern falls under the prefix — segment-wise, the same way the runtime guard dispatches: `/api`, `/api/users/:id`, and param prefixes (`/users/:uid`) match their routes; `/apiv2` does not. Handlers outside the prefix keep the loose `State` view, and app-level middlewares still type against the plain `S`. Route-chain middlewares on a matching route see the scoped keys too — they run inside the guard.
+- **Route chains.** `get(app, '/x', withUser, handler)` threads the chain's brands into that route's handler: `ctx.state` is the app `S`, the matching scoped brands, and the chain's brands intersected. The thread ends at the handler — chain middlewares type against the app `S` plus the matching scoped brands, not against *earlier chain* brands, so a `withState<X, S>` consumer with an explicit read type cannot sit in the same chain (compose it through `use` instead, where the order is enforced).
+- **Dynamic strings stay conservative.** A non-literal prefix or pattern (a `string` variable) cannot be prefix-matched at compile time — the runtime scoping still applies, the types stay loose. Route patterns *wider* than the prefix (`/:tenant/x` under `/admin`) are invisible the same way: the overlap is real at runtime, but not expressible as subtyping.
+- **Long chains.** Each global injection widens `S`, and every later `use`/registrar call instantiates the accumulated intersection. Measured, 60 chained injections × 60 routes still typecheck in about a second on the repo's checker — the real cost past a few dozen injections is ergonomics (hover display and error messages listing every key), so past roughly that size collapse them into one explicit `interface MyState extends State` and a single `createApp<MyState>()`.
 
 `withState` is the identity function — zero runtime cost; the brand (`_state`) rides the type exactly like `throws`' `_errors` and the gates' `_in`. Batteries publishing a documented state slot (à la `requestId`) can brand the same way, and `defineMiddleware` preserves the full branded type.
 
@@ -101,4 +103,6 @@ use(app, '/admin', requireAuth, async (ctx, next) => {
 });
 use(app, '/users/:id', loadUser);   // param prefixes use the router's own matching
 ```
+
+Branded injectors scoped this way type only the routes under the prefix — `use(app, '/api', withUser)` leaves the app-wide `S` untouched and hands `ctx.state.user: User` to `/api/…` handlers alone (see [inferred injection](#inferred-injection-withstate) above).
 

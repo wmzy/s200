@@ -221,9 +221,12 @@ export type ChainErrors<Ms extends readonly unknown[]> = [PhantomErrors<Ms[numbe
  * READ, the prior injections it consumes — crossed with a phantom
  * `_state` brand naming the keys it WRITES onto `ctx.state` before
  * `next()`. Produced by `withState` (core barrel, from `s200/middleware`'s
- * module); `use` collects the brand into the app's `S`, so downstream
- * middlewares and handlers read the injected keys typed — no hand-written
- * app state interface, no global `declare module` merge.
+ * module); `use` collects the brand — the global form widens the app's
+ * `S`, the prefix form parks it in the app's scoped log for exactly the
+ * routes under the prefix — and a route's own chain threads it into that
+ * route's handler. Downstream middlewares and handlers read the injected
+ * keys typed — no hand-written app state interface, no global
+ * `declare module` merge.
  */
 export type StateMiddleware<X extends State = State, S extends State = State> =
   Middleware<S> & { readonly _state?: X };
@@ -244,6 +247,109 @@ export type StateOf<Ms extends readonly unknown[]> = [PhantomState<Ms[number]>] 
     ? unknown
     : UnionToIntersection<U>
   : never;
+
+/**
+ * One prefix-scoped state injection in {@link App}'s phantom `G` log: the
+ * pathname prefix a `use(app, prefix, …mw)` call scoped itself to, plus the
+ * combined `_state` brands of its middlewares. Purely compile-time — the
+ * runtime app shape never includes it, and the runtime guard still checks
+ * pathnames itself.
+ */
+export type ScopedState<Prefix extends string = string, X extends State = State> = {
+  readonly prefix: Prefix;
+  readonly state: X;
+};
+
+/** A path split into segments: leading slash dropped, `''` → no segments. */
+type SplitPath<S extends string> = S extends `/${infer R}`
+  ? SplitPath<R>
+  : S extends `${infer A}/${infer B}`
+    ? [A, ...SplitPath<B>]
+    : S extends ''
+      ? []
+      : [S];
+
+/**
+ * Compile-time prefix scoping: does route pattern `P` fall under `prefix`?
+ * Segment-wise, mirroring the runtime guard — static segments compare
+ * literally, a `:param`/`*wildcard` prefix segment matches any route
+ * segment, and the pattern may run longer (it is a prefix match). Route
+ * segments that are *wider* than the prefix (e.g. `/:tenant/x` under
+ * `/admin`) conservatively do NOT match: the overlap is real at runtime but
+ * not expressible as subtyping. Non-literal strings (`string`, not a
+ * literal type) never match — a dynamically-built prefix or pattern cannot
+ * be checked at compile time, so its brands stay invisible while the
+ * runtime scoping still applies.
+ */
+type PrefixMatches<Pre extends string, P extends string> =
+  string extends Pre | P
+    ? false
+    : PrefixSegments<SplitPath<Pre>, SplitPath<P>>;
+
+type PrefixSegments<Pre extends readonly string[], P extends readonly string[]> =
+  Pre extends readonly [infer PH extends string, ...infer PT extends readonly string[]]
+    ? PH extends `*${string}`
+      ? true
+      : P extends readonly [infer X extends string, ...infer XT extends readonly string[]]
+        ? PH extends `:${string}`
+          ? PrefixSegments<PT, XT>
+          : X extends PH
+            ? PrefixSegments<PT, XT>
+            : false
+        : false
+    : true;
+
+/** One scoped log entry's contribution for pattern `P`: its brand when the
+ * prefix matches, `never` when it does not. */
+type ScopedBrand<SS extends ScopedState, P extends string> =
+  SS extends { readonly prefix: infer Pre extends string; readonly state: infer X extends State }
+    ? PrefixMatches<Pre, P> extends true
+      ? X
+      : never
+    : never;
+
+/**
+ * The state a route's prefix-scoped injections contribute: every `G` entry
+ * whose prefix matches pattern `P`, intersected — `unknown` (the identity)
+ * when none matches, so routes outside every scope keep the plain app `S`.
+ */
+export type ScopedOf<G extends readonly ScopedState[], P extends string> =
+  [ScopedBrand<G[number], P>] extends [infer U]
+    ? [U] extends [never]
+      ? unknown
+      : UnionToIntersection<U>
+    : never;
+
+/**
+ * The scoped log after one prefix-scoped `use` call appends its combined
+ * brand: entries with no brand (`unknown`, plain middlewares only)
+ * contribute nothing — the log stays byte-identical for unbranded scopes.
+ * Root prefixes (`''` / `'/'`) never reach this type; `use` types them as
+ * the global form.
+ */
+export type ScopedPush<
+  G extends readonly ScopedState[],
+  Prefix extends string,
+  X
+> = X extends State ? [...G, ScopedState<Prefix, X>] : G;
+
+/**
+ * The scoped-state log of a mounted sub-app, prefixes joined under `Base`
+ * (`'/v1'` + `/admin` → `/v1/admin`; the mount-prefix twin of
+ * {@link MountedDefs}).
+ */
+export type MountedScoped<G extends readonly ScopedState[], Base extends string> =
+  G extends readonly [infer Head extends ScopedState, ...infer Tail extends ScopedState[]]
+    ? [
+        Head extends {
+          readonly prefix: infer Pre extends string;
+          readonly state: infer X extends State;
+        }
+          ? ScopedState<`${Base}${Pre}`, X>
+          : never,
+        ...MountedScoped<Tail, Base>
+      ]
+    : [];
 
 /** Unwraps the `Promise` members of a handler's return union: `A | Promise<B>`
  * distributes into `A | B`, so sync and async branches flow alike through

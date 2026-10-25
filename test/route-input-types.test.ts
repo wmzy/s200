@@ -7,7 +7,7 @@ import { createApp, get, handle, mount, post } from '../src/app';
 import { throws } from '../src/errors';
 import { queryParams } from '../src/query';
 import { json } from '../src/respond';
-import { jsonBody, type StandardSchemaV1 } from '../src/validate';
+import { jsonBody, validateHeaders, validateParams, type StandardSchemaV1 } from '../src/validate';
 
 /**
  * Extracts the `in` channel of the LAST route in an app's phantom log.
@@ -232,6 +232,94 @@ describe('route input types', () => {
       readonly query: { readonly page?: string };
     }>();
     void full;
+  });
+
+  it('brands the validateParams schema flavor with its input as { params }', () => {
+    const idSchema: StandardSchemaV1 & {
+      readonly types?: {
+        readonly input: { readonly id: string };
+        readonly output: { readonly id: number };
+      };
+    } = {
+      '~standard': {
+        version: 1,
+        vendor: 's200-test',
+        validate: (p) => ({ value: { id: Number((p as { id: string }).id) } }),
+      },
+    };
+    const app = createApp();
+    const full = get(app, '/users/:id', validateParams(idSchema), () => new Response('ok'));
+
+    expectTypeOf<LastIn<typeof full>>().toEqualTypeOf<{
+      readonly params: { readonly id: string };
+    }>();
+    // The parsed OUTPUT must not pass as the caller's input shape.
+    // @ts-expect-error -- { id: number } is the schema's output side
+    const bad: LastIn<typeof full> = { params: { id: 42 } };
+    void bad; void full;
+  });
+
+  it('flows an annotated validateParams callback into the log as { params: Q }', () => {
+    const app = createApp();
+    const full = get(
+      app,
+      '/files/*path',
+      validateParams((p: { path: string }) => ({ segments: p.path.split('/').length })),
+      () => new Response('ok')
+    );
+
+    expectTypeOf<LastIn<typeof full>>().toEqualTypeOf<{
+      readonly params: { path: string };
+    }>();
+    void full;
+  });
+
+  it('brands the validateHeaders schema flavor with its input as { headers }', () => {
+    const authSchema: StandardSchemaV1 & {
+      readonly types?: {
+        readonly input: { readonly authorization: string };
+        readonly output: { readonly token: string };
+      };
+    } = {
+      '~standard': {
+        version: 1,
+        vendor: 's200-test',
+        validate: (h) => ({
+          value: { token: String((h as { authorization: string }).authorization) },
+        }),
+      },
+    };
+    const app = createApp();
+    const full = get(app, '/me', validateHeaders(authSchema), () => new Response('ok'));
+
+    expectTypeOf<LastIn<typeof full>>().toEqualTypeOf<{
+      readonly headers: { readonly authorization: string };
+    }>();
+    void full;
+  });
+
+  it('intersects params and headers brands beside json and query on one route', () => {
+    const app = createApp();
+    const full = post(
+      app,
+      '/users/:id',
+      validateParams((p: { id: string }) => Number(p.id)),
+      validateHeaders((h: { 'x-trace-id'?: string }) => h),
+      jsonBody((data: unknown) => data as { name: string }),
+      () => new Response('ok')
+    );
+
+    expectTypeOf<LastIn<typeof full>>().toEqualTypeOf<
+      { readonly params: { id: string } } & {
+        readonly headers: { 'x-trace-id'?: string };
+      } & { readonly json: { name: string } }
+    >();
+    const all: LastIn<typeof full> = {
+      params: { id: '7' },
+      headers: { 'x-trace-id': 't1' },
+      json: { name: 'ada' },
+    };
+    void all; void full;
   });
 
   it('collects throws gates into the route log\'s errors channel', () => {

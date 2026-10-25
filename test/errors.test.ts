@@ -1,4 +1,4 @@
-import { describe, expectTypeOf, it } from 'vitest';
+import { describe, expectTypeOf, it, vi } from 'vitest';
 
 import { createApp, get, handle } from '../src/app';
 import { httpError, isHttpError, throws, toErrorResponse } from '../src/errors';
@@ -58,6 +58,118 @@ describe('httpError', function () {
     httpError(429).should.not.have.property('headers');
     httpError(429, 'msg').should.not.have.property('headers');
     httpError(429, 'msg', { error: 'msg' }).should.not.have.property('headers');
+  });
+});
+
+describe('cause', function () {
+  it('carries the fifth argument, and the key is absent without it', function () {
+    const origin = new Error('db down');
+    const e = httpError(502, 'upstream failed', undefined, undefined, origin);
+    e.cause?.should.equal(origin);
+    // Spread, not `cause: undefined` — today's exact shape either way.
+    httpError(502).should.not.have.property('cause');
+    httpError(502, 'msg').should.not.have.property('cause');
+    httpError(502, 'msg', { error: 'msg' }).should.not.have.property('cause');
+    httpError(502, 'msg', undefined, { 'retry-after': '5' }).should.not.have.property('cause');
+  });
+
+  it('is never serialized into the client-visible response body', async function () {
+    const secret = 'postgres: password authentication failed for "app"';
+    const res = toErrorResponse(
+      httpError(502, 'upstream failed', undefined, undefined, new Error(secret))
+    );
+    res.status.should.equal(502);
+    (await res.json()).should.deep.equal({ error: 'upstream failed' });
+    JSON.stringify(res).should.not.contain('postgres');
+    // ...not even when a structured body rides along.
+    const withBody = toErrorResponse(
+      httpError(502, 'upstream failed', { error: 'upstream failed' }, undefined, {
+        internal: secret,
+      })
+    );
+    (await withBody.json()).should.deep.equal({ error: 'upstream failed' });
+  });
+
+  it('survives the boundary into logError (an HttpError with a cause is surfaced)', async function () {
+    const seen: { error: unknown; cause: unknown }[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const app = createApp({
+        logError: (error) => {
+          seen.push({
+            error,
+            cause: isHttpError(error) ? error.cause : undefined,
+          });
+        },
+      });
+      const origin = new Error('db down');
+      get(app, '/wrap', () => {
+        throw httpError(502, 'upstream failed', undefined, undefined, origin);
+      });
+      const res = await handle(app, new Request('http://localhost/wrap'));
+      res.status.should.equal(502);
+      (await res.json()).should.deep.equal({ error: 'upstream failed' });
+      seen.should.have.lengthOf(1);
+      isHttpError(seen[0]!.error).should.be.true;
+      seen[0]!.cause?.should.equal(origin);
+      // The custom sink replaces the default — console stays quiet.
+      spy.should.not.have.been.called;
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('the default sink appends the cause to the log line', async function () {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      const origin = new Error('socket hang up');
+      get(app, '/boom', () => {
+        throw httpError(502, 'upstream failed', undefined, undefined, origin);
+      });
+      const res = await handle(app, new Request('http://localhost/boom'));
+      res.status.should.equal(502);
+      (await res.json()).should.deep.equal({ error: 'upstream failed' });
+      spy.should.have.been.calledOnce;
+      spy.mock.calls[0]?.[0].should.equal('[s500] GET /boom');
+      isHttpError(spy.mock.calls[0]?.[1]).should.be.true;
+      spy.mock.calls[0]?.[2].should.equal(origin);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps cause-less HttpErrors unlogged — the cause is the flag', async function () {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const app = createApp();
+      get(app, '/plain', () => {
+        throw httpError(404, 'gone');
+      });
+      const res = await handle(app, new Request('http://localhost/plain'));
+      res.status.should.equal(404);
+      spy.should.not.have.been.called;
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('reaches onError with the cause intact, off the client body', async function () {
+    const causes: unknown[] = [];
+    const app = createApp({
+      onError: (ctx, error) => {
+        causes.push(isHttpError(error) ? error.cause : undefined);
+        json(ctx, { error: 'gateway trouble' }, { status: isHttpError(error) ? error.status : 500 });
+      },
+    });
+    const origin = new Error('upstream rst');
+    get(app, '/wrap', () => {
+      throw httpError(504, 'gateway timeout', undefined, undefined, origin);
+    });
+    const res = await handle(app, new Request('http://localhost/wrap'));
+    res.status.should.equal(504);
+    (await res.json()).should.deep.equal({ error: 'gateway trouble' });
+    causes.should.deep.equal([origin]);
   });
 });
 

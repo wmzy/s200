@@ -129,6 +129,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | 配方                   | 用途                                                             |
 | ---------------------- | ---------------------------------------------------------------- |
 | [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts) | 经 Redis 共享的 `rateLimit`/`createSession` 存储——完整指南：[分布式存储](./guides/distributed-stores.md) |
+| [`recipes/oidc.ts`](https://github.com/wmzy/s200/blob/main/recipes/oidc.ts) | `createOidc` —— 基于 `s200/cookies`/`jwt`/`session` 的 OIDC 授权码 + PKCE（S256）登录——完整指南：[OIDC 登录](./guides/oidc.md) |
 
 ## battery 创意 —— 好的上手贡献
 
@@ -144,8 +145,10 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
   “带依赖也可收录”的教科书案例。
 - 更多 Scalar 文档旋钮（布局、暗色模式默认值、自定义 CSS），扩展
   `s200/swagger` —— 超出已发布的 `url`/`title`/`theme`/`cdn` 选项。
-- OAuth 提供方（GitHub、Google、通用 OIDC），构建于 `s200/jwt` +
-  `s200/session` 之上 —— 已发布的 `s200/auth` 只覆盖带质询的基础
+- OAuth 提供方（GitHub、Google 等），构建于 `s200/jwt` +
+  `s200/session` 之上 —— 通用 OIDC 已由上面的
+  [`recipes/oidc.ts`](https://github.com/wmzy/s200/blob/main/recipes/oidc.ts)
+  配方覆盖；已发布的 `s200/auth` 只覆盖带质询的基础
   认证。
 - 更多面向 `s200/session` 与 `s200/rate-limit` 的共享存储 ——
   Postgres、SQLite 等，沿

@@ -10,7 +10,14 @@ import {
 import { serve, type NodeServer } from '../src/node';
 import { queryParams } from '../src/query';
 import { json } from '../src/respond';
-import { jsonBody, requiresHeaders, bodyShape, type StandardSchemaV1 } from '../src/validate';
+import {
+  jsonBody,
+  requiresHeaders,
+  bodyShape,
+  validateHeaders,
+  validateParams,
+  type StandardSchemaV1,
+} from '../src/validate';
 
 describe('client input types', () => {
   it('types and demands init.body on jsonBody routes', () => {
@@ -217,6 +224,79 @@ describe('client input types', () => {
     void client.get('/me', { headers: { 'x-trace-id': 'a1' } });
     // @ts-expect-error -- a headers-branded route demands its init (no init, no headers)
     void client.get('/me');
+  });
+
+  it('types and demands init.headers from the validateHeaders schema input', () => {
+    const authSchema: StandardSchemaV1 & {
+      readonly types?: {
+        readonly input: { readonly authorization: string };
+        readonly output: { readonly token: string };
+      };
+    } = {
+      '~standard': {
+        version: 1,
+        vendor: 's200-test',
+        validate: (h) => ({
+          value: { token: String((h as { authorization: string }).authorization) },
+        }),
+      },
+    };
+    const app = createApp();
+    const full = get(
+      app,
+      '/me',
+      validateHeaders(authSchema),
+      (ctx) => json(ctx, { ok: ctx.state.validated !== undefined })
+    );
+    const client = createClient(full, { fetch: async () => new Response('ok') });
+
+    // The schema's INPUT rides init.headers — the declared key required,
+    // extra keys absorbed by the plain-record form, exactly the shape
+    // `requiresHeaders` demands (the runtime twin of that declaration).
+    expectTypeOf<typeof client.get>().toExtend<
+      (
+        path: '/me',
+        init: Omit<ClientInit, 'headers'> & {
+          headers: Record<string, string> & { authorization: string };
+        }
+      ) => Promise<ClientResponse<{ ok: boolean }>>
+    >();
+    void client.get('/me', { headers: { authorization: 'Bearer t', 'x-extra': 'e' } });
+    // @ts-expect-error -- the schema declares authorization; omitting it is a client bug
+    void client.get('/me', { headers: { 'x-trace-id': 'a1' } });
+    // @ts-expect-error -- a headers-branded route demands its init
+    void client.get('/me');
+  });
+
+  it('brands the validateParams input onto the route log beside the pattern\'s own params', () => {
+    // The client's path-args come from the PATTERN (ParamsOf); the params
+    // gate's brand rides the route log's `in` channel as { params: Q } —
+    // the declared input a typed surface can demand (LastIn asserts it in
+    // route-input-types.test.ts). Here the pattern's args stay demanded
+    // and the gate rides along without disturbing the call signature.
+    const app = createApp();
+    const full = get(
+      app,
+      '/users/:id',
+      validateParams((p: { id: string }) => Number(p.id)),
+      (ctx) => json(ctx, { id: ctx.params.id })
+    );
+    const client = createClient(full, { fetch: async () => new Response('ok') });
+
+    expectTypeOf<typeof client.get>().toExtend<
+      (path: '/users/:id', args: { id: string }) => Promise<ClientResponse<{ id: string }>>
+    >();
+    void client.get('/users/:id', { id: '7' });
+    // The pattern's own runtime check fires — and the gate does not relax
+    // the compile-time demand either (the call below is a type error).
+    let threw = false;
+    try {
+      // @ts-expect-error -- the pattern demands its id; the gate does not relax it
+      client.get('/users/:id');
+    } catch {
+      threw = true;
+    }
+    threw.should.be.true;
   });
 
   it('types init.body as the declared structured type on bodyShape routes', () => {

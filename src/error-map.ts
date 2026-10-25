@@ -26,9 +26,14 @@ function defaultLogError(error: unknown, ctx: Ctx): void {
   const stamped = ctx.state.requestId;
   const requestId =
     typeof stamped === 'string' && stamped !== '' ? stamped : ctx.req.headers.get('x-request-id');
+  // An httpError's `cause` — the wrapped db/upstream failure — is the one
+  // thing the sink adds beyond the error itself: the client body never
+  // carries it, so this line is where it surfaces for operators.
+  const cause = isHttpError(error) ? error.cause : undefined;
   console.error(
     `[s500] ${ctx.req.method} ${ctx.url.pathname}${requestId ? ' ' + requestId : ''}`,
-    error
+    error,
+    ...(cause !== undefined ? [cause] : [])
   );
 }
 
@@ -54,8 +59,11 @@ export async function mapError<S extends State = State>(
   if (app.onError === undefined) {
     // HttpErrors are intentional client errors mapped to responses; only
     // unexpected failures need surfacing — a silently swallowed 500 is
-    // undebuggable in production. The sink is injectable per app.
-    if (!isHttpError(error)) {
+    // undebuggable in production. The sink is injectable per app. One
+    // exception: an HttpError carrying a `cause` asked for it — the
+    // wrapped origin is operator diagnostics, so it flows to the sink
+    // while still mapping to its (client-safe) status.
+    if (!isHttpError(error) || error.cause !== undefined) {
       (app.logError ?? defaultLogError)(error, ctx);
     }
     ctx.res = toErrorResponse(error);

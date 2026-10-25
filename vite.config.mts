@@ -30,6 +30,8 @@ export default defineConfig({
         'request-id': resolve(dirname, 'src/request-id.ts'),
         als: resolve(dirname, 'src/als.ts'),
         timeout: resolve(dirname, 'src/timeout.ts'),
+        timing: resolve(dirname, 'src/timing.ts'),
+        proxy: resolve(dirname, 'src/proxy.ts'),
         query: resolve(dirname, 'src/query.ts'),
         websocket: resolve(dirname, 'src/websocket.ts'),
         'websocket-node': resolve(dirname, 'src/websocket-node.ts'),

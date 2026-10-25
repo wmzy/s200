@@ -119,11 +119,14 @@ throws({ 422: { issues: string[] } });       // with structured body shapes
 ```
 
 Errors are tagged data checked structurally, so they survive bundle
-boundaries. `httpError(status, message, body?, headers?)` carries an
+boundaries. `httpError(status, message, body?, headers?, cause?)` carries an
 optional payload rendered verbatim, and optional response headers
 (`WWW-Authenticate`, `Retry-After`, IETF `RateLimit-*`, …) merged onto the
 error response; without a payload the response keeps the
-`{ error: message }` envelope. Handlers may throw or **return** them — a
+`{ error: message }` envelope. An optional `cause` (the wrapped origin) is
+never serialized — it surfaces via `onError`/`logError` instead, and its
+presence flags an otherwise-silent `HttpError` for the log sink. Handlers
+may throw or **return** them — a
 returned `HttpError`
 takes the exact error-boundary path a thrown one does, and its type infers
 the client's error branch (no declaration needed). The `throws` gate is the
@@ -198,6 +201,7 @@ s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
 s200/config  s200/schedule  s200/version  s200/events  s200/als
 s200/response-check  s200/aws-lambda  s200/vercel  s200/mcp
+s200/timing  s200/proxy
 s200/websocket/cloudflare
 s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
 ```
@@ -240,10 +244,13 @@ before the 1.0 cutover:
 
 - **The `withState` state channel** — `withState` / `StateMiddleware<X, S>` /
   `StateOf<Ms>` (core barrel) brand a middleware with the state it injects
-  and thread it through `use` into the app's `S`. Additive and stable, but
-  new: the exact generic shapes and the collection surface (which `use`
-  forms thread it, how route chains treat it) may still adjust within
-  minors.
+  and thread it by scope: the global `use` form widens the app's `S`, the
+  prefix form types exactly the routes under the prefix (`App`'s phantom
+  `G` log), and a route chain's brands thread into that route's handler.
+  Additive and stable, but new: the exact generic shapes, the scoped-log
+  machinery (`ScopedState`/`ScopedOf`), and the conservative cases
+  (dynamic `string` prefixes/patterns, patterns wider than the prefix)
+  may still adjust within minors.
 - **Light mode details** — `serve(app, { light: true })` in `s200/node` is
   an opt-in fast path with duck-typed request/response objects. The
   *default* Web Standard contract is frozen; the light path's coverage and

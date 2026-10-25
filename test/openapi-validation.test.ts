@@ -285,6 +285,65 @@ describe('withRouteValidation (required query)', () => {
   });
 });
 
+describe('withRouteValidation (params)', () => {
+  /** `/users/:uid` with an integer-typed `uid` annotation (path params
+   * live in the string domain, so the annotation is the gate's to
+   * satisfy) and `/files/:name?` with the required-marker form. */
+  function paramsApp() {
+    const app = get(createApp(), '/users/:uid', (ctx) =>
+      json(ctx, { uid: ctx.params.uid })
+    );
+    get(app, '/files/:name?', (ctx) => json(ctx, { name: ctx.params.name ?? null }));
+    describeRoute(app, 'GET', '/users/:uid', {
+      params: { uid: { type: 'integer' } },
+    });
+    describeRoute(app, 'GET', '/files/:name?', {
+      params: { name: { schema: { type: 'string' }, required: true } },
+    });
+    return withRouteValidation(app);
+  }
+
+  it('checks the captured value against the annotated schema', async () => {
+    const res = await request(paramsApp(), '/users/abc');
+    res.status.should.equal(422);
+    (await errorOf(res)).should.contain('params.uid: expected integer, got string');
+  });
+
+  it('sees params verbatim — the string domain, no coercion', async () => {
+    // Even a digit string stays a string: annotate string shapes, or gate
+    // with `s200/validate`'s validateParams when you want coercion.
+    const res = await request(paramsApp(), '/users/7');
+    res.status.should.equal(422);
+    (await errorOf(res)).should.contain('params.uid: expected integer, got string');
+  });
+
+  it('answers an optional segment\'s absence with 422 when marked required', async () => {
+    const res = await request(paramsApp(), '/files');
+    res.status.should.equal(422);
+    (await res.json()).should.deep.equal({
+      error: 'params.name: required',
+      issues: [{ path: 'params.name', message: 'required' }],
+    });
+  });
+
+  it('passes a present param and still checks its value', async () => {
+    const res = await request(paramsApp(), '/files/a.txt');
+    res.status.should.equal(200);
+    (await res.json()).should.deep.equal({ name: 'a.txt' });
+  });
+
+  it('emits the parameter schema isomorphic to the gate', () => {
+    const spec = openapiSpec(paramsApp(), { title: 't', version: '1' });
+    const parameters = (
+      spec.paths['/users/{uid}']?.get as {
+        parameters: { name: string; in: string; schema: unknown }[];
+      }
+    ).parameters;
+    const uid = parameters.find((p) => p.in === 'path' && p.name === 'uid')?.schema;
+    (uid as Record<string, unknown>).should.deep.equal({ type: 'integer' });
+  });
+});
+
 describe('withRouteValidation (transform semantics)', () => {
   it('keeps unannotated routes by reference — zero rebuild, zero gate', async () => {
     const app = createApp();

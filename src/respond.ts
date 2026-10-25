@@ -1,4 +1,4 @@
-import type { Ctx } from './types';
+import type { Ctx, Params, State } from './types';
 
 import { isLightRequest, LightHeaders, LightResponse } from './light';
 
@@ -97,6 +97,40 @@ export function setHeaders(
   for (const [name, value] of Object.entries(headers)) {
     setHeader(ctx, name, value);
   }
+}
+
+/** A {@link Ctx} as it exists after `await next()` settles: the in-chain
+ * invariant materializes every response — the handler's, a gate's error,
+ * the `404`/`405` fallback, the mapped `500` — before the unwind starts,
+ * so `res` is no longer `undefined`. Type helper for post-`next()` code:
+ * helpers typed `(ctx: SettledCtx<S>) => …` read `ctx.res.status` and
+ * friends without the `?.` dance, and a `Ctx` whose `res` is known set
+ * assigns into it. Compile-time only — no runtime wrapper exists. */
+export type SettledCtx<S extends State = State> = Ctx<Params, S> & {
+  res: Response;
+};
+
+/**
+ * Reads `ctx.res` once the in-chain invariant holds — the concise,
+ * narrowing form of `ctx.res!`. After `await next()` settles a response
+ * always exists (handler's, error-mapped, or fallback — the chain
+ * materializes all of them in-band), so middleware on the unwind uses
+ * this to get the `Response` without asserting. Calling it earlier is a
+ * programmer error and throws a plain `Error` (not an `HttpError` — it
+ * never reaches the client; it names the misuse instead).
+ */
+export function resOf<P extends Params, S extends State>(
+  ctx: Ctx<P, S>
+): Response {
+  const res = ctx.res;
+  if (res === undefined) {
+    throw new Error(
+      'resOf(ctx): no response yet — ctx.res only exists after `await next()` ' +
+        'settles (every response materializes in-chain). ' +
+        'Called before next()? For pre-response headers use setHeader/setHeaders.'
+    );
+  }
+  return res;
 }
 
 /** A `Response` branded with the status literal its builder used — the

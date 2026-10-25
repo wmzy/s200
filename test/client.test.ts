@@ -4,6 +4,7 @@ import { createApp, get, post, all, del, mount, removeRoute, use } from '../src/
 import {
   createClient,
   type ClientInit,
+  type ClientMiddleware,
   type ClientResponse,
 } from '../src/client';
 import { json } from '../src/respond';
@@ -316,5 +317,209 @@ describe('client signal, timeout & baseUrl guard', () => {
         Object.defineProperty(globalThis, 'location', { value: original, configurable: true });
       }
     }
+  });
+});
+
+describe('client middleware', () => {
+  it('injects headers around the built request (outer layer sees init headers too)', async () => {
+    const app = get(createApp(), '/users/:id', (ctx) => new Response(ctx.params.id));
+    const seen: { url: string; auth: string | null; accept: string | null }[] = [];
+    const fetch = async (input: string | URL | Request) => {
+      const req = input as Request;
+      seen.push({
+        url: req.url,
+        auth: req.headers.get('authorization'),
+        accept: req.headers.get('accept'),
+      });
+      return new Response('ok');
+    };
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch,
+      middleware: [
+        async (req, next) => {
+          // The merge pattern the client itself uses for content-type: a
+          // Headers copy over the incoming set, so nothing is dropped.
+          const headers = new Headers(req.headers);
+          headers.set('authorization', 'Bearer t0k3n');
+          return next(new Request(req, { headers }));
+        },
+      ],
+    });
+    const res = await client.get('/users/:id', { id: '7' }, { headers: { accept: 'text/*' } });
+    res.status.should.equal(200);
+    seen[0]?.url.should.equal('http://x.test/users/7');
+    (seen[0]?.auth ?? '').should.equal('Bearer t0k3n');
+    (seen[0]?.accept ?? '').should.equal('text/*');
+  });
+
+  it('hands the chain the fully built request (query, JSON body, method)', async () => {
+    const app = post(createApp(), '/echo', bodyShape<{ a: number }>(), () => new Response('ok'));
+    const seen: { method: string; url: string; type: string | null; body: string }[] = [];
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch: async (input) => {
+        const req = input as Request;
+        seen.push({
+          method: req.method,
+          url: req.url,
+          type: req.headers.get('content-type'),
+          body: await req.text(),
+        });
+        return new Response('ok');
+      },
+      middleware: [async (req, next) => next(req)],
+    });
+    await client.post('/echo', { body: { a: 1 }, query: { b: '2' } });
+    seen[0]?.method.should.equal('POST');
+    seen[0]?.url.should.equal('http://x.test/echo?b=2');
+    (seen[0]?.type ?? '').should.equal('application/json');
+    seen[0]?.body.should.equal('{"a":1}');
+  });
+
+  it('retries an idempotent GET on 503, bounded', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const statuses = [503, 503, 200];
+    const urls: string[] = [];
+    const fetch = async (input: string | URL | Request) => {
+      urls.push((input as Request).url);
+      return new Response('busy', { status: statuses[urls.length - 1] ?? 200 });
+    };
+    const retryOn503: ClientMiddleware = async (req, next) => {
+      for (let attempt = 1; ; attempt++) {
+        const res = await next(req);
+        if (res.status !== 503 || attempt >= 3) return res;
+      }
+    };
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch,
+      middleware: [retryOn503],
+    });
+    const res = await client.get('/x');
+    res.status.should.equal(200);
+    urls.should.toEqual(['http://x.test/x', 'http://x.test/x', 'http://x.test/x']);
+  });
+
+  it('runs the first registered middleware outermost', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const events: string[] = [];
+    const fetch = async () => {
+      events.push('fetch');
+      return new Response('ok');
+    };
+    const outermost: ClientMiddleware = async (req, next) => {
+      events.push('outer>');
+      const res = await next(req);
+      events.push('outer<');
+      return res;
+    };
+    const innermost: ClientMiddleware = async (req, next) => {
+      events.push('inner>');
+      const res = await next(req);
+      events.push('inner<');
+      return res;
+    };
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch,
+      middleware: [outermost, innermost],
+    });
+    await client.get('/x');
+    events.should.toEqual(['outer>', 'inner>', 'fetch', 'inner<', 'outer<']);
+  });
+
+  it('propagates a middleware-thrown error untouched', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const boom = new Error('middleware failed');
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch: async () => new Response('ok'),
+      middleware: [
+        async () => {
+          throw boom;
+        },
+      ],
+    });
+    const error = await rejectionOf(client.get('/x'));
+    (error as Error).should.equal(boom);
+  });
+
+  it('aborts the whole call — the signal on the request ends retries too', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const controller = new AbortController();
+    let attempts = 0;
+    const signals: AbortSignal[] = [];
+    const fetch = async (input: string | URL | Request): Promise<Response> => {
+      attempts += 1;
+      signals.push((input as Request).signal);
+      // Attempt 1 settles 503 so the middleware issues a retry; attempt 2
+      // hangs — only the abort can end it (the whole-call contract).
+      if (attempts === 1) {
+        return new Response('busy', { status: 503 });
+      }
+      return new Promise<Response>((_, reject) => {
+        signals[signals.length - 1]!.addEventListener(
+          'abort',
+          () => reject(signals[signals.length - 1]!.reason),
+          { once: true }
+        );
+      });
+    };
+    const retryOnce: ClientMiddleware = async (req, next) => {
+      const first = await next(req);
+      return first.status === 503 ? next(req) : first;
+    };
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch,
+      signal: controller.signal,
+      middleware: [retryOnce],
+    });
+    const pending = client.get('/x');
+    await new Promise((resolve) => setTimeout(resolve, 0)); // attempt 1 → retry starts
+    controller.abort(new Error('gone'));
+    const error = (await rejectionOf(pending)) as Error;
+    error.message.should.equal('gone');
+    attempts.should.equal(2);
+    // One window per call: every attempt rides the same request signal.
+    signals[0]!.should.equal(signals[1]!);
+    signals[1]!.aborted.should.equal(true);
+  });
+
+  it('throws at creation on a non-function middleware entry', () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const bad = ['not a function'] as unknown as readonly ClientMiddleware[];
+    // Options-level misuse fails at createClient time with the remedy —
+    // the same contract as the missing-baseUrl guard.
+    (() =>
+      createClient(app, {
+        baseUrl: 'http://x.test',
+        fetch: async () => new Response('ok'),
+        middleware: bad,
+      })).should.throw(/options.middleware\[0\] is not a function \(got string\)/);
+  });
+
+  it('keeps the typed call surface unchanged with middleware in place', async () => {
+    const app = get(
+      createApp(),
+      '/users/:id',
+      (ctx) => json(ctx, { id: ctx.params.id })
+    );
+    const plain = createClient(app, { fetch: async () => new Response('{"id":"7"}') });
+    const hooked = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch: async () => new Response('{"id":"7"}'),
+      middleware: [async (req, next) => next(req)],
+    });
+    // The hook is additive: the overloaded call signatures and the typed
+    // response union are byte-for-byte the client's own.
+    expectTypeOf(hooked.get).toEqualTypeOf(plain.get);
+    expectTypeOf(hooked.get('/users/:id', { id: '7' })).toExtend<
+      Promise<ClientResponse<{ id: string }>>
+    >();
+    const res = await hooked.get('/users/:id', { id: '7' });
+    res.status.should.equal(200);
+    (await res.json()).id.should.equal('7');
   });
 });
