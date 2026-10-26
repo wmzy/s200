@@ -48,6 +48,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # OIDC trusted publishing 的硬下限是 npm 11.5.1；Node 22 自带 npm 10.x，
+      # 而 @semantic-release/npm 交换 OIDC 成功后不落 .npmrc、指望 npm CLI
+      # 自己完成 trusted publishing——npm 10.x 下 publish 必 ENEEDAUTH
+      # （0.4.0 前两次发布失败的实际根因，见 semantic-release/npm#1054）。
+      - name: Use npm with OIDC trusted publishing
+        run: npm install -g npm@latest
+
       - name: Build
         run: pnpm build
 
@@ -60,9 +67,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # 防回归：semantic-release 故意不进 devDependencies —— npx 解析 latest
-          # （26.x 的 @semantic-release/npm 才有可用的 OIDC 发布路径；
-          # 本地钉 25 实测 npm publish ENEEDAUTH，见 0.4.0 首次发布失败）。
+          # 防回归：semantic-release 钉在 devDependencies、经 pnpm exec 运行——
+          # npx 在 pnpm shim 下解析不稳定（本地无安装时曾 127 not found）。
           NPM_CONFIG_PROVENANCE: true
           # @semantic-release/git 的 prepare 会 git commit CHANGELOG.md；
           # Actions runner 没有全局 git 身份，不注入这四个变量 commit 会挂。
@@ -72,7 +78,7 @@ jobs:
           GIT_COMMITTER_EMAIL: semantic-release-bot@martynus.net
         run: |
           set -o pipefail
-          npx semantic-release 2>&1 | tee semantic-release.log
+          pnpm exec semantic-release 2>&1 | tee semantic-release.log
           # semantic-release 对「无可发布变更」同样以 0 退出，无法凭退出码区分，
           # 从日志提取结果：真实发布成功后固定打印
           # "Published release <version> on <channel> channel"（semver 的 prerelease
