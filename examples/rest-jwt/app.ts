@@ -28,7 +28,8 @@ const USERS: Readonly<Record<string, string>> = {
 };
 
 declare module 's200' {
-  type State = {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-definitions -- must be an interface: declaration merging (koa's DefaultState pattern) only extends interfaces
+  interface State {
     /** The verified payload, set by `jwtAuth` before the chain below runs. */
     jwt: { sub?: string } & Record<string, unknown>;
   }

@@ -28,7 +28,13 @@
  * replaces the bare string schema a pattern-only route carries, and the
  * validation gate checks the captured value (a `required` marker rejects
  * an optional segment's absence; the spec's own `required` stays
- * segment-driven, as OpenAPI pins it to the segment).
+ * segment-driven, as OpenAPI pins it to the segment). `headers`/`cookies`
+ * entries annotate request headers and cookies the same way (`in:
+ * 'header'`/`in: 'cookie'`; headers gate at runtime, cookies stay
+ * spec-only), and a `{ form: … }` body documents a
+ * `multipart/form-data` request — file parts as
+ * `{ type: 'string', format: 'binary' }` with `encoding` entries,
+ * runtime validation left to `s200/multipart`/`s200/upload`.
  *
  * {@link withRouteValidation} is the runtime twin: the same annotations
  * become request gates — a 422 naming every violation's path — while
@@ -54,8 +60,13 @@ import {
   describeRoute,
   getAppMeta,
   getRouteMeta,
+  isMultipartBody,
+  isMultipartFile,
   isQueryRequired,
+  multipartFormSchema,
   querySchemaOf,
+  type MultipartBody,
+  type QueryParam,
   type RouteMeta,
 } from './meta';
 import { parseQuery } from './query';
@@ -193,6 +204,52 @@ function queryParameters(meta: RouteMeta, sites: SchemaSite[]): unknown[] {
   return out;
 }
 
+/** Header- and cookie-level parameters from {@link RouteMeta.headers} /
+ * {@link RouteMeta.cookies}: the same entry forms as `query`, emitted
+ * with the matching OpenAPI `in`. Only `headers` has a runtime gate —
+ * cookies stay spec-only (see `RouteMeta.cookies`). */
+function locatedParameters(
+  entries: Record<string, QueryParam> | undefined,
+  where: 'header' | 'cookie',
+  sites: SchemaSite[]
+): unknown[] {
+  const out: unknown[] = [];
+  for (const [name, entry] of Object.entries(entries ?? {})) {
+    const schema = toJsonSchema(querySchemaOf(entry));
+    const param = {
+      name,
+      in: where,
+      required: isQueryRequired(entry),
+      schema,
+    };
+    sites.push({ json: JSON.stringify(schema), holder: param });
+    out.push(param);
+  }
+  return out;
+}
+
+/**
+ * The OpenAPI `encoding` object of a multipart form: one entry per file
+ * part, its `contentType` from the marker's allowlist (joined `', '` —
+ * the spec allows a comma-separated list, and wildcards) or the binary
+ * catch-all `application/octet-stream` pinned explicitly (the spec's
+ * own default for string parts is `text/plain`, which a file part never
+ * is). Text parts keep the default encoding — nothing is emitted.
+ */
+function multipartEncoding(form: MultipartBody['form']): Record<string, unknown> {
+  const encoding: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(form)) {
+    if (!isMultipartFile(entry)) continue;
+    encoding[name] = {
+      contentType:
+        entry.contentTypes !== undefined && entry.contentTypes.length > 0
+          ? entry.contentTypes.join(', ')
+          : 'application/octet-stream',
+    };
+  }
+  return encoding;
+}
+
 /**
  * The error branches a route's `throws` gates declare, read off the live
  * middleware chain: each gate's runtime `_errors` stash (status → example
@@ -322,6 +379,17 @@ const warnedAllPatterns = new WeakMap<App, Set<string>>();
  * `[s200] openapi: route /x uses ALL — expand to explicit methods to
  * document it`. Dynamic-pattern routes emit with their pattern verbatim.
  *
+ * `headers`/`cookies` annotations land as `parameters[]` entries with
+ * `in: 'header'`/`in: 'cookie'` (the marker form's `required` rides
+ * along, exactly like query entries), and a multipart `{ form: … }` body
+ * emits as a `multipart/form-data` request body: text parts through
+ * `toJsonSchema`, file parts (`{ file: true }`) as
+ * `{ type: 'string', format: 'binary' }` with an `encoding` entry whose
+ * `contentType` is the marker's allowlist (comma-joined) or the pinned
+ * `application/octet-stream`. The binary `format` comes from the file
+ * marker, not from schema conversion — `toJsonSchema` forwards only what
+ * a `SerializeSchema` carries and invents no `format`/`enum`.
+ *
  * Repeated schemas are deduplicated: any query/body/response schema
  * that occurs ≥2 times (structural JSON equality) is hoisted into
  * `components.schemas` and referenced with `$ref`s — named by the
@@ -355,10 +423,24 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
     const parameters = [
       ...pathParameters(route.segments, meta ?? {}, sites),
       ...queryParameters(meta ?? {}, sites),
+      ...locatedParameters(meta?.headers, 'header', sites),
+      ...locatedParameters(meta?.cookies, 'cookie', sites),
     ];
     let requestBody: Record<string, unknown> | undefined;
-    if (meta?.body !== undefined) {
-      const media: { schema: unknown } = { schema: toJsonSchema(meta.body) };
+    const body = meta?.body;
+    if (isMultipartBody(body)) {
+      // The multipart media object carries the form schema beside its
+      // `encoding` (file parts only); the schema is a hoistable site
+      // exactly like a JSON body's.
+      const media: { schema: unknown; encoding?: unknown } = {
+        schema: multipartFormSchema(body.form),
+      };
+      const encoding = multipartEncoding(body.form);
+      if (Object.keys(encoding).length > 0) media.encoding = encoding;
+      sites.push({ json: JSON.stringify(media.schema), holder: media });
+      requestBody = { content: { 'multipart/form-data': media } };
+    } else if (body !== undefined) {
+      const media: { schema: unknown } = { schema: toJsonSchema(body) };
       sites.push({ json: JSON.stringify(media.schema), holder: media });
       requestBody = { content: { 'application/json': media } };
     }
@@ -455,12 +537,24 @@ export function openapiJson(ctx: Ctx, app: App, options?: OpenApiSpecOptions): R
  * the same caches.
  */
 function validationGate(meta: RouteMeta): Middleware {
-  const body = meta.body !== undefined ? compileValidator(meta.body) : undefined;
+  // A multipart annotation documents the form, it does not gate the
+  // body: multipart runtime validation (content-type, part caps, file
+  // allowlists) is `s200/multipart`'s `streamForm` / `s200/upload`'s
+  // `uploadForm` — the gate never reads (and never JSON-parses) it.
+  const jsonBody = isMultipartBody(meta.body) ? undefined : meta.body;
+  const body = jsonBody !== undefined ? compileValidator(jsonBody) : undefined;
   const query = Object.entries(meta.query ?? {}).map(
     ([key, entry]) =>
       [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
   );
   const params = Object.entries(meta.params ?? {}).map(
+    ([key, entry]) =>
+      [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
+  );
+  // Header entries gate exactly like query entries — one
+  // case-insensitive `headers.get` read, values in the string domain
+  // (repeated headers arrive comma-joined, the platform's own rule).
+  const headers = Object.entries(meta.headers ?? {}).map(
     ([key, entry]) =>
       [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
   );
@@ -509,6 +603,24 @@ function validationGate(meta: RouteMeta): Middleware {
         }
       }
     }
+    if (headers.length > 0) {
+      // Absent headers pass — optional is the HTTP default; a `required`
+      // marker flips it, exactly like the query branch, and the spec's
+      // `parameters[].required: true` describes the same rejection.
+      for (const [key, validate, required] of headers) {
+        const value = ctx.req.headers.get(key);
+        if (value === null) {
+          if (required) {
+            throw validationError(`headers.${key}`, [{ path: '', message: 'required' }]);
+          }
+          continue;
+        }
+        const issues = validate(value);
+        if (issues.length > 0) {
+          throw validationError(`headers.${key}`, issues);
+        }
+      }
+    }
     await next();
   };
 }
@@ -516,11 +628,11 @@ function validationGate(meta: RouteMeta): Middleware {
 /**
  * Runtime enforcement of the documentation schemas — a pure data transform
  * in `mount`'s family (replace the route table, never mutate an entry in
- * place) that re-reads every {@link RouteMeta} annotation and rebuilds the
- * routes carrying a `body`, `query`, or `params` schema with a validation
- * gate in front of the route's own middlewares. Annotations are re-attached
- * to the rebuilt routes, so `openapiSpec` keeps describing the same schemas
- * the gates enforce.
+ * place) that re-reads every {@link RouteMeta} annotation and rebuilds
+ * the routes carrying a `body`, `query`, `params`, or `headers` schema
+ * with a validation gate in front of the route's own middlewares.
+ * Annotations are re-attached to the rebuilt routes, so `openapiSpec`
+ * keeps describing the same schemas the gates enforce.
  *
  * Semantics: `body` is read once via `readJson` (cached like any other
  * body read) and checked with `compileValidator`; each annotated `query`
@@ -530,15 +642,25 @@ function validationGate(meta: RouteMeta): Middleware {
  * 422 `validationError` (`'query.<key>: required'`); each annotated
  * `params` key is checked against its schema the same way
  * (`'params.<key>: …'` — a captured path parameter is always present, so
- * only an optional segment's absence can trip the marker). Values are
- * seen verbatim — query strings live in the string domain, so
- * `{ type: 'integer' }` rejects `?page=2`; annotate string shapes or use
- * `s200/query`'s `queryParams` when you want coercion. Any issue rejects
- * the chain with a 422 `HttpError` built by `validationError` from
- * `s200/validate`: `error` names the first violation
- * (`'body.address.city: required'`) and the body's `issues` array
- * carries the full list, each entry's path scope-qualified the same
- * way. Nothing is written to `ctx.state`
+ * only an optional segment's absence can trip the marker); each
+ * annotated `headers` key is checked against its schema with one
+ * case-insensitive `headers.get` read (`'headers.<name>: …'`; absent
+ * passes unless the marker says required). Two deliberate non-gates:
+ * `cookies` entries document only — parsing the `cookie` header belongs
+ * to `s200/cookies` (an entry this module must not import; a second
+ * parsing convention would drift from it), so enforcement stays with the
+ * batteries; and a multipart `{ form: … }` body documents the form
+ * without reading it — multipart runtime validation (content-type, part
+ * caps, file allowlists) is `s200/multipart`'s `streamForm` /
+ * `s200/upload`'s `uploadForm`, and the gate never JSON-parses the
+ * request. Values are seen verbatim — query strings and headers live in
+ * the string domain, so `{ type: 'integer' }` rejects `?page=2`;
+ * annotate string shapes or use `s200/query`'s `queryParams` when you
+ * want coercion. Any issue rejects the chain with a 422 `HttpError`
+ * built by `validationError` from `s200/validate`: `error` names the
+ * first violation (`'body.address.city: required'`) and the body's
+ * `issues` array carries the full list, each entry's path
+ * scope-qualified the same way. Nothing is written to `ctx.state`
  * and nothing is coerced: this is the documented schema's runtime
  * cash-in, not a second typed input channel — for that, use
  * `s200/validate`'s `jsonBody` gate.
@@ -562,7 +684,10 @@ export function withRouteValidation<
     const meta = getRouteMeta(route);
     if (
       meta === undefined ||
-      (meta.body === undefined && meta.query === undefined && meta.params === undefined)
+      (meta.body === undefined &&
+        meta.query === undefined &&
+        meta.params === undefined &&
+        meta.headers === undefined)
     ) {
       rebuilt.push(route);
       continue;

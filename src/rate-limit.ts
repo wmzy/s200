@@ -26,6 +26,13 @@ export type RateLimitOptions = {
   readonly limit?: number;
   /** Identity selector; default: first `x-forwarded-for` hop. */
   readonly key?: (ctx: Ctx) => string;
+  /**
+   * Skip predicate: `true` and this request is neither counted nor
+   * blocked — the key is never computed, the store is never touched, and
+   * the chain runs immediately (an exempt-identity escape hatch, e.g.
+   * health checks or an internal CIDR).
+   */
+  readonly skip?: (ctx: Ctx) => boolean;
   /** Clock override (tests, deterministic replays); default `Date.now`. */
   readonly now?: () => number;
   /**
@@ -134,6 +141,7 @@ export function rateLimit(options: RateLimitOptions = {}): Middleware {
   const windowMs = options.windowMs ?? 60_000;
   const limit = options.limit ?? 60;
   const key = options.key;
+  const skip = options.skip;
   const now = options.now ?? Date.now;
   const store = options.store ?? memoryStore();
   if (windowMs <= 0) {
@@ -148,6 +156,11 @@ export function rateLimit(options: RateLimitOptions = {}): Middleware {
   }
 
   return async (ctx: Ctx, next) => {
+    // Exempt requests bypass the whole gate — key, store hit, 429 — so
+    // they neither count against the window nor can ever be blocked.
+    if (skip !== undefined && skip(ctx)) {
+      return next();
+    }
     const id = key !== undefined ? key(ctx) : defaultKey(ctx);
     const t = now();
     const { count, retryAt } = await store.hit(id, t, limit, windowMs);

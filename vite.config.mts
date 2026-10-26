@@ -46,6 +46,7 @@ export default defineConfig({
         client: resolve(dirname, 'src/client.ts'),
         csrf: resolve(dirname, 'src/csrf.ts'),
         jwt: resolve(dirname, 'src/jwt.ts'),
+        oauth: resolve(dirname, 'src/oauth.ts'),
         cache: resolve(dirname, 'src/cache.ts'),
         'trust-proxy': resolve(dirname, 'src/trust-proxy.ts'),
         meta: resolve(dirname, 'src/meta.ts'),

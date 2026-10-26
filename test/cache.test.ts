@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest';
 
 import { createApp, get, use, handle  } from '../src/app';
-import { cache } from '../src/cache';
+import { cache, cacheControl } from '../src/cache';
 import { json, send } from '../src/respond';
 
 describe('cache', () => {
@@ -203,5 +203,45 @@ describe('cache store injection', () => {
     await handle(app, new Request('http://localhost/data'));
     runs.should.equal(2);
     entries.size.should.equal(1);
+  });
+});
+
+describe('cacheControl', () => {
+  it('builds the directive string in one call, fixed order', () => {
+    cacheControl({ maxAge: 3600 }).should.equal('max-age=3600');
+    cacheControl({ maxAge: 3600, staleWhileRevalidate: 86400 }).should.equal(
+      'max-age=3600, stale-while-revalidate=86400'
+    );
+    cacheControl({ maxAge: 600, sMaxAge: 60 }).should.equal('max-age=600, s-maxage=60');
+    cacheControl({ noCache: true, private: true, maxAge: 0, mustRevalidate: true }).should.equal(
+      'no-cache, private, max-age=0, must-revalidate'
+    );
+    cacheControl({ private: true, maxAge: 31_536_000, immutable: true }).should.equal(
+      'private, max-age=31536000, immutable'
+    );
+  });
+
+  it('short-circuits noStore — nothing else means anything then', () => {
+    cacheControl({ noStore: true }).should.equal('no-store');
+    cacheControl({ noStore: true, maxAge: 60, private: true, immutable: true }).should.equal(
+      'no-store'
+    );
+  });
+
+  it('throws on an empty directive set and on bad seconds', () => {
+    (() => cacheControl({})).should.throw(/at least one directive/);
+    (() => cacheControl({ maxAge: -1 })).should.throw(/max-age .*non-negative integer/);
+    (() => cacheControl({ staleWhileRevalidate: 1.5 })).should.throw(
+      /stale-while-revalidate .*non-negative integer/
+    );
+  });
+
+  it('stamps a live response header through the respond helpers', async () => {
+    const app = createApp();
+    get(app, '/asset.js', (ctx) =>
+      json(ctx, { ok: true }, { headers: { 'cache-control': cacheControl({ maxAge: 60, immutable: true }) } })
+    );
+    const res = await handle(app, new Request('http://localhost/asset.js'));
+    res.headers.get('cache-control')!.should.equal('max-age=60, immutable');
   });
 });

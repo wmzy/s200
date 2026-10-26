@@ -3,6 +3,8 @@ import type { SerializeSchema } from '../src/serialize';
 
 import type { App } from '../src/app';
 
+import type { MultipartBody } from '../src/meta';
+
 import { describe, it, vi } from 'vitest';
 
 import { all, createApp, get, handle, post } from '../src/app';
@@ -496,5 +498,243 @@ describe('openapi (components.schemas dedup)', () => {
       bearer: { type: 'http', scheme: 'bearer' },
     });
     Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+  });
+});
+
+describe('openapi (header/cookie parameters)', () => {
+  it('emits header and cookie parameters with the marker-driven required', () => {
+    const app = createApp();
+    const withGet = get(app, '/report', (ctx) => ctx);
+    describeRoute(withGet, 'GET', '/report', {
+      headers: {
+        'x-trace-id': { schema: { type: 'string' }, required: true },
+        'x-verbose': { type: 'boolean' },
+      },
+      cookies: { session: { type: 'string', title: 'SessionId' } },
+    });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+    const parameters = (
+      spec.paths['/report']?.get as {
+        parameters: { name: string; in: string; required: boolean; schema: unknown }[];
+      }
+    ).parameters;
+
+    const trace = parameters.find((p) => p.in === 'header' && p.name === 'x-trace-id');
+    trace?.required.should.equal(true);
+    (trace?.schema as Record<string, unknown>).should.deep.equal({ type: 'string' });
+    parameters
+      .find((p) => p.in === 'header' && p.name === 'x-verbose')
+      ?.required.should.equal(false);
+    const session = parameters.find((p) => p.in === 'cookie' && p.name === 'session');
+    session?.required.should.equal(false);
+    // Single-use schemas stay inline, title riding along.
+    (session?.schema as Record<string, unknown>).should.deep.equal({
+      type: 'string',
+      title: 'SessionId',
+    });
+  });
+
+  it('hoists a header schema repeated across routes like any other site', () => {
+    const app = createApp();
+    const one = get(app, '/one', (ctx) => ctx);
+    const two = get(app, '/two', (ctx) => ctx);
+    describeRoute(one, 'GET', '/one', {
+      headers: { 'x-tenant': { type: 'string' } },
+    });
+    describeRoute(two, 'GET', '/two', {
+      headers: { 'x-tenant': { type: 'string' } },
+    });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+    const schemaOf = (path: string): Record<string, unknown> =>
+      (
+        (spec.paths[path]?.get as { parameters: { name: string; schema: unknown }[] })
+          .parameters
+      ).find((p) => p.name === 'x-tenant')?.schema as Record<string, unknown>;
+    schemaOf('/one').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    schemaOf('/two').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+  });
+});
+
+describe('openapi (multipart requestBody)', () => {
+  /** POST /avatars with a mixed form: required and optional text fields,
+   * a file with an allowlist, and a file without one. */
+  function uploadApp() {
+    const withPost = post(createApp(), '/avatars', (ctx) => ctx);
+    describeRoute(withPost, 'POST', '/avatars', {
+      summary: 'Upload an avatar',
+      body: {
+        form: {
+          label: { schema: { type: 'string' }, required: true },
+          note: { type: 'string' },
+          avatar: { file: true, required: true, contentTypes: ['image/png', 'image/jpeg'] },
+          attachment: { file: true },
+        },
+      },
+    });
+    return withPost;
+  }
+
+  it('emits multipart/form-data: binary file parts, encoding, marker required', () => {
+    const spec = openapiSpec(uploadApp(), { title: 't', version: '1' });
+    const requestBody = (
+      spec.paths['/avatars']?.post as { requestBody: Record<string, unknown> }
+    ).requestBody;
+
+    requestBody.should.deep.equal({
+      content: {
+        'multipart/form-data': {
+          schema: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              note: { type: 'string' },
+              avatar: { type: 'string', format: 'binary' },
+              attachment: { type: 'string', format: 'binary' },
+            },
+            required: ['label', 'avatar'],
+          },
+          encoding: {
+            avatar: { contentType: 'image/png, image/jpeg' },
+            attachment: { contentType: 'application/octet-stream' },
+          },
+        },
+      },
+    });
+  });
+
+  it('omits encoding when the form has no file parts', () => {
+    const withPost = post(createApp(), '/profile', (ctx) => ctx);
+    describeRoute(withPost, 'POST', '/profile', {
+      body: { form: { bio: { type: 'string' } } },
+    });
+    const spec = openapiSpec(withPost, { title: 't', version: '1' });
+    const media = (
+      (spec.paths['/profile']?.post as { requestBody: { content: Record<string, unknown> } })
+        .requestBody.content['multipart/form-data'] as Record<string, unknown>
+    );
+    media.should.not.have.property('encoding');
+    (media.schema as Record<string, unknown>).should.deep.equal({
+      type: 'object',
+      properties: { bio: { type: 'string' } },
+    });
+  });
+
+  it('dedups a repeated multipart form schema like any other body schema', () => {
+    // The shared form shape, rebuilt per call — distinct objects,
+    // structurally equal, so dedup must key on the emitted JSON.
+    function labelForm() {
+      return { form: { label: { type: 'string' } } } satisfies MultipartBody;
+    }
+    const app = createApp();
+    const one = post(app, '/one', (ctx) => ctx);
+    const two = post(app, '/two', (ctx) => ctx);
+    describeRoute(one, 'POST', '/one', { body: labelForm() });
+    describeRoute(two, 'POST', '/two', { body: labelForm() });
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+    const mediaOf = (path: string): Record<string, unknown> =>
+      (
+        (spec.paths[path]?.post as { requestBody: { content: Record<string, unknown> } })
+          .requestBody.content['multipart/form-data'] as { schema: unknown }
+      ).schema as Record<string, unknown>;
+    mediaOf('/one').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    mediaOf('/two').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    (
+      (spec.components?.schemas as Record<string, unknown>).Schema1 as Record<string, unknown>
+    ).should.deep.equal({
+      type: 'object',
+      properties: { label: { type: 'string' } },
+    });
+  });
+
+  it('keeps the pure-JSON emission unchanged — no multipart machinery touches it', () => {
+    const app = createApp();
+    const withGet = get(app, '/users/:id', (ctx) => ctx);
+    const withPost = post(withGet, '/users', (ctx) => ctx);
+    describeRoute(withGet, 'GET', '/users/:id', {
+      summary: 'Fetch one user',
+      tags: ['users'],
+      query: { verbose: { type: 'boolean' } },
+      params: { id: { type: 'string', title: 'UserId' } },
+      responses: {
+        200: {
+          description: 'ok',
+          schema: {
+            type: 'object',
+            properties: { id: { type: 'integer' } },
+            required: ['id'],
+          },
+        },
+      },
+    });
+    describeRoute(withPost, 'POST', '/users', {
+      body: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+      responses: { 201: { description: 'created' } },
+    });
+    const spec = openapiSpec(withPost, { title: 'Users API', version: '1.0.0' });
+
+    // The full document, value-locked: JSON bodies stay
+    // `content: application/json`, parameters stay path-then-query, and
+    // no encoding/components appear for single-use schemas. (`info`
+    // carries its `description` key with an `undefined` value — dropped
+    // by JSON serialization, kept by the object.)
+    spec.should.deep.equal({
+      openapi: '3.1.0',
+      info: { title: 'Users API', version: '1.0.0', description: undefined },
+      paths: {
+        '/users/{id}': {
+          get: {
+            summary: 'Fetch one user',
+            tags: ['users'],
+            parameters: [
+              {
+                name: 'id',
+                in: 'path',
+                required: true,
+                schema: { type: 'string', title: 'UserId' },
+              },
+              { name: 'verbose', in: 'query', required: false, schema: { type: 'boolean' } },
+            ],
+            responses: {
+              200: {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      properties: { id: { type: 'integer' } },
+                      required: ['id'],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '/users': {
+          post: {
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: { name: { type: 'string' } },
+                    required: ['name'],
+                  },
+                },
+              },
+            },
+            responses: { 201: { description: 'created' } },
+          },
+        },
+      },
+    });
   });
 });

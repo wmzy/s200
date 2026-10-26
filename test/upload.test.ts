@@ -439,3 +439,103 @@ describe('safeFilename', () => {
     (outcome.result!.files[0]!.id ?? '').should.equal('/var/uploads/passwd');
   });
 });
+
+describe('uploadForm sniff', () => {
+  it('hands the head bytes to the hook — false rejects with a 415, mid-upload', async () => {
+    const lying = concat(text('not really a png'), new Uint8Array(600));
+    const heads: number[][] = [];
+    const outcome = await runUpload(
+      bodyOf(
+        filePart('good', 'a.png', 'image/png', PNG),
+        filePart('bad', 'b.png', 'image/png', lying)
+      ),
+      () => 'id',
+      {
+        sniff: (head) => {
+          heads.push(Array.from(head));
+          return head[0] === 0x89;
+        },
+      }
+    );
+    heads.length.should.equal(2);
+    // A file shorter than the window hands its whole body…
+    heads[0]!.should.deep.equal(Array.from(PNG));
+    // …a longer one exactly the default 512 bytes, from byte 0.
+    heads[1]!.length.should.equal(512);
+    heads[1]![0]!.should.equal('n'.charCodeAt(0));
+    (outcome.error!.status ?? 0).should.equal(415);
+    (outcome.error!.message ?? '').should.include('failed the content sniff');
+    // The good file landed before the lying one aborted the upload.
+    outcome.landed.length.should.equal(1);
+    (outcome.landed[0]!.filename ?? '').should.equal('a.png');
+  });
+
+  it('honors sniffBytes and passes the raw part alongside the head', async () => {
+    const data = concat(Uint8Array.of(0xff, 0xd8, 0xff, 0xe0), new Uint8Array(16));
+    const lengths: number[] = [];
+    const outcome = await runUpload(
+      bodyOf(filePart('pic', 'x.jpg', 'image/jpeg', data)),
+      () => 'id',
+      {
+        sniffBytes: 4,
+        sniff: (head, part) => {
+          lengths.push(head.length);
+          (part.filename ?? '').should.equal('x.jpg');
+          return head[0] === 0xff && head[1] === 0xd8;
+        },
+      }
+    );
+    lengths.should.deep.equal([4]);
+    (outcome.error === null).should.equal(true);
+    outcome.landed.length.should.equal(1);
+  });
+
+  it('awaits an async sniff verdict', async () => {
+    const outcome = await runUpload(
+      bodyOf(filePart('f', 'a.png', 'image/png', PNG)),
+      () => 'id',
+      { sniff: async (head) => head[0] === 0x89 }
+    );
+    (outcome.error === null).should.equal(true);
+    outcome.landed.length.should.equal(1);
+  });
+
+  it('runs after the accept gate, and field parts are never sniffed', async () => {
+    let sniffs = 0;
+    const outcome = await runUpload(
+      bodyOf(
+        field('title', 'x'),
+        filePart('doc', 'a.txt', 'text/plain', text('hello'))
+      ),
+      () => 'id',
+      {
+        accept: ['image/'],
+        sniff: () => {
+          sniffs += 1;
+          return true;
+        },
+      }
+    );
+    // The accept gate 415'd the text file before sniffing; the field part
+    // walked past untouched either way.
+    sniffs.should.equal(0);
+    (outcome.error!.status ?? 0).should.equal(415);
+    (outcome.error!.message ?? '').should.include('Unsupported file content type');
+    outcome.landed.length.should.equal(0);
+  });
+
+  it('rejects a negative or fractional sniffBytes before parsing', async () => {
+    const dummy = {} as Parameters<typeof uploadForm>[0];
+    const messages: string[] = [];
+    for (const sniffBytes of [-1, 1.5]) {
+      try {
+        await uploadForm(dummy, () => undefined, { sniff: () => true, sniffBytes });
+      } catch (e) {
+        messages.push((e as Error).message);
+      }
+    }
+    messages.length.should.equal(2);
+    messages[0]!.should.match(/sniffBytes -1.*non-negative integer/);
+    messages[1]!.should.match(/sniffBytes 1.5.*non-negative integer/);
+  });
+});

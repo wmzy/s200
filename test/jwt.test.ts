@@ -153,6 +153,62 @@ describe('jwt', () => {
     (await verifyJwt(token, publicJwk)).sub?.should.equal('jwk');
   });
 
+  it('signs and verifies EdDSA (Ed25519) round trips and rejects tampering', async () => {
+    const pair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+    const token = await signJwt({ sub: 'ed' }, pair.privateKey, { alg: 'EdDSA' });
+    token.split('.').length.should.equal(3);
+    (await verifyJwt(token, pair.publicKey)).sub?.should.equal('ed');
+
+    const [h, p, s] = token.split('.');
+    const forged = `${h}.${p}.${'0'.repeat(s?.length ?? 0)}`;
+    ((await rejectionOf(verifyJwt(forged, pair.publicKey))) as Error).message.should.match(
+      /signature/
+    );
+  });
+
+  it('signs and verifies EdDSA with OKP JWK material', async () => {
+    const pair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+    const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    const privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey);
+    publicJwk.kty?.should.equal('OKP');
+    publicJwk.crv?.should.equal('Ed25519');
+    const token = await signJwt({ sub: 'okp' }, privateJwk, { alg: 'EdDSA' });
+    (await verifyJwt(token, publicJwk)).sub?.should.equal('okp');
+  });
+
+  it('rejects EdDSA key-family and curve mismatches (algorithm confusion)', async () => {
+    const pair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+    const token = await signJwt({ a: 1 }, pair.privateKey, { alg: 'EdDSA' });
+
+    // A secret string is not OKP material.
+    ((await rejectionOf(verifyJwt(token, SECRET))) as Error).message.should.match(
+      /kty 'undefined' does not match algorithm EdDSA/
+    );
+    // An X25519 key shares the OKP family but cannot sign.
+    const x25519 = await crypto.subtle.generateKey('X25519', true, ['deriveKey']);
+    ((await rejectionOf(verifyJwt(token, x25519.publicKey))) as Error).message.should.match(
+      /key does not match algorithm EdDSA/
+    );
+    // An OKP JWK with the wrong curve rejects before import.
+    const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    ((await rejectionOf(verifyJwt(token, { ...jwk, crv: 'Ed448' }))) as Error).message.should.match(
+      /crv 'Ed448' does not match algorithm EdDSA/
+    );
+    // An EC key cannot verify an EdDSA token, nor the reverse.
+    const ec = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    ((await rejectionOf(verifyJwt(token, ec.publicKey))) as Error).message.should.match(
+      /key does not match algorithm EdDSA/
+    );
+    const ecToken = await signJwt({ a: 1 }, ec.privateKey, { alg: 'ES256' });
+    ((await rejectionOf(verifyJwt(ecToken, pair.publicKey))) as Error).message.should.match(
+      /key does not match algorithm ES256/
+    );
+  });
+
   it('rejects family-mismatched keys (algorithm confusion)', async () => {
     const token = await signJwt({ a: 1 }, SECRET, { alg: 'HS256' });
     // An RSA public key can never verify an HS token: the key family must

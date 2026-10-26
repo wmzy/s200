@@ -4,7 +4,7 @@ Graceful shutdown, liveness/readiness probes, request timeouts, live route-table
 
 ## Lifecycle (`s200/lifecycle`)
 
-NestJS' `enableShutdownHooks` + `onApplicationShutdown` equivalent: one graceful drain shared by `stop()` and the OS signals. The order is the load-balancer-safe one: flip the readiness gate **first** (probes go 503, traffic stops arriving), then stop accepting new connections, wait out in-flight requests within the budget, hard-kill the stragglers, and only then run the app's own `onShutdown`.
+NestJS' `enableShutdownHooks` + `onApplicationShutdown` equivalent: one graceful drain shared by `stop()` and the OS signals. The order is the load-balancer-safe one: flip the readiness gate **first** (probes go 503, traffic stops arriving), then stop accepting new connections, wait out in-flight requests within the budget, hard-kill the stragglers, let in-flight `onFinish` callbacks settle, and only then run the app's own `onShutdown` hooks.
 
 ```ts
 import { lifecycle } from 's200/lifecycle';
@@ -31,7 +31,10 @@ await handle.stop();        // or: SIGTERM / SIGINT
 | `signals` | `['SIGTERM', 'SIGINT']` | Signals that trigger the same drain as `stop()`; `[]` keeps signal handling to yourself. A second signal **during** a drain hard-kills immediately |
 | `timeout` | `10_000` | Drain budget in ms — in-flight requests get this long before their connections are force-closed |
 | `readiness` | — | Flipped closed with `'draining'` as the FIRST step — pass a `createGate()` from `s200/health` (structural: anything with `close(reason?)` works) |
-| `onShutdown` | — | Runs after connections drained (or the budget expired) — the `onApplicationShutdown` hook |
+| `onShutdown` | — | The `onApplicationShutdown` hook(s): one function or an array. Runs after connections drained (or the budget expired) and — with `waitForFinishers` — after in-flight `onFinish` callbacks settled |
+| `waitForFinishers` | `true` | After connections drained, wait for in-flight `onFinish` callbacks (`finishersIdle()` from the core barrel) before running `onShutdown` — shutdown hooks usually close the sinks finishers write into (metrics, pools), so the wait keeps that order honest. `false` keeps finishers strictly fire-and-forget from the drain's point of view. The wait is not time-boxed: a finisher that never settles holds the drain open, exactly like a never-settling `onShutdown` would |
+
+`onShutdown` accepts a single function (a one-element array by another spelling) or an array of hooks. An array runs in **registration order**, and one hook failing never blocks the rest — Fastify `onClose` semantics: the first error rejects `stop()` (a signal-triggered drain logs it through `console.error`, `stopped` still resolves), and every later error is `console.error`'d too, so no failure disappears silently.
 
 Signal listeners are removed once the drain settles — no leaks, no second lifecycle fighting over the same process.
 

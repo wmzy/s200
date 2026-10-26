@@ -103,6 +103,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  examples/production-ready:
+    dependencies:
+      s200:
+        specifier: workspace:*
+        version: link:../..
+
   examples/rest-jwt:
     dependencies:
       s200:

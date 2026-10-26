@@ -41,6 +41,7 @@ budgets (`pnpm size`).
 | --------------- | --------------------------------------------------------------- |
 | `s200/auth`     | `basicAuth`, `bearerAuth` — challenge-carrying gates            |
 | `s200/jwt`      | `signJwt`, `verifyJwt`, `jwtAuth` — JWS over WebCrypto           |
+| `s200/oauth`    | `createPkcePair`, `buildAuthorizeUrl`, `exchangeCode` — OAuth2 code + PKCE primitives |
 | `s200/csrf`     | `createCsrf` — double-submit tokens                              |
 | `s200/session`  | `createSession` — cookie sessions with an injectable store       |
 | `s200/cookies`  | `getCookie`, `setCookie`, `getSignedCookie`, `setSignedCookie`   |
@@ -151,11 +152,11 @@ standard [submission template](#submission-template) applies to each.
 - More Scalar documentation knobs (layout, dark-mode default, custom CSS)
   for `s200/swagger` — beyond the shipped `url`/`title`/`theme`/`cdn`
   options.
-- OAuth providers (GitHub, Google, …) on top of `s200/jwt` +
-  `s200/session` — generic OIDC is covered by the
+- OAuth providers (GitHub, Google, …) on top of `s200/oauth` +
+  `s200/session` — the shipped `s200/oauth` covers the PKCE/auth-url/
+  token-exchange primitives; the full generic OIDC login flow is the
   [`recipes/oidc.ts`](https://github.com/wmzy/s200/blob/main/recipes/oidc.ts)
-  recipe above; the shipped `s200/auth` covers only the
-  challenge-carrying basics.
+  recipe, and `s200/auth` the challenge-carrying basics.
 - More shared stores for `s200/session` and `s200/rate-limit` — Postgres,
   SQLite, … following the injectable-store seam the
   [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts)

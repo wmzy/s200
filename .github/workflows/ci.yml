@@ -56,6 +56,7 @@ jobs:
       - run: pnpm --filter @s200-example/db-crud smoke
       - run: pnpm --filter @s200-example/crud-openapi smoke
       - run: pnpm --filter @s200-example/hello-world smoke
+      - run: pnpm --filter @s200-example/production-ready smoke
 
   # Floor-runtime gate: `engines` declares node >= 20.3, but the toolchain
   # (vite/vitest) may itself need newer node — that says nothing about the

@@ -27,6 +27,21 @@ Safe by default: only `GET` responses with status 200 and a body are stored; res
 
 `CacheStore`: `get(key)`, `set(key, entry)`, `delete(key)` — `get`/`delete` may be async (a networked store is); `set` stores the whole entry atomically. `CacheEntry`: `{ exp, status, headers: [string, string][], body: Uint8Array }`. Expiry is checked by the middleware on every read; the store may also evict early.
 
+`cacheControl(options): string` — the `Cache-Control` builder: one call, one directive string, for the caches between you and the client:
+
+```ts
+import { cacheControl } from 's200/cache';
+get(app, '/assets/main.9f3c.js', (ctx) =>
+  text(ctx, body, {
+    headers: { 'cache-control': cacheControl({ maxAge: 31_536_000, immutable: true }) },
+  })
+);
+```
+
+`CacheControlOptions`: `{ maxAge?, sMaxAge?, staleWhileRevalidate?, noStore?, noCache?, private?, immutable?, mustRevalidate? }` — seconds fields as non-negative integers, flags as `true`. Directives land in a fixed order (`no-cache, private, max-age=N, s-maxage=N, must-revalidate, stale-while-revalidate=N, immutable`; order carries no meaning per RFC 9111, a stable one just diffs well). `noStore: true` short-circuits to exactly `no-store` — nothing else means anything once storage is forbidden. An empty directive set and negative or fractional seconds throw.
+
+The builder composes with, but is independent of, the middleware above: the middleware's own freshness window is its `ttl`, and it never serves stale — `stale-while-revalidate` governs what downstream shared caches (a CDN) do past *their* copy's expiry.
+
 ## Config (`s200/config`)
 
 Typed, fail-fast configuration over the same Standard Schema channel `s200/validate` uses. `parseEnv` is a pure `.env` parser; `createConfig` validates the merged record **at construction** — failure throws one `Error` aggregating every issue, so a bad deploy dies at boot with the full list, not the first.

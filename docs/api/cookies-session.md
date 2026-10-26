@@ -21,6 +21,7 @@ const sid = await getSignedCookie(ctx, 'sid', SECRET);      // undefined unless 
 | `setCookie(ctx, name, value, options?)` | Appends a `Set-Cookie` header; **throws** when no response exists yet |
 | `signCookie(value, secret)` | `value.sig` — HMAC-SHA256 signature over the value |
 | `verifyCookieSignature(value, sig, secret)` | Constant-time verification; `false` on mismatch |
+| `timingSafeEqual(a, b)` | Constant-time string comparison — the primitive `s200/auth` verify callbacks should use |
 | `setSignedCookie(ctx, name, value, secret, options?)` | Sets `name=value` plus the `name.sig` partner cookie |
 | `getSignedCookie(ctx, name, secret)` | The value when the signature verifies, else `undefined` |
 

@@ -6,9 +6,9 @@
  * mapping answers exactly `401 {"error":"Unauthorized"}` + challenge, and
  * a configured `onError` takes over — and the rest of the chain never runs.
  *
- * Note: credential comparison inside `verify` is yours — use a
- * constant-time compare for secrets (e.g. the same technique
- * `s200/cookies` uses for signatures).
+ * Note: credential comparison inside `verify` is yours — use the
+ * exported `timingSafeEqual(a, b)` from `s200/cookies` for secrets
+ * (constant-time, `false` on a length mismatch).
  *
  * @module
  */

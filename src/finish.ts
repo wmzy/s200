@@ -4,8 +4,9 @@
  * per request — when the response finishes writing, or when the
  * connection ends before it does (first trigger wins). The adapter-side
  * half (`runFinish`/`trackFinish`/`hasFinishers`) is internal — adapters
- * import it relatively, the barrel re-exports only `onFinish` (the
- * `s200/signal` internal-module precedent).
+ * import it relatively, the barrel re-exports `onFinish` (the
+ * `s200/signal` internal-module precedent) and `finishersIdle`, the
+ * drain-side wait over the in-flight callbacks.
  *
  * @module
  */
@@ -52,6 +53,54 @@ const abortedBeforeRegister = new WeakMap<
     readonly logError: ((error: unknown, ctx: Ctx) => void) | undefined;
   }
 >();
+
+// In-flight async finisher count — the whole steady-state cost of the
+// drain-side wait is this one integer: it ticks up when a callback returns
+// a promise and back down when that promise settles. The idle signal is
+// materialized only while someone is actually waiting on it, so requests
+// that never drain pay nothing.
+let activeFinishers = 0;
+let idlePromise: Promise<void> | undefined;
+let settleIdle: (() => void) | undefined;
+
+/** Counts a promise-returning callback as in flight — `finishersIdle()`
+ * resolves when this count returns to zero. */
+function trackFinisher(promise: Promise<void>): void {
+  activeFinishers += 1;
+  const settled = (): void => {
+    activeFinishers -= 1;
+    if (activeFinishers === 0 && settleIdle !== undefined) {
+      const settle = settleIdle;
+      idlePromise = undefined;
+      settleIdle = undefined;
+      settle();
+    }
+  };
+  promise.then(settled, settled);
+}
+
+/**
+ * Resolves once every in-flight `onFinish` callback has settled — the
+ * drain-side companion to the fire-and-forget contract: `s200/lifecycle`
+ * (with `waitForFinishers`, its default) waits on this after connections
+ * drained, so an async finisher — a metrics flush, a buffered write — is
+ * not cut short by the shutdown. A call made while nothing is in flight
+ * resolves immediately (callbacks started afterwards are the next call's
+ * business); only promise-returning callbacks are counted, because
+ * synchronous ones have settled before any waiter can observe them. The
+ * wait is not time-boxed: a callback that never settles holds it open.
+ */
+export function finishersIdle(): Promise<void> {
+  if (activeFinishers === 0) {
+    return Promise.resolve();
+  }
+  if (idlePromise === undefined) {
+    idlePromise = new Promise<void>((resolve) => {
+      settleIdle = resolve;
+    });
+  }
+  return idlePromise;
+}
 
 /**
  * Registers a callback that runs **exactly once** when this request's
@@ -125,8 +174,10 @@ function fire(
     try {
       const returned = fn(info);
       if (returned instanceof Promise) {
-        // Fire-and-forget: the response path is already closed (or closing)
-        // — the rejection must not become unhandled.
+        // Fire-and-forget: the response path is already closed (or
+        // closing) — the rejection must not become unhandled, and the
+        // drain-side finishersIdle() counts it until it settles.
+        trackFinisher(returned);
         returned.catch((error: unknown) => {
           (logError ?? logFinishError)(error, entry.ctx);
         });

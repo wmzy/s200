@@ -55,10 +55,11 @@ export type NodeHttpsOptions = {
 };
 
 /**
- * Curated pass-through of `node:http` server knobs — applied at
- * construction on every path (http, https, http2-over-TLS). Only these
- * whitelisted fields travel to the server; nothing else is spread onto
- * node's own constructors.
+ * Curated pass-through of `node:http` server knobs. The eight
+ * constructor-known fields travel to node's own constructors on every
+ * path (http, https, http2-over-TLS) — nothing else is spread onto them;
+ * `maxConnections`/`maxRequestsPerSocket` are post-construction setters
+ * and `backlog` rides `listen()`.
  */
 export type NodeServerTunables = {
   /** Per-request header budget in bytes (node default `16384`). */
@@ -77,6 +78,26 @@ export type NodeServerTunables = {
   readonly noDelay?: boolean;
   /** Per-socket stream buffer size in bytes (node default `16384`). */
   readonly highWaterMark?: number;
+  /**
+   * Maximum simultaneously open connections — beyond it node destroys
+   * incoming connections (`server.maxConnections`; node default:
+   * unlimited). Applies on every path (http, https, http2-over-TLS).
+   */
+  readonly maxConnections?: number;
+  /**
+   * Requests one HTTP/1.x socket may serve before node closes the
+   * keep-alive connection (`server.maxRequestsPerSocket`; node default
+   * `0` disables the limit). HTTP/1.1-only: HTTP/2 multiplexes many
+   * streams over one session, so the field is not applicable on the
+   * http2 path and is ignored there.
+   */
+  readonly maxRequestsPerSocket?: number;
+  /**
+   * Kernel accept-queue depth passed to `listen(port, host, backlog)`
+   * (node default `511`) — how many connections may wait while the
+   * process is busy accepting. Applies on every path.
+   */
+  readonly backlog?: number;
 };
 
 export type NodeServeOptions = {
@@ -101,10 +122,13 @@ export type NodeServeOptions = {
   /**
    * Cooperative cancellation: abort `ctx.signal` when the client drops
    * the connection before the response finishes. On by default — each
-   * request gets a controller whose signal is both `ctx.signal` and the
-   * undici request's `signal`; `res` 'close' with `writableEnded` false
-   * aborts it with a DOMException `AbortError`. Pass `false` to opt out:
-   * the request then rides the shared never-aborted signal and the
+   * request gets a controller whose signal is installed as the request's
+   * own `signal` property, so `ctx.signal === ctx.req.signal` (the adapter
+   * installs it directly instead of passing `init.signal`, whose per-request
+   * follow machinery in undici is both the allocation and the steady-RSS
+   * cost — see docs/benchmarks.md); `res` 'close' with `writableEnded`
+   * false aborts it with a DOMException `AbortError`. Pass `false` to opt
+   * out: the request then rides the shared never-aborted signal and the
    * per-request `AbortController` is skipped entirely.
    */
   abortOnDisconnect?: boolean;
@@ -121,8 +145,10 @@ export type NodeServeOptions = {
   /**
    * Curated node server tunables (`maxHeaderSize`, `requestTimeout`,
    * `headersTimeout`, `keepAliveTimeout`, `connectionsCheckingInterval`,
-   * `keepAlive`, `noDelay`, `highWaterMark`) — applied at construction on
-   * every path. See {@link NodeServerTunables}.
+   * `keepAlive`, `noDelay`, `highWaterMark` — constructor options on
+   * every path; `maxConnections` on every path and `maxRequestsPerSocket`
+   * (HTTP/1.1-only) as post-construction setters; `backlog` through
+   * `listen`). See {@link NodeServerTunables}.
    */
   server?: NodeServerTunables;
   /**
@@ -214,6 +240,19 @@ export async function serve(
           createSecureServer({ ...tunables, ...options.https }, handler)
         : createHttpsServer({ ...tunables, ...options.https }, handler)
       : createServer(tunables, handler);
+  // Post-construction setters: node's constructors do not read these from
+  // options — maxConnections is a net.Server property, and the per-socket
+  // request limit exists only as a property of the HTTP/1 servers (the
+  // http2 secure server has none at all, so it is skipped there).
+  if (requested?.maxConnections !== undefined) {
+    server.maxConnections = requested.maxConnections;
+  }
+  if (
+    requested?.maxRequestsPerSocket !== undefined &&
+    options.https?.http2 !== true
+  ) {
+    (server as HttpServer).maxRequestsPerSocket = requested.maxRequestsPerSocket;
+  }
   const upgraded = options.upgrade !== undefined ? new Set<Duplex>() : undefined;
   if (options.upgrade !== undefined) {
     const userUpgrade = options.upgrade;
@@ -245,7 +284,9 @@ export async function serve(
     // there is inert, not an error.
     server.on('clientError', options.clientError);
   }
-  server.listen(options.port ?? 0, options.host);
+  // The backlog rides listen() (node's constructors do not take it): the
+  // shared call site covers http, https and http2-over-TLS alike.
+  server.listen(options.port ?? 0, options.host, requested?.backlog);
   // once() also rejects when the server emits 'error' before 'listening'
   // (e.g. EADDRINUSE), so no separate error wiring is needed.
   await once(server, 'listening');
@@ -448,11 +489,6 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
     headers: headerPairs,
     redirect: 'manual',
   };
-  if (signal !== undefined) {
-    // Mirrors the disconnect signal onto request.signal, exactly like a
-    // fetch caller's init.signal — undici keeps the very object.
-    init.signal = signal;
-  }
   if (method !== 'GET' && method !== 'HEAD') {
     // A streaming body needs duplex: 'half'; GET/HEAD must stay bodyless —
     // the platform rejects a request body there. Both server kinds hand
@@ -462,7 +498,24 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
     ) as unknown as ReadableStream;
     init.duplex = 'half';
   }
+  // The disconnect signal is NOT passed as init.signal. undici's Request
+  // constructor turns a passed signal into per-request follow machinery —
+  // an internal controller, a WeakRef, an abort listener registered on our
+  // signal, and a FinalizationRegistry entry that holds all of it until
+  // the next major GC (profiled 2026-10-26: ~53% of default-path
+  // allocations, and effectively all of its between-GC retention — the
+  // steady-RSS driver in docs/benchmarks.md's scenario B). Installing the
+  // controller's signal as an own `signal` property instead skips that
+  // machinery and restores the object identity the adapter contract
+  // documents (`ctx.req.signal === ctx.signal`): the disconnect semantics
+  // are identical because it is the very same signal object. The platform
+  // accessor stays an accessor on the prototype; the own property only
+  // shadows it on this instance (non-enumerable, like the private-ish
+  // slots undici itself keeps).
   const request = new Request(url, init);
+  if (signal !== undefined) {
+    Object.defineProperty(request, 'signal', { value: signal });
+  }
   setCachedUrl(request, new URL(url));
   return request;
 }

@@ -2,9 +2,10 @@ import type { NodeServer } from '../src/node';
 
 import { afterEach, describe, it } from 'vitest';
 
-import { createApp, get, handle } from '../src/app';
+import { createApp, get, handle, use } from '../src/app';
 import { createGate, readiness } from '../src/health';
 import { lifecycle } from '../src/lifecycle';
+import { onFinish } from '../src/finish';
 import { serve } from '../src/node';
 import { json } from '../src/respond';
 
@@ -195,6 +196,132 @@ describe('lifecycle', () => {
     }
     errors.length.should.equal(1);
     ((errors[0]?.[0] ?? {}) as Error).message.should.equal('boom');
+  });
+
+  it('runs an onShutdown array in registration order', async () => {
+    const events: string[] = [];
+    const lc = lifecycle(
+      { close: async () => { events.push('server-close'); } },
+      {
+        signals: [],
+        onShutdown: [
+          () => {
+            events.push('one');
+          },
+          async () => {
+            events.push('two');
+          },
+          () => {
+            events.push('three');
+          },
+        ],
+      }
+    );
+    await lc.stop();
+    events.should.deep.equal(['server-close', 'one', 'two', 'three']);
+  });
+
+  it('a failing hook does not block the rest — stop() rejects with the first error', async () => {
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]): void => {
+      errors.push(args);
+    };
+    let ran = 0;
+    try {
+      const lc = lifecycle(
+        { close: async () => undefined },
+        {
+          signals: [],
+          onShutdown: [
+            () => {
+              throw new Error('first');
+            },
+            () => {
+              ran += 1;
+            },
+            async () => {
+              throw new Error('later');
+            },
+          ],
+        }
+      );
+      let caught: unknown;
+      try {
+        await lc.stop();
+      } catch (error) {
+        caught = error;
+      }
+      (caught as Error).message.should.equal('first');
+      // The hook between the two failures still ran (Fastify onClose
+      // semantics: one failing hook never blocks the rest).
+      ran.should.equal(1);
+      // The later error was logged, not swallowed — only the first owns
+      // the rejection.
+      errors.length.should.equal(1);
+      ((errors[0]?.[1] ?? {}) as Error).message.should.equal('later');
+      await lc.stopped; // settled — never rejected
+    } finally {
+      console.error = original;
+    }
+  });
+
+  it('waits for in-flight onFinish callbacks after the drain, before onShutdown', async () => {
+    const app = createApp();
+    const release = deferred<void>();
+    const events: string[] = [];
+    use(app, async (ctx, next) => {
+      await next();
+      onFinish(ctx, () => release.promise.then((): void => { events.push('finisher'); }));
+    });
+    get(app, '/', (ctx) => json(ctx, { ok: true }));
+    const server = await serve(app, { port: 0 });
+    openServers.push(server);
+    const lc = lifecycle(server, {
+      signals: [],
+      timeout: 2000,
+      onShutdown: () => {
+        events.push('on-shutdown');
+      },
+    });
+    await fetch(`${server.url}/`).then((res) => res.text());
+    const stopping = lc.stop();
+    // The connections have drained by now, but the finisher is still
+    // pending — the drain (and onShutdown) must not have settled yet.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    events.should.deep.equal([]);
+    release.resolve();
+    await stopping;
+    events.should.deep.equal(['finisher', 'on-shutdown']);
+    await lc.stopped;
+  });
+
+  it('waitForFinishers: false skips the finisher wait', async () => {
+    const app = createApp();
+    const release = deferred<void>();
+    const events: string[] = [];
+    use(app, async (ctx, next) => {
+      await next();
+      onFinish(ctx, () => release.promise);
+    });
+    get(app, '/', (ctx) => json(ctx, { ok: true }));
+    const server = await serve(app, { port: 0 });
+    openServers.push(server);
+    const lc = lifecycle(server, {
+      signals: [],
+      timeout: 2000,
+      waitForFinishers: false,
+      onShutdown: () => {
+        events.push('on-shutdown');
+      },
+    });
+    await fetch(`${server.url}/`).then((res) => res.text());
+    // The finisher never settles during the drain — stop() must resolve
+    // regardless.
+    await lc.stop();
+    events.should.deep.equal(['on-shutdown']);
+    // Let the in-flight counter drain for whatever runs next.
+    release.resolve();
   });
 
   it('registers on its signals and unregisters once the drain settles', async () => {

@@ -40,6 +40,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | --------------- | ---------------------------------------------------------------- |
 | `s200/auth`     | `basicAuth`、`bearerAuth` —— 带质询的门                          |
 | `s200/jwt`      | `signJwt`、`verifyJwt`、`jwtAuth` —— 基于 WebCrypto 的 JWS       |
+| `s200/oauth`    | `createPkcePair`、`buildAuthorizeUrl`、`exchangeCode` —— OAuth2 授权码 + PKCE 原语 |
 | `s200/csrf`     | `createCsrf` —— 双提交令牌                                       |
 | `s200/session`  | `createSession` —— cookie 会话，存储可注入                       |
 | `s200/cookies`  | `getCookie`、`setCookie`、`getSignedCookie`、`setSignedCookie`   |
@@ -145,11 +146,11 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
   “带依赖也可收录”的教科书案例。
 - 更多 Scalar 文档旋钮（布局、暗色模式默认值、自定义 CSS），扩展
   `s200/swagger` —— 超出已发布的 `url`/`title`/`theme`/`cdn` 选项。
-- OAuth 提供方（GitHub、Google 等），构建于 `s200/jwt` +
-  `s200/session` 之上 —— 通用 OIDC 已由上面的
+- OAuth 提供方（GitHub、Google 等），构建于 `s200/oauth` +
+  `s200/session` 之上 —— 已发布的 `s200/oauth` 覆盖 PKCE/授权
+  URL/token 交换原语；完整的通用 OIDC 登录流程是上面的
   [`recipes/oidc.ts`](https://github.com/wmzy/s200/blob/main/recipes/oidc.ts)
-  配方覆盖；已发布的 `s200/auth` 只覆盖带质询的基础
-  认证。
+  配方，`s200/auth` 覆盖带质询的基础认证。
 - 更多面向 `s200/session` 与 `s200/rate-limit` 的共享存储 ——
   Postgres、SQLite 等，沿
   [`recipes/redis-stores.ts`](https://github.com/wmzy/s200/blob/main/recipes/redis-stores.ts)

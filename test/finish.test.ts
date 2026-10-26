@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, it } from 'vitest';
 
 import { createApp, get, use } from '../src/app';
 import { createHandler } from '../src/cloudflare';
-import { onFinish } from '../src/finish';
+import { onFinish, finishersIdle } from '../src/finish';
 import { serve } from '../src/node';
 import { json, send } from '../src/respond';
 
@@ -336,5 +336,55 @@ describe('onFinish via the body-wrap trigger (cloudflare shape)', () => {
     await settle();
     fired.length.should.equal(1);
     fired[0]!.aborted.should.be.true;
+  });
+});
+
+describe('finishersIdle (drain-side wait)', () => {
+  const env: Record<string, unknown> = {};
+  const workerCtx = { waitUntil: () => undefined };
+
+  it('resolves immediately while nothing is in flight', async () => {
+    // A synchronous finisher has settled before any waiter can observe
+    // it — only promise-returning callbacks are counted.
+    const fired: FinishInfo[] = [];
+    const app = createApp();
+    get(app, '/sync', (ctx) => {
+      onFinish(ctx, (info) => {
+        fired.push(info);
+      });
+      return json(ctx, { ok: true });
+    });
+    const worker = createHandler(app);
+    const res = await worker.fetch(new Request('http://worker/sync'), env, workerCtx);
+    await res.text();
+    await untilFired(fired, 1);
+    await within(50, finishersIdle());
+  });
+
+  it('waits for every in-flight finisher, not just the first', async () => {
+    const release1 = deferred();
+    const release2 = deferred();
+    const app = createApp();
+    get(app, '/async', (ctx) => {
+      onFinish(ctx, () => release1.promise);
+      onFinish(ctx, () => release2.promise);
+      return json(ctx, { ok: true });
+    });
+    const worker = createHandler(app);
+    const res = await worker.fetch(new Request('http://worker/async'), env, workerCtx);
+    await res.text();
+    await settle(); // both callbacks ran, both promises pending
+    let idle = false;
+    void finishersIdle().then(() => {
+      idle = true;
+    });
+    await settle();
+    idle.should.be.false; // two in flight
+    release1.resolve();
+    await settle();
+    idle.should.be.false; // one still in flight
+    release2.resolve();
+    await settle();
+    idle.should.be.true; // the count returned to zero
   });
 });

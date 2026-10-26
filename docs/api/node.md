@@ -21,7 +21,7 @@ await server.close();
 | `light` | `false` | Opt-in fast path: the adapter constructs light-weight `Request`/`Response` objects (nothing global is patched; handlers still see Web Standard shapes). Caveats: `clone()` works only for byte-backed bodies; exotic `BodyInit` (Blob/FormData) pays one real `Response` construction |
 | `abortOnDisconnect` | `true` | Aborts `ctx.signal` when the client drops the connection before the response finishes; `false` skips the per-request `AbortController` |
 | `https` | — | `NodeHttpsOptions`: serve TLS via `node:https`, or HTTP/2-over-TLS with `http2: true` (plaintext h2c unsupported; HTTP/2 has no `upgrade` event, so `http2: true` + `upgrade` throws at `serve` time — WSS needs HTTP/1.1-over-TLS) |
-| `server` | — | `NodeServerTunables`: curated node server knobs (`maxHeaderSize`, `requestTimeout`, `headersTimeout`, `keepAliveTimeout`, `connectionsCheckingInterval`, `keepAlive`, `noDelay`, `highWaterMark`), applied at construction on every path — http, https, http2-over-TLS. Only these whitelisted fields travel to node's constructors |
+| `server` | — | `NodeServerTunables`: curated node server knobs (`maxHeaderSize`, `requestTimeout`, `headersTimeout`, `keepAliveTimeout`, `connectionsCheckingInterval`, `keepAlive`, `noDelay`, `highWaterMark` — constructor options on every path; `maxConnections` (every path) and `maxRequestsPerSocket` (HTTP/1.1-only) as post-construction setters; `backlog` through `listen`) — see [Server tunables](#server-tunables) |
 | `closeGraceMs` | `10_000` | Graceful-close budget in ms. `close()` stops accepting, destroys idle keep-alive sockets, and lets in-flight responses finish — resolving as soon as the last one lands. At the budget's elapse whatever is still open is hard-killed (`closeAllConnections()`, plus upgraded/websocket sockets and HTTP/2 sessions the adapter tracks itself). `0` hard-kills immediately: in-flight responses die the moment `close()` is called |
 | `clientError` | — | `(err, socket) => void` wired to the server's `'clientError'` event — malformed requests reach your hook instead of node's default (destroy the offending socket). Without it node's own behavior applies unchanged |
 
@@ -51,7 +51,7 @@ On HTTP/2-over-TLS the same sequence runs: the adapter tracks sessions from `'se
 
 ## Server tunables {#server-tunables}
 
-`server: NodeServerTunables` passes a curated subset of node's own server knobs to the underlying constructor — the same eight fields apply on the http, https and http2-over-TLS paths:
+`server: NodeServerTunables` passes a curated subset of node's own server knobs to the underlying constructor — the eight constructor-known fields apply on the http, https and http2-over-TLS paths alike:
 
 | Field | Node default | Meaning |
 | --- | --- | --- |
@@ -64,13 +64,21 @@ On HTTP/2-over-TLS the same sequence runs: the adapter tracks sessions from `'se
 | `noDelay` | `true` | `socket.setNoDelay` — disable Nagle |
 | `highWaterMark` | `16384` | Per-socket stream buffer size in bytes |
 
+Three more fields are applied outside the constructor — node's constructors do not read them from options:
+
+| Field | Node default | How it applies |
+| --- | --- | --- |
+| `maxConnections` | unlimited | `server.maxConnections` setter — beyond it node destroys incoming connections as they arrive. Every path: http, https, http2-over-TLS |
+| `maxRequestsPerSocket` | `0` (off) | `server.maxRequestsPerSocket` setter — requests one HTTP/1.x socket may serve before node closes the keep-alive connection. **HTTP/1.1-only**: HTTP/2 multiplexes many streams over one session, so the field is not applicable on the http2 path and is ignored there |
+| `backlog` | `511` | Third argument of `listen(port, host, backlog)` — the kernel accept-queue depth, how many connections may wait while the process is busy accepting. Every path |
+
 **Production notes.** Keep `keepAliveTimeout` comfortably below the upstream load balancer's idle timeout: an LB that drops a connection it considers idle while the backend still holds it open is the classic silent-502 trap (the next request rides a socket the LB already discarded). The usual recipe is LB idle timeout ≥ `keepAliveTimeout` + a margin of a few seconds. `requestTimeout` bounds the *whole* request, body included — a long streaming upload or download legitimately outliving it is cut off, so size it (or disable with `0` and rely on `headersTimeout` + your own body limits) for streaming endpoints.
 
 ## Host header hardening
 
 The adapter builds each request URL from the `Host` header (`:authority` on HTTP/2). A Host outside the authority grammar — anything but alphanumerics, `.`, `-`, `:` (port), and `[`/`]` (IPv6 literals), including `/ \ ? # @`, whitespace, percent-escapes, and the empty value — falls back to `localhost` instead of flowing into the URL: a crafted `Host: evil.com/a` can neither pollute the parsed pathname nor make the URL unparseable. Legal hosts pass through unchanged — `example.com`, `example.com:8080`, `[::1]:3000`.
 
-## `onFinish(ctx, fn)` (core barrel) {#onfinish}
+## `onFinish(ctx, fn)` / `finishersIdle()` (core barrel) {#onfinish}
 
 ```ts
 import { onFinish } from 's200';
@@ -93,6 +101,8 @@ Callbacks are fire-and-forget: a synchronous throw (or a returned promise's reje
 A registration made after the request already **aborted** runs immediately with `{ aborted: true }`: on the node adapter the abort trigger is the connection's premature `'close'`, which can fire while the handler is still running — a callback registered after `await next()` would otherwise never run at all. A registration made after a **clean** finish is dropped silently (nothing is left to observe).
 
 On the node adapter the triggers are the completed socket write and the premature `'close'`; they fire with and without `light`, and `abortOnDisconnect: false` only skips the `ctx.signal` abort — the finish callbacks still run.
+
+`finishersIdle()` (also a core barrel export) resolves once every in-flight `onFinish` callback has settled — the drain-side companion to the fire-and-forget contract. [`s200/lifecycle`](/api/lifecycle) waits on it after connections drained (`waitForFinishers`, default on), so an async finisher — a metrics flush, a buffered write — is not cut short by the shutdown. Only promise-returning callbacks are counted (synchronous ones have settled before any waiter can observe them), a call made while nothing is in flight resolves immediately, and the wait is not time-boxed: a callback that never settles holds it open.
 
 ## Disconnect propagation for streamed responses
 

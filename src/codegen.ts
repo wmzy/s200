@@ -26,7 +26,7 @@ import type { App } from './app';
 import type { Route, Segment } from './types';
 import type { SerializeSchema } from './serialize';
 
-import { getRouteMeta, isQueryRequired, querySchemaOf } from './meta';
+import { getRouteMeta, isMultipartBody, isQueryRequired, querySchemaOf } from './meta';
 
 /** Options for {@link generateClient}. */
 export type GenerateClientOptions = {
@@ -415,8 +415,15 @@ export function generateClient(app: App, options: GenerateClientOptions = {}): s
     // — init: meta.query narrows the query sugar, meta.body retypes (and
     // demands) the body — s200/client's rules, emitted as named types.
     // A `required` marker makes the query key non-optional, matching the
-    // spec's `parameters[].required` and the gate's 422.
-    const bodyType = meta?.body === undefined ? undefined : schemaToTs(meta.body);
+    // spec's `parameters[].required` and the gate's 422. A multipart
+    // annotation types the body as `FormData` — the client's structured-
+    // body rule: platform body types ride to fetch untouched.
+    const bodyType =
+      meta?.body === undefined
+        ? undefined
+        : isMultipartBody(meta.body)
+          ? 'FormData'
+          : schemaToTs(meta.body);
     if (bodyType !== undefined) {
       typedBodies = true;
     }

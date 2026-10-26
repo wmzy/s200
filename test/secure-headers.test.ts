@@ -230,3 +230,112 @@ describe('cspNonce', () => {
     );
   });
 });
+
+describe('secureHeaders CSP nonce wiring', () => {
+  it('splices a fresh nonce per request into {{nonce}} and parks it on ctx.state', async () => {
+    const app = createApp();
+    use(
+      app,
+      secureHeaders({
+        contentSecurityPolicy: {
+          nonce: true,
+          policy: {
+            'default-src': ["'self'"],
+            'script-src': ["'nonce-{{nonce}}'"],
+          },
+        },
+      })
+    );
+    const seen: string[] = [];
+    get(app, '/', (ctx) => {
+      seen.push(ctx.state.cspNonce as string);
+      return new Response('<script>ok</script>');
+    });
+    const first = await handle(app, new Request('http://localhost/'));
+    const second = await handle(app, new Request('http://localhost/'));
+    seen.length.should.equal(2);
+    (seen[0] ?? '').should.match(/^[A-Za-z0-9+/]{22}==$/);
+    seen[0]!.should.not.equal(seen[1] ?? 'other');
+    first.headers.get('content-security-policy')!.should.equal(
+      `default-src 'self'; script-src 'nonce-${seen[0]}'`
+    );
+    second.headers.get('content-security-policy')!.should.equal(
+      `default-src 'self'; script-src 'nonce-${seen[1]}'`
+    );
+    // The baseline stamps alongside — the nonce path changes nothing else.
+    first.headers.get('x-frame-options')!.should.equal('DENY');
+  });
+
+  it('supports a raw-string policy, several placeholders, and report-only', async () => {
+    const app = createApp();
+    use(
+      app,
+      secureHeaders({
+        contentSecurityPolicy: {
+          nonce: true,
+          reportOnly: true,
+          policy:
+            "default-src 'self'; script-src 'nonce-{{nonce}}'; style-src 'nonce-{{nonce}}'",
+        },
+      })
+    );
+    get(app, '/', () => new Response('ok'));
+    const res = await handle(app, new Request('http://localhost/'));
+    res.headers.has('content-security-policy').should.be.false;
+    const value = res.headers.get('content-security-policy-report-only') ?? '';
+    const nonces = value.match(/'nonce-[A-Za-z0-9+/]{22}=='/g) ?? [];
+    nonces.length.should.equal(2);
+    nonces[0]!.should.equal(nonces[1]!);
+  });
+
+  it('keeps the fill-only contract: a handler-set CSP wins, built from the parked nonce', async () => {
+    const app = createApp();
+    use(
+      app,
+      secureHeaders({
+        contentSecurityPolicy: {
+          nonce: true,
+          policy: "default-src 'self'; script-src 'nonce-{{nonce}}'",
+        },
+      })
+    );
+    get(app, '/', (ctx) => {
+      const nonce = ctx.state.cspNonce as string;
+      return new Response('ok', {
+        headers: { 'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'` },
+      });
+    });
+    const res = await handle(app, new Request('http://localhost/'));
+    res.headers
+      .get('content-security-policy')!
+      .should.match(/^default-src 'none'; script-src 'nonce-[A-Za-z0-9+/]{22}=='$/);
+  });
+
+  it('stamps the policy even without a placeholder, and sets no state without the option', async () => {
+    const plain = createApp();
+    use(
+      plain,
+      secureHeaders({
+        contentSecurityPolicy: { nonce: true, policy: { 'default-src': ["'self'"] } },
+      })
+    );
+    let parked: unknown;
+    get(plain, '/', (ctx) => {
+      parked = ctx.state.cspNonce;
+      return new Response('ok');
+    });
+    const res = await handle(plain, new Request('http://localhost/'));
+    res.headers.get('content-security-policy')!.should.equal("default-src 'self'");
+    (parked as string).should.match(/^[A-Za-z0-9+/]{22}==$/);
+
+    const off = createApp();
+    use(off, secureHeaders());
+    let without: unknown = 'sentinel';
+    get(off, '/', (ctx) => {
+      without = ctx.state.cspNonce;
+      return new Response('ok');
+    });
+    await handle(off, new Request('http://localhost/'));
+    (without === undefined).should.equal(true);
+  });
+});

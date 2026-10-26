@@ -35,11 +35,49 @@ describeRoute(app, 'GET', '/users/:id', {
 | `describeApp(app, meta)` | 标注应用本身（OpenAPI `info` 块） |
 | `getRouteMeta(route)` / `getAppMeta(app)` | 读回已设内容 |
 
-`RouteMeta`：`{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, params?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`。`AppMeta`：`{ title?, version?, description? }`。
+`RouteMeta`：`{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, params?: Record<string, QueryParam>, headers?: Record<string, QueryParam>, cookies?: Record<string, QueryParam>, body?: SerializeSchema | MultipartBody, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`。`AppMeta`：`{ title?, version?, description? }`。
 
 `QueryParam` 是该参数的 `SerializeSchema` 裸形态（可选 —— 默认），或请求必须携带该键时的 `{ schema, required: true }` 标记形态。这个标记是一个 flag、三个同步视图：`openapiSpec` 输出 `parameters[].required: true`，`withRouteValidation` 对缺失的键回答 `422`（`'query.<key>: required'`），`s200/mcp` 的工具输入模式把该名字列入 `required`。`querySchemaOf(entry)`/`isQueryRequired(entry)`（来自 `s200/meta`）为自定义工具拆开两种形态。
 
 `params` 以同样的条目形态标注路径参数 —— `/users/:id` 的 `id`：`openapiSpec` 把条目的 JSON Schema 输出为该路径参数的 schema（未标注的参数保持裸的 `{ type: 'string' }`），`withRouteValidation` 检查捕获到的值（失败时 `'params.<key>: …'`；`required` 标记拒绝可选段位的缺失）。输出的 `required` 保持段位驱动（`:id` 必填、`:id?` 可选）—— OpenAPI 把每个路径参数钉死在它填充的段位上。要用 Standard Schema 厂商跑捕获参数（或请求头）的运行时模式，见 `s200/validate` 的 `validateParams`/`validateHeaders` 闸门。
+
+`headers`/`cookies` 以同样的条目形态标注请求头与 cookie：`openapiSpec` 把每个条目输出为 `in: 'header'`/`in: 'cookie'` 的 `parameters[]` 条目（`required` 标记随行，与 query 完全一致）。运行时两者不同：`withRouteValidation` 像 `query` 一样闸控 `headers` —— 一次大小写不敏感的 `headers.get` 读取，失败时 `'headers.<name>: …'` —— 而 `cookies` 仅文档化。解析 `cookie` 头属于 `s200/cookies`（`s200/openapi` 不得导入的入口，闸门内再造一套解析约定只会与它漂移）—— 用 cookies 电池或你自己的闸门做强制。
+
+**multipart 请求体。** `body` 还接受 multipart 标记形态（替代 `SerializeSchema`）：`{ form: Record<string, MultipartField> }`，每个表单部件一个条目。`MultipartField` 是文本字段的 `QueryParam`（两种形态皆可）或文件标记 `{ file: true, required?, contentTypes? }` —— `required` 声明表单必须携带该部件，`contentTypes` 是文件媒体类型的允许清单：
+
+```ts
+describeRoute(app, 'POST', '/avatars', {
+  summary: 'Upload an avatar',
+  body: {
+    form: {
+      label: { schema: { type: 'string' }, required: true },
+      avatar: { file: true, required: true, contentTypes: ['image/png', 'image/jpeg'] },
+    },
+  },
+});
+```
+
+`openapiSpec` 把该路由的请求体输出为 `multipart/form-data`：
+
+```json
+"requestBody": {
+  "content": {
+    "multipart/form-data": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "avatar": { "type": "string", "format": "binary" }
+        },
+        "required": ["label", "avatar"]
+      },
+      "encoding": { "avatar": { "contentType": "image/png, image/jpeg" } }
+    }
+  }
+}
+```
+
+文件部件变成 `{ type: 'string', format: 'binary' }` —— OpenAPI 的标准文件部件拼法 —— 各带一条 `encoding` 条目：其 `contentType` 取标记的允许清单（逗号连接；规范允许清单与通配），未声明时钉死为 `application/octet-stream`（规范对 string 部件的默认是 `text/plain`，而文件部件永远不会是它）。没有文件部件的表单完全省略 `encoding`。`format: 'binary'` 的输出是设计上对 schema 透传的唯一刻意例外：它出自显式的 `file` 标记而非 schema 转换 —— `toJsonSchema` 保持只转发 `SerializeSchema` 携带的字段。`multipartFormSchema(form)`（来自 `s200/meta`）为自定义工具构建同一个 JSON Schema。`withRouteValidation` 文档化 multipart 体但不读取它 —— multipart 运行时校验（content-type、部件上限、文件允许清单）是 `s200/multipart` 的 `streamForm` / `s200/upload` 的 `uploadForm` 的职责，闸门绝不 JSON 解析请求。下游：`s200/mcp` 把表单收进一个必填 `body` 参数（JSON-RPC 参数是 JSON 而非文件部件），`s200/codegen` 把 `init.body` 类型化为 `FormData`。
 
 `SerializeSchema` 的每个节点还接受可选 `title` —— 纯注解：`toJsonSchema` 把它带入输出的 JSON Schema，序列化与校验忽略它，spec 发射器用它命名去重后的模式（见下）。
 
@@ -71,15 +109,44 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 
 **去重进 `components.schemas`。** 文档中出现 **≥2 次** 的任何查询/参数/体/响应模式（结构化 JSON 相等 —— 相异但等值的对象同样去重）被提升进 `components.schemas`，每个出现位置变成 `{ "$ref": "#/components/schemas/<name>" }`。名字优先取 DSL 携带的 `title`，否则按首次出现顺序合成 `Schema1`、`Schema2`、…… —— 确定性的，spec 跨构建可干净 diff；标题冲突（同 `title`、不同 JSON）加 `_2`、`_3`、…… 后缀。只出现一次的模式保持内联（不做无谓碎片化），`components.securitySchemes` 与之合入同一个 `components` 对象、互不干扰。传 `refSchemas: false` 保持全部内联。
 
-**schema 透传。** `toJsonSchema` 的转发覆盖 `SerializeSchema` 运行时实际携带的字段 —— `type`、`properties`/`required`、`items`、`nullable`、`title`。该 DSL 没有 `enum`/`format`/`description`/数值界标记，因此一个都不发明。
+**schema 透传。** `toJsonSchema` 的转发覆盖 `SerializeSchema` 运行时实际携带的字段 —— `type`、`properties`/`required`、`items`、`nullable`、`title`。该 DSL 没有 `enum`/`format`/`description`/数值界标记，因此一个都不发明 —— 输出中唯一的 `format` 是 `binary`，由 multipart 的 `file` 标记输出（见上方「元数据」小节），绝不来自 schema 转换。
 
 | 函数 | 含义 |
 | --- | --- |
 | `openapiSpec(app, options)` | `OpenApiDocument` —— `{ openapi: '3.1.0', info, servers?, components?, paths }`，构造上即 JSON 兼容 |
 | `openapiJson(ctx, app, options?)` | 响应助手：spec 的 JSON 响应（`info` 字段回落到 `describeApp`；`servers`/`securitySchemes`/`refSchemas` 原样透传） |
-| `withRouteValidation(app)` | 纯数据变换（mount 家族）：只重建带 `body`、`query` 或 `params` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 |
+| `withRouteValidation(app)` | 纯数据变换（mount 家族）：只重建带 `body`、`query`、`params` 或 `headers` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 |
 
-`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名每一条违规路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），`issues` 携带全量列表与按请求位置限定的路径，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。标记为 required 的查询键（`{ schema, required: true }`）与 spec 同构：键缺失回答同样的 422（`{"error":"query.format: required"}`）；空值（`?format=`）算作存在，存在的值仍按其 schema 检查。`params` 条目以同样方式检查捕获到的路径参数（`'params.<key>: …'` —— 捕获值同样保持字符串）；`required` 标记拒绝可选段位的缺失（`{"error":"params.name: required"}`）。spec 与闸门共享一个来源：标注被重新挂回重建的路由。响应侧有同样的孪生 —— [`s200/response-check`](/zh/api/response-check) 在回卷时用 `responses[status].schema` 检查已物化的响应。
+`withRouteValidation` 是 spec 的运行时孪生：违规以 `422` 应答并点名每一条违规路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），`issues` 携带全量列表与按请求位置限定的路径，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入不受影响地流过 —— 什么都不落 `ctx.state`、什么都不强制转换（查询值保持字符串，因此 `{ type: 'integer' }` 面对 `?page=2` 是 422 —— 想要解析请用 `s200/query` 的 `queryParams`）。标记为 required 的查询键（`{ schema, required: true }`）与 spec 同构：键缺失回答同样的 422（`{"error":"query.format: required"}`）；空值（`?format=`）算作存在，存在的值仍按其 schema 检查。`params` 条目以同样方式检查捕获到的路径参数（`'params.<key>: …'` —— 捕获值同样保持字符串）；`required` 标记拒绝可选段位的缺失（`{"error":"params.name: required"}`）。`headers` 条目以一次大小写不敏感的 `headers.get` 读取同样检查（`'headers.<name>: …'`）。两个刻意的非闸控：`cookies` 条目仅文档化（cookie 解析属于 `s200/cookies`，见上方「元数据」小节）；multipart `body` 文档化表单但不读取它 —— 闸门绝不 JSON 解析它，运行时校验归 `s200/multipart` 的 `streamForm` / `s200/upload` 的 `uploadForm`。spec 与闸门共享一个来源：标注被重新挂回重建的路由。响应侧有同样的孪生 —— [`s200/response-check`](/zh/api/response-check) 在回卷时用 `responses[status].schema` 检查已物化的响应。
+
+## 非 TypeScript 客户端
+
+spec 就是契约，因此任何 OpenAPI 工具链都能消费它 —— s200 自带的客户端是可选而非必需。两条官方路径，都消费 `openapiJson` 路由输出的文档：
+
+**类型 —— [`openapi-typescript`](https://openapi-ts.dev)。** 从服务中的 spec 生成零运行时的 TypeScript 类型（与 `s200/codegen` 内建的类型同一族 `paths`/`components`，但可用于任何服务端、任何语言后端）：
+
+```sh
+npx openapi-typescript https://api.example/openapi.json -o src/api/schema.d.ts
+```
+
+```ts
+import type { paths } from './api/schema.d.ts';
+
+type User = paths['/users/{id}']['get']['responses']['200']['content']['application/json']['schema'];
+```
+
+**SDK —— [`openapi-generator`](https://openapi-generator.tech)。** 为 Python、Go、Java 与数十种语言生成完整客户端，外加服务端桩与文档：
+
+```sh
+npx @openapitools/openapi-generator-cli generate -i https://api.example/openapi.json -g python -o ./sdk-python
+npx @openapitools/openapi-generator-cli generate -i openapi.json -g go -o ./sdk-go
+```
+
+`-i` 接收 URL 或已抓取的文件（`curl -o openapi.json https://api.example/openapi.json`）。对 OpenAPI 3.1 的生成器支持按生成器逐个铺开 —— 目标生成器拒绝 3.1 时，先做一次降版本转换再喂给它：
+
+```sh
+npx @apiture/openapi-down-convert --input openapi.json --output openapi-3.0.yaml
+```
 
 ## Swagger UI（`s200/swagger`）
 
@@ -117,7 +184,7 @@ await writeFile('src/api/client.ts', generateClient(app, { name: 'createUsersCli
 
 - **参数**来自每个模式：`/users/:id` → `args: { id: string }`，`/posts/:postId?` → `{ postId?: string }`，含 `*path` 通配。
 - **查询**来自 `meta.query`：`init.query` 收窄为声明的键 —— 默认可选（`{ query?: { verbose?: boolean } }`）；`{ schema, required: true }` 标记去掉 `?`（`{ query?: { format: string } }`），与 spec 的 `parameters[].required` 和闸门的 422 一致。
-- **请求体**来自 `meta.body`：`init.body` 重定型为 schema 的形状，且 `init` 变为**必填**（路由读体，调用方就必须发体）。JSON 形状的体在调用时字符串化并默认盖 `content-type: application/json`（已设置则不盖）—— s200/client 的规则；字符串与结构化体（流、blob、表单、缓冲）原样传给 fetch。
+- **请求体**来自 `meta.body`：`init.body` 重定型为 schema 的形状，且 `init` 变为**必填**（路由读体，调用方就必须发体）。JSON 形状的体在调用时字符串化并默认盖 `content-type: application/json`（已设置则不盖）—— s200/client 的规则；字符串与结构化体（流、blob、表单、缓冲）原样传给 fetch。multipart 的 `{ form: … }` 标注把 `init.body` 类型化为 `FormData` —— 调用方构建表单，客户端原样发送。
 - **响应**来自 `meta.responses` 与路由的 `throws` 闸门合并（两者声明同一状态时 meta 胜出）：每个状态一个 `Branch<S, T>` 成员 —— `status` 收窄为该分支字面量、`json()` 解析为该分支体类型的 `Response` —— 因此 `if (res.status === 404)` 收窄体类型。throws 示例按结构推断，与 spec 发射器同规则。
 
 诚实的契约：handler 自身的 `json()` 体品牌是运行时表看不见的编译期幻影 —— `meta` 与 `throws` 都未声明的东西类型为 `unknown`，完全无声明的路由保持裸 `Promise<Response>`。要直接从 handler 类型推断，请对应用本身使用 `s200/client` 的 `createClient`。
@@ -158,6 +225,17 @@ const client = createClient(app, { baseUrl: 'https://api.example', middleware: a
 
 中止语义不变，且归属于**整次调用**而非单次尝试：生效信号（单次调用的 `init.signal`，否则 `signal`，再与 `timeoutMs` 竞速）只盖章一次在 `Request` 上，中止它就结束整次调用 —— 重试也不例外 —— `timeoutMs` 窗口也是每次调用一个窗口，而非每次尝试一个。想要按次限制的中间件请自行换信号（`new Request(req, { signal: AbortSignal.any([req.signal, AbortSignal.timeout(1000)]) })`）。两个需要知道的契约：设置了 middleware 后每次调用都会先物化为 `Request` 再进链，因此**相对**路径需要一个运行时可解析的基准（`baseUrl`，或运行时的 `location`）—— 即使注入了 `fetch` 也一样 —— 绝对模式不受影响；非函数条目属于选项层的误用，在 `createClient` 时抛出并带上出错下标（与缺失 `baseUrl` 守卫同一契约）。
 
+流式路由返回的是真正的 `Response`，`readSSE` 把它变成事件 —— 纯拉取式解析器，无需 `EventSource`：
+
+```ts
+const res = await client.get('/events');
+for await (const event of readSSE(res)) {
+  if (event.event === 'tick') console.log(event.data);   // 自己 JSON.parse —— data 是解码后的字符串
+}
+```
+
+`ClientSseEvent` 与 `s200/streaming` 的 `SseEvent` 逐字段对齐（`{ id?, event?, data, retry? }`），`data` 恒为解码后的字符串 —— 写对象的服务端在网络上以 JSON 编码发送。解析器遵循 event-stream 规范：多行 `data` 以 `\n` 合并、注释行（`:` 开头）与未知字段名忽略、冒号后恰一个空格被剥离、LF/CRLF/孤立 CR 都终止行、开头 BOM 丢弃。`id` 与 `retry` 跨事件保留（断线重连的游标），`event` 每次分发后重置。干净结束即结束迭代（结尾不完整的半截事件丢弃）；body 读取失败（连接掉线）让 pending 的 `next()` 以该错误拒绝；中途 break 出循环会取消响应 body。
+
 | 函数 / 类型 | 含义 |
 | --- | --- |
 | `createClient(app, options?)` | `Client<R>` —— 覆盖应用路由日志的八个方法命名空间；每次调用点名一个带类型参数的已注册模式字面量 |
@@ -167,6 +245,8 @@ const client = createClient(app, { baseUrl: 'https://api.example', middleware: a
 | `ClientOptions` | `{ baseUrl?, fetch?, signal?, timeoutMs?, middleware? }` —— 拼到每个路径前的 base URL；可注入 fetch 用于测试与 edge 运行时；客户端级 abort 信号；每请求超时毫秒数（与信号竞速，默认：无）；按洋葱序的拦截器链（第一个条目最外层，非函数条目在创建时抛错） |
 | `ClientResponse<S, T>` | 状态判别响应联合：`res.status` 收窄 `res.json()` 的类型 |
 | `BranchResponse<S, T>` | 一个分支：`{ status: S } & Response`，体类型 `T` |
+| `readSSE(response)` | `AsyncIterable<ClientSseEvent>` —— 把 `text/event-stream` 响应解析为可 `for await` 的事件：`data:`/`event:`/`id:`/`retry:` 字段、多行 data 合并、注释忽略；干净关闭结束迭代，body 掉线让 pending 的 `next()` 拒绝 |
+| `ClientSseEvent` | `{ id?, event?, data, retry? }` —— 一个解析后的事件，`data` 为解码后的字符串；`id`/`retry` 跨事件保留（断线重连游标） |
 
 路由调用签名：参数在模式捕获时（`:id`）**必填**、在模式声明时（`:id?`）**可选**、纯模式则无（`init` 前移一位）。输入幻影走同一签名：`jsonBody` 闸门类型化（并要求）`init.body`，`bodyShape<T>()` 闸门把 `init.body` 要求为声明的结构化类型（客户端按运行时的值编码：普通对象/数组会被 JSON 序列化并带上默认 `content-type: application/json`；`FormData`/`Blob`/流则原样传给 fetch），`queryParams` 闸门收窄 `init.query`，`requiresHeaders` 闸门把 `init.headers` 要求为声明键必填的 `Record<string, string>`（额外键仍允许）；`throws` 闸门与返回的 `httpError` 值的错误分支在响应联合中点名错误状态。
 

@@ -35,11 +35,49 @@ describeRoute(app, 'GET', '/users/:id', {
 | `describeApp(app, meta)` | Annotates the app itself (the OpenAPI `info` block) |
 | `getRouteMeta(route)` / `getAppMeta(app)` | Read back what was set |
 
-`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, params?: Record<string, QueryParam>, body?: SerializeSchema, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`. `AppMeta`: `{ title?, version?, description? }`.
+`RouteMeta`: `{ summary?, description?, tags?, deprecated?, query?: Record<string, QueryParam>, params?: Record<string, QueryParam>, headers?: Record<string, QueryParam>, cookies?: Record<string, QueryParam>, body?: SerializeSchema | MultipartBody, responses?: Record<number, { description: string; schema?: SerializeSchema }>, security?: ReadonlyArray<Record<string, readonly string[]>> }`. `AppMeta`: `{ title?, version?, description? }`.
 
 A `QueryParam` is the parameter's `SerializeSchema` bare (optional — the default), or the `{ schema, required: true }` marker form when the request must carry the key. The marker is one flag with three synchronized views: `openapiSpec` emits `parameters[].required: true`, `withRouteValidation` answers a missing key with a `422` (`'query.<key>: required'`), and `s200/mcp`'s tool input schema lists the name under `required`. `querySchemaOf(entry)`/`isQueryRequired(entry)` (from `s200/meta`) unwrap either form for custom tooling.
 
 `params` annotates path parameters — the `id` of `/users/:id` — with the same entry forms: `openapiSpec` emits the entry's JSON Schema as the path parameter's schema (unannotated parameters keep the bare `{ type: 'string' }`), and `withRouteValidation` checks the captured value (`'params.<key>: …'` on failure; a `required` marker rejects an optional segment's absence). The emitted `required` stays segment-driven (`:id` required, `:id?` optional) — OpenAPI pins every path parameter to the segment it fills. For runtime schemas over the captured params (or headers) with a Standard Schema vendor, see `s200/validate`'s `validateParams`/`validateHeaders` gates.
+
+`headers`/`cookies` annotate request headers and cookies with the same entry forms: `openapiSpec` emits each as a `parameters[]` entry with `in: 'header'`/`in: 'cookie'` (the `required` marker rides along, exactly like query). At runtime the two differ: `withRouteValidation` gates `headers` exactly like `query` — one case-insensitive `headers.get` read, `'headers.<name>: …'` on failure — while `cookies` is spec-only. Parsing the `cookie` header belongs to `s200/cookies`, an entry `s200/openapi` must not import, and a second parsing convention inside the gate would drift from it — enforce cookies with the cookies battery or your own gate.
+
+**Multipart bodies.** `body` also accepts the multipart marker instead of a `SerializeSchema`: `{ form: Record<string, MultipartField> }`, one entry per form part. A `MultipartField` is a text field's `QueryParam` (either form) or the file marker `{ file: true, required?, contentTypes? }` — `required` names a part the form must carry, `contentTypes` allowlists the file's media types:
+
+```ts
+describeRoute(app, 'POST', '/avatars', {
+  summary: 'Upload an avatar',
+  body: {
+    form: {
+      label: { schema: { type: 'string' }, required: true },
+      avatar: { file: true, required: true, contentTypes: ['image/png', 'image/jpeg'] },
+    },
+  },
+});
+```
+
+`openapiSpec` emits the route's request body as `multipart/form-data`:
+
+```json
+"requestBody": {
+  "content": {
+    "multipart/form-data": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "avatar": { "type": "string", "format": "binary" }
+        },
+        "required": ["label", "avatar"]
+      },
+      "encoding": { "avatar": { "contentType": "image/png, image/jpeg" } }
+    }
+  }
+}
+```
+
+File parts become `{ type: 'string', format: 'binary' }` — OpenAPI's standard file-part spelling — with one `encoding` entry each: its `contentType` is the marker's allowlist (comma-joined; the spec allows lists and wildcards) or the pinned `application/octet-stream` when no allowlist is declared (the spec's own default for string parts is `text/plain`, which a file part never is). Forms without file parts omit `encoding` entirely. The `format: 'binary'` emission is the design's one deliberate exception to schema pass-through: it comes from the explicit `file` marker, not from schema conversion — `toJsonSchema` keeps forwarding only what a `SerializeSchema` carries. `multipartFormSchema(form)` (from `s200/meta`) builds that same JSON Schema for custom tooling. `withRouteValidation` documents a multipart body without reading it — multipart runtime validation (content-type, part caps, file allowlists) is `s200/multipart`'s `streamForm` / `s200/upload`'s `uploadForm`, and the gate never JSON-parses the request. Downstream: `s200/mcp` nests the form under one required `body` argument (JSON-RPC arguments are JSON, not file parts), and `s200/codegen` types `init.body` as `FormData`.
 
 `SerializeSchema` also accepts an optional `title` on every node — a pure annotation: `toJsonSchema` carries it into the emitted JSON Schema, serialization and validation ignore it, and the spec emitter uses it to name deduplicated schemas (below).
 
@@ -71,15 +109,44 @@ const spec = openapiSpec(app, { title: 'Users API', version: '1.0.0' });
 
 **Schema dedup into `components.schemas`.** Any query, params, body or response schema that occurs **≥2 times** in the document (structural JSON equality — distinct-but-equal objects dedup too) is hoisted into `components.schemas` and every occurrence becomes `{ "$ref": "#/components/schemas/<name>" }`. The name is the schema's `title` when the DSL carries one, else a synthetic `Schema1`, `Schema2`, … in first-occurrence order — deterministic, so specs diff cleanly across builds; colliding titles (same `title`, different JSON) get `_2`, `_3`, … suffixes. Schemas that occur once stay inline (no pointless fragmentation), and `components.securitySchemes` merges into the same `components` object untouched. Pass `refSchemas: false` to keep everything inline.
 
-**Schema pass-through.** `toJsonSchema` forwarding covers exactly the fields a `SerializeSchema` carries at runtime — `type`, `properties`/`required`, `items`, `nullable`, `title`. The DSL has no `enum`/`format`/`description`/bounds markers, so none are invented.
+**Schema pass-through.** `toJsonSchema` forwarding covers exactly the fields a `SerializeSchema` carries at runtime — `type`, `properties`/`required`, `items`, `nullable`, `title`. The DSL has no `enum`/`format`/`description`/bounds markers, so none are invented — the one `format` anywhere in the output is `binary`, emitted by the multipart `file` marker (see [Metadata](#metadata-s200-meta) above), never by schema conversion.
 
 | Function | Meaning |
 | --- | --- |
 | `openapiSpec(app, options)` | The `OpenApiDocument` — `{ openapi: '3.1.0', info, servers?, components?, paths }`, JSON-compatible by construction |
 | `openapiJson(ctx, app, options?)` | Response helper: the spec as a JSON response (`info` fields fall back to `describeApp`; `servers`/`securitySchemes`/`refSchemas` pass through verbatim) |
-| `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body`, `query` or `params` annotation, checking requests with `compileValidator` from `s200/serialize` |
+| `withRouteValidation(app)` | Pure data transform (mount's family) that rebuilds only routes carrying a `body`, `query`, `params` or `headers` annotation, checking requests with `compileValidator` from `s200/serialize` |
 
-`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while `issues` carries the full list with scope-qualified paths, all built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). Query keys marked required (`{ schema, required: true }`) are isomorphic to the spec: the key's absence answers the same 422 (`{"error":"query.format: required"}`); an empty value (`?format=`) counts as present, and a present value is still checked against its schema. `params` entries check the captured path parameter the same way (`'params.<key>: …'` — captured values stay strings too); a `required` marker rejects an optional segment's absence (`{"error":"params.name: required"}`). The spec and the gates share one source: annotations are re-attached to the rebuilt routes. The response side has the same twin — [`s200/response-check`](/api/response-check) runs `responses[status].schema` against the materialized response on the unwind.
+`withRouteValidation` is the runtime twin of the spec: a violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while `issues` carries the full list with scope-qualified paths, all built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). Query keys marked required (`{ schema, required: true }`) are isomorphic to the spec: the key's absence answers the same 422 (`{"error":"query.format: required"}`); an empty value (`?format=`) counts as present, and a present value is still checked against its schema. `params` entries check the captured path parameter the same way (`'params.<key>: …'` — captured values stay strings too); a `required` marker rejects an optional segment's absence (`{"error":"params.name: required"}`). `headers` entries check one case-insensitive `headers.get` read the same way (`'headers.<name>: …'`). Two deliberate non-gates: `cookies` entries document only (cookie parsing belongs to `s200/cookies`; see [Metadata](#metadata-s200-meta)), and a multipart `body` documents the form without reading it — the gate never JSON-parses it, and `s200/multipart`'s `streamForm` / `s200/upload`'s `uploadForm` own the runtime validation. The spec and the gates share one source: annotations are re-attached to the rebuilt routes. The response side has the same twin — [`s200/response-check`](/api/response-check) runs `responses[status].schema` against the materialized response on the unwind.
+
+## Non-TypeScript clients
+
+The spec is the contract, so any OpenAPI toolchain works on it — s200's own clients are optional, not required. The two official paths, both consuming the `openapiJson` route's document:
+
+**Types — [`openapi-typescript`](https://openapi-ts.dev).** Zero-runtime TypeScript types from the served spec (the same `paths`/`components` types `s200/codegen` bakes in, generated for any server, any language backend):
+
+```sh
+npx openapi-typescript https://api.example/openapi.json -o src/api/schema.d.ts
+```
+
+```ts
+import type { paths } from './api/schema.d.ts';
+
+type User = paths['/users/{id}']['get']['responses']['200']['content']['application/json']['schema'];
+```
+
+**SDKs — [`openapi-generator`](https://openapi-generator.tech).** Full clients for Python, Go, Java, and dozens more languages, plus server stubs and documentation:
+
+```sh
+npx @openapitools/openapi-generator-cli generate -i https://api.example/openapi.json -g python -o ./sdk-python
+npx @openapitools/openapi-generator-cli generate -i openapi.json -g go -o ./sdk-go
+```
+
+`-i` takes a URL or a fetched file (`curl -o openapi.json https://api.example/openapi.json`). Generator support for OpenAPI 3.1 is per-generator and still rolling out — when a target rejects 3.1, downconvert once and feed the generator that:
+
+```sh
+npx @apiture/openapi-down-convert --input openapi.json --output openapi-3.0.yaml
+```
 
 ## Swagger UI (`s200/swagger`)
 
@@ -117,7 +184,7 @@ Where the types come from — exactly what exists at runtime:
 
 - **Params** from each pattern: `/users/:id` → `args: { id: string }`, `/posts/:postId?` → `{ postId?: string }`, `*path` wildcards included.
 - **Query** from `meta.query`: `init.query` narrows to the declared keys — optional by default (`{ query?: { verbose?: boolean } }`); a `{ schema, required: true }` marker drops the `?` (`{ query?: { format: string } }`), matching the spec's `parameters[].required` and the gate's 422.
-- **Request body** from `meta.body`: `init.body` retypes to the schema's shape and `init` becomes **required** (the route reads a body, the caller must send one). A JSON-shape body is stringified at call time with a default `content-type: application/json` unless one is set — s200/client's rule; strings and structured bodies (streams, blobs, forms, buffers) pass to fetch untouched.
+- **Request body** from `meta.body`: `init.body` retypes to the schema's shape and `init` becomes **required** (the route reads a body, the caller must send one). A JSON-shape body is stringified at call time with a default `content-type: application/json` unless one is set — s200/client's rule; strings and structured bodies (streams, blobs, forms, buffers) pass to fetch untouched. A multipart `{ form: … }` annotation types `init.body` as `FormData` — the caller builds the form, the client sends it untouched.
 - **Responses** from `meta.responses` merged with the route's `throws` gates (meta wins a status both declare): one `Branch<S, T>` member per status — a `Response` whose `status` is the branch's literal and whose `json()` resolves to the branch's body type — so `if (res.status === 404)` narrows the body. Throws examples infer structurally, same as the spec emitter.
 
 The honest contract: handlers' own `json()` body brands are compile-time phantoms the runtime table cannot see — anything neither `meta` nor `throws` declares types `unknown`, and routes with no declarations at all keep the bare `Promise<Response>`. For inference straight off the handler types, use `createClient` from `s200/client` against the app itself.
@@ -158,6 +225,17 @@ const client = createClient(app, { baseUrl: 'https://api.example', middleware: a
 
 Abort semantics are unchanged and belong to the *call*, not the attempt: the effective signal (per-call `init.signal`, else `signal`, raced with `timeoutMs`) is stamped once on the `Request`, so aborting it ends the whole call — retries included — and a `timeoutMs` window is one window per call, not per attempt. A middleware wanting per-attempt limits swaps the signal itself (`new Request(req, { signal: AbortSignal.any([req.signal, AbortSignal.timeout(1000)]) })`). Two contracts to know: with middleware set every call is materialized as a `Request` before the chain, so a *relative* path needs a base the runtime can resolve (`baseUrl`, or a runtime `location`) even when `fetch` is injected — absolute patterns are unaffected; and a non-function entry is options-level misuse, thrown at `createClient` time with the offending index (the same contract as the missing-`baseUrl` guard).
 
+Streaming routes come back as real `Response`s, and `readSSE` turns one into events — a pure pull-driven parser, no `EventSource` needed:
+
+```ts
+const res = await client.get('/events');
+for await (const event of readSSE(res)) {
+  if (event.event === 'tick') console.log(event.data);   // JSON.parse it yourself — data is the decoded string
+}
+```
+
+`ClientSseEvent` mirrors `s200/streaming`'s `SseEvent` field-for-field (`{ id?, event?, data, retry? }`), with `data` always the decoded string — a server writing objects ships them JSON-encoded. The parser follows the event-stream spec: multi-line `data` merges with `\n`, comment lines (leading `:`) and unknown field names are ignored, exactly one space after the colon is stripped, LF/CRLF/lone-CR line endings all terminate lines, and a leading BOM is dropped. `id` and `retry` persist across events — the resume cursor — while `event` resets per dispatch. A clean end-of-stream ends the iteration (a trailing partial event is discarded); a failed body read (a dropped connection) rejects the pending `next()` with the body error; breaking out of the loop cancels the response body.
+
 | Function / Type | Meaning |
 | --- | --- |
 | `createClient(app, options?)` | `Client<R>` — eight method namespaces over the app's route log; each call names a registered pattern literal with typed params |
@@ -167,6 +245,8 @@ Abort semantics are unchanged and belong to the *call*, not the attempt: the eff
 | `ClientOptions` | `{ baseUrl?, fetch?, signal?, timeoutMs?, middleware? }` — base URL prepended to every path; injectable fetch for tests and edge runtimes; client-level abort signal; per-request timeout in milliseconds (raced with the signal, default: none); interceptor chain in onion order (first entry outermost, non-function entries throw at creation) |
 | `ClientResponse<S, T>` | The status-discriminated response union: `res.status` narrows `res.json()`'s type |
 | `BranchResponse<S, T>` | One branch: `{ status: S } & Response` with the body type `T` |
+| `readSSE(response)` | `AsyncIterable<ClientSseEvent>` — parses a `text/event-stream` response for `for await`: `data:`/`event:`/`id:`/`retry:` fields, multi-line data merged, comments ignored; a clean close ends the iteration, a dropped body rejects the pending `next()` |
+| `ClientSseEvent` | `{ id?, event?, data, retry? }` — one parsed event, `data` the decoded string; `id`/`retry` persist across events (the resume cursor) |
 
 Route call signatures: params are **required** exactly when the pattern captures them (`:id`), **optional** when declared (`:id?`), absent for plain patterns (the `init` moves up one position). Input phantoms ride the same signature: a `jsonBody` gate types (and demands) `init.body`, a `bodyShape<T>()` gate demands `init.body` as its declared structured type (the client encodes from the runtime value: a plain object/array is JSON-stringified with a default `content-type: application/json`; `FormData`/`Blob`/streams ride to fetch untouched), a `queryParams` gate narrows `init.query`, a `requiresHeaders` gate demands `init.headers` as a `Record<string, string>` with the declared keys required (extra keys still allowed); error branches from `throws` gates and returned `httpError` values name the error statuses in the response union.
 

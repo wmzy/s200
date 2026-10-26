@@ -25,7 +25,7 @@ tree-shaking、可替换。
 | 路由表作为数据 | ✅ 可导出 JSON + OpenAPI | ❌ | ❌ | ✅ | ❌ | ❌ |
 | 适配器内的 HTTPS / HTTP/2 | ✅ | ✅ | ✅ | ✅ | 第三方 | 经运行时（Bun.serve） |
 | WebSocket | ✅ 零依赖 RFC 6455 node + bun（子协议、permessage-deflate、心跳） | ✅ | 第三方 | 第三方 | 第三方 | ✅ 内建 `.ws()`（Bun API；node 上为 crossws） |
-| battery | 37 个 opt-in（cors、cookies、csrf、jwt、cache、etag、compress、rate-limit、session、upload、response-check、mcp、…） | ~20 个（含 csrf/jwt/cache） | 生态 | 插件生态 | 生态 | ~15 个官方插件（openapi、jwt、cors、rate-limit、…） |
+| battery | 38 个 opt-in（cors、cookies、csrf、jwt、oauth、cache、etag、compress、rate-limit、session、upload、response-check、mcp、…） | ~20 个（含 csrf/jwt/cache） | 生态 | 插件生态 | 生态 | ~15 个官方插件（openapi、jwt、cors、rate-limit、…） |
 | 吞吐量类别（见基准测试） | Web 标准对象类别；opt-in light 模式 ~1.3–1.4× | 同类（patched：1.5×） | ~0.6× | patched 类别 | 更低 | patched 类别；在 Bun 上居其榜首 |
 | 核心体积（min+gz） | 由 size-limit 门控：~4 kB 最小核心 / ~8 kB 完整 barrel | ~10 kB+ | — | — | 极小，无 battery | 解包 1.1 MB；141 kB min 的 hello-world（v2 rc） |
 | 校验集成 | 覆盖任意解析器的通用门 + 响应契约检查（`s200/response-check`） | 内建 zod/valibot/typebox（v5 路线图：响应校验） | 生态 | 原生 JSON Schema（v6 里程碑：Ajv 响应校验） | 生态 | 内建 TypeBox（`t`）+ standard schema |
@@ -33,12 +33,12 @@ tree-shaking、可替换。
 | JSX / SSG / 开发服务器 | ❌（经 `s200/dev` 的路由表热重载） | ✅ | ❌ | ❌ | ❌ | ❌（html 插件） |
 | 生态规模 | 年轻 | 庞大 | 非常庞大 | 庞大 | 庞大 | 快速增长（使用量第 9，SoJS 2025） |
 
-battery 行的计数口径：包共暴露 55 个入口——根 barrel 加 54 个子路径。
+battery 行的计数口径：包共暴露 56 个入口——根 barrel 加 55 个子路径。
 其中 5 个子路径是运行时适配器（`node`、`bun`、`cloudflare`、
 `aws-lambda`、`vercel`），9 个是工具/元信息入口（`client`、`codegen`、
 `dev`、`meta`、`openapi`、`route-table`、`swagger`、`test`、`version`）；
-其余 40 个功能子路径在把 `websocket/node`、`websocket/bun` 与
-`websocket/cloudflare` 归并进 `websocket` 这一个 battery 之后，是 37 个
+其余 41 个功能子路径在把 `websocket/node`、`websocket/bun` 与
+`websocket/cloudflare` 归并进 `websocket` 这一个 battery 之后，是 38 个
 各自独立的 opt-in battery。
 
 ### 一段话讲 Elysia
@@ -162,7 +162,7 @@ resolve），不是 s200 与 Koa 共享的洋葱模型。如果你的目标是 B
   注意：Node 适配器重建于 srvx + crossws 之上（与 h3 同一块地基），
   生命周期 API 则保留了 1.x 的 `on` 前缀，存量插件无需重写即可进入
   v2。重写成本由维护者而非用户支付；s200 给出的选项则是根本不付这
-  笔钱——`sideEffects: false`、54 个可 tree-shaking 的包入口、以及
+  笔钱——`sideEffects: false`、55 个可 tree-shaking 的包入口、以及
   为每次发布把关的 size-limit 预算，从第一天起就是这个包的形状。
 - **Fastify v6——跳票**（[v6
   规划](https://github.com/fastify/fastify/issues/6834)、

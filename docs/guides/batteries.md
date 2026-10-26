@@ -96,7 +96,9 @@ describeRoute(app, 'GET', '/users/:id', {
 get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
 ```
 
-The same annotations can become runtime gates: `withRouteValidation(app)` is a pure data transform (mount's family) that rebuilds only the routes carrying a `body` or `query` annotation, checking requests with `compileValidator` from `s200/serialize` — the read-side twin of `serialize()`, covering exactly the same DSL subset. A violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while the body's `issues` array carries the full list, built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes, so `openapiSpec(gated)` keeps documenting them. Annotate mounted sub-apps on the parent after `mount` (the metadata registry keys by route identity).
+The same annotations can become runtime gates: `withRouteValidation(app)` is a pure data transform (mount's family) that rebuilds only the routes carrying a `body`, `query`, `params` or `headers` annotation, checking requests with `compileValidator` from `s200/serialize` — the read-side twin of `serialize()`, covering exactly the same DSL subset. A violation answers `422` naming every offending path — `error` keeps the first (`{"error":"body.tags.1: expected string, got number"}`) while the body's `issues` array carries the full list, built by the `validationError` helper shared with `s200/validate`; valid input flows on untouched — nothing lands on `ctx.state` and nothing is coerced (query values stay strings, so `?page=2` against `{ type: 'integer' }` is a 422 — use `s200/query`'s `queryParams` when you want parsing). The spec and the gates share one source: annotations are re-attached to the rebuilt routes, so `openapiSpec(gated)` keeps documenting them. Annotate mounted sub-apps on the parent after `mount` (the metadata registry keys by route identity).
+
+`headers`/`cookies` entries annotate request headers and cookies the same way (`in: 'header'`/`in: 'cookie'`) — headers gate at runtime exactly like `query` (`'headers.<name>: …'`), cookies stay spec-only (cookie parsing belongs to `s200/cookies`). `body: { form: … }` documents a `multipart/form-data` request: text parts through the `SerializeSchema` DSL, file parts (`{ file: true, contentTypes? }`) as `{ type: 'string', format: 'binary' }` with `encoding` entries — the spec's standard file shape, and the one `format` s200 ever emits (from the explicit marker, never from schema conversion). The gate documents multipart bodies without reading them — runtime validation stays with `s200/multipart`/`s200/upload`. The emitted spec feeds any OpenAPI toolchain, s200's own clients optional: `openapi-typescript` for zero-runtime types, `openapi-generator` for Python/Go SDKs — see the [API reference](/api/openapi) for the full shape and the non-TypeScript clients section.
 
 Pair the spec with a documentation UI — `swaggerUi` serves the Scalar API Reference page (assets load from a pinned CDN, so s200 stays zero-dependency):
 
@@ -226,13 +228,32 @@ use(app, secureHeaders());  // nosniff, DENY framing, strict-origin-when-cross-o
 use(app, secureHeaders({ strictTransportSecurity: 'max-age=31536000' }));  // HSTS is opt-in
 ```
 
+`contentSecurityPolicy: { nonce: true, policy }` wires the per-request nonce automatically — a fresh `cspNonce()` parks on `ctx.state.cspNonce` for the markup, and every `{{nonce}}` placeholder in the policy is spliced in when the header lands (`reportOnly: true` for the report-only variant):
+
+```ts
+use(app, secureHeaders({
+  contentSecurityPolicy: { nonce: true, policy: { 'script-src': ["'nonce-{{nonce}}'"] } },
+}));
+```
+
 ## Auth
 
 `basicAuth`/`bearerAuth` gates: the `verify` function decides, failures throw a 401 `HttpError` with the `WWW-Authenticate` challenge into the error boundary (`onError` included; the default mapping answers `401` + challenge) and the chain below never runs:
 
 ```ts
 use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
-use(app, bearerAuth(async (token) => token === API_TOKEN));
+use(app, bearerAuth(async (token) => API_TOKEN));
+```
+
+Credential comparison inside `verify` is yours — `timingSafeEqual(a, b)` from `s200/cookies` compares constant-time (`false` on a length mismatch).
+
+## OAuth
+
+Authorization Code + PKCE (S256) primitives as pure functions: `createPkcePair()` mints the verifier and its S256 challenge, `randomState()` the unguessable state (or nonce), `buildAuthorizeUrl` renders the redirect (always `code_challenge_method=S256`), and `exchangeCode` redeems the code — HTTP Basic when a `clientSecret` is given, `client_id` in the body otherwise; non-2xx answers throw a 502. You own the storage — park state and verifier in signed cookies between redirect and callback. `fetch` is injectable; the OIDC recipe (`recipes/oidc.ts`) composes these end to end:
+
+```ts
+const pkce = await createPkcePair();
+redirect(ctx, buildAuthorizeUrl(opts, { state, codeChallenge: pkce.codeChallenge }));
 ```
 
 ## CSRF
@@ -247,7 +268,7 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 
 ## JWT
 
-HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, zero dependencies. `signJwt`/`verifyJwt` take a secret string, a `CryptoKey`, or a JWK; verification rejects `alg:none` unconditionally, enforces `exp`/`nbf`, checks `aud`/`iss` on request, and key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key — the confusion attack is structurally closed). `jwtAuth` is the gate, storing the payload on `ctx.state.jwt` and answering `401` before the chain below runs:
+HS256/384/512, RS256/384/512, PS256/384/512, ES256/384/512, and EdDSA (Ed25519) over WebCrypto, zero dependencies. `signJwt`/`verifyJwt` take a secret string, a `CryptoKey`, or a JWK; verification rejects `alg:none` unconditionally, enforces `exp`/`nbf`, checks `aud`/`iss` on request, and key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key, EdDSA an Ed25519 OKP key — the confusion attack is structurally closed). `jwtAuth` is the gate, storing the payload on `ctx.state.jwt` and answering `401` before the chain below runs:
 
 ```ts
 const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });
@@ -269,6 +290,16 @@ use(app, cache({ store: redisCacheStore }));   // shared store across instances
 ```
 
 The default store is in-process; a custom `store` (`get`/`set`/`delete` over `{ exp, status, headers, body }` entries) shares the cache across instances — expiry is still checked by the middleware on every read.
+
+`cacheControl({ maxAge, sMaxAge, staleWhileRevalidate, noStore, noCache, private, immutable, mustRevalidate })` builds the `Cache-Control` value for the caches between you and the client — one call, fixed order, `noStore` short-circuiting to exactly `no-store`:
+
+```ts
+get(app, '/assets/:f', (ctx) =>
+  text(ctx, body, {
+    headers: { 'cache-control': cacheControl({ maxAge: 3600, staleWhileRevalidate: 86400 }) },
+  })
+);
+```
 
 ## Trust proxy
 
@@ -296,6 +327,8 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 ```
 
 The default key reads `x-forwarded-for` — only meaningful behind a proxy that overwrites it; pass `key: (ctx) => …` for any other identity (and a `now` clock for tests). The counters live in-process by default — per-instance limits. For shared limits across instances, inject a `store` (atomic `hit(key, now, limit, windowMs) → { count, retryAt }` — the Redis INCR shape).
+
+`skip: (ctx) => boolean` exempts a request entirely — no key computed, no store hit, nothing counted, never blocked (health checks, internal CIDRs).
 
 ## Serialize
 
@@ -529,6 +562,13 @@ await client.post('/users/:id?', {});          // id optional — absent is allo
 ```
 
 The client talks plain `fetch` — any server speaking the same patterns answers, not just an s200 app. Typing flows from the registrars' return types, so **thread the returns** (as above) to keep the route log; `usePlugin`-registered routes and `removeRoute` erasure are the documented exceptions. Response bodies are typed when the handler returns `json(ctx, data)` — the branded return carries the body shape into the route log and `client.get(...).json()` resolves it (`unknown` for plain `Response` handlers).
+
+`readSSE(res)` parses an SSE response into events — `for await` it; multi-line `data` merges with `\n`, comments are ignored, `id`/`retry` persist across events (the resume cursor), and a dropped connection rejects the pending `next()`:
+
+```ts
+const res = await client.get('/events');
+for await (const event of readSSE(res)) console.log(event.event, event.data);
+```
 
 ### Input types
 

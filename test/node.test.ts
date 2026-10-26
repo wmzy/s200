@@ -4,9 +4,9 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
-import { connect } from 'node:http2';
+import { connect, type Http2SecureServer } from 'node:http2';
 import https from 'node:https';
-import { Socket } from 'node:net';
+import { Server as NetServer, Socket } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, it } from 'vitest';
@@ -541,6 +541,8 @@ describe('node adapter graceful close and server tunables', () => {
         headersTimeout: 4_321,
         maxHeaderSize: 4_096,
         connectionsCheckingInterval: 3_000,
+        maxConnections: 7,
+        maxRequestsPerSocket: 3,
       },
     });
     try {
@@ -555,6 +557,8 @@ describe('node adapter graceful close and server tunables', () => {
       raw.headersTimeout.should.equal(4_321);
       raw.maxHeaderSize.should.equal(4_096);
       raw.connectionsCheckingInterval.should.equal(3_000);
+      raw.maxConnections.should.equal(7);
+      (raw.maxRequestsPerSocket ?? -1).should.equal(3);
     } finally {
       await server.close();
     }
@@ -564,16 +568,72 @@ describe('node adapter graceful close and server tunables', () => {
     const app = createApp();
     const server = await serve(app, {
       port: 0,
-      server: { keepAliveTimeout: 2_345, requestTimeout: 6_789 },
+      server: {
+        keepAliveTimeout: 2_345,
+        requestTimeout: 6_789,
+        maxConnections: 11,
+        maxRequestsPerSocket: 4,
+      },
       https: { key: await readFile(KEY_PATH), cert: await readFile(CERT_PATH) },
     });
     try {
       const raw = server.server as https.Server;
       raw.keepAliveTimeout.should.equal(2_345);
       raw.requestTimeout.should.equal(6_789);
+      raw.maxConnections.should.equal(11);
+      (raw.maxRequestsPerSocket ?? -1).should.equal(4);
     } finally {
       await server.close();
     }
+  });
+
+  it('applies maxConnections on the http2 path; maxRequestsPerSocket is HTTP/1-only', async () => {
+    const app = createApp();
+    const server = await serve(app, {
+      port: 0,
+      server: { maxConnections: 9, maxRequestsPerSocket: 5 },
+      https: {
+        key: await readFile(KEY_PATH),
+        cert: await readFile(CERT_PATH),
+        http2: true,
+      },
+    });
+    try {
+      const raw = server.server as Http2SecureServer;
+      raw.maxConnections.should.equal(9);
+      // HTTP/2 multiplexes streams over one session — the per-socket
+      // request limit is an HTTP/1 concept, not applied on this path.
+      (
+        (raw as unknown as { maxRequestsPerSocket?: number }).maxRequestsPerSocket === 5
+      ).should.be.false;
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('passes backlog through to listen()', async () => {
+    const app = createApp();
+    // serve() builds its own server, so the only interception point for
+    // the listen arguments is the shared net.Server prototype — the spy
+    // forwards everything unchanged.
+    const seen: unknown[][] = [];
+    const original = NetServer.prototype.listen;
+    const spy = function (this: NetServer, ...args: unknown[]): unknown {
+      seen.push(args);
+      return (original as (...a: unknown[]) => unknown).apply(this, args);
+    } as unknown as typeof original;
+    NetServer.prototype.listen = spy;
+    let server: NodeServer | undefined;
+    try {
+      server = await serve(app, { port: 0, host: '127.0.0.1', server: { backlog: 424 } });
+      server.server.listening.should.be.true;
+    } finally {
+      NetServer.prototype.listen = original;
+      await server?.close().catch(() => undefined);
+    }
+    seen.length.should.equal(1);
+    // (port, host, backlog) — the accept-queue depth rode listen().
+    seen[0]!.should.include(424);
   });
 
   it('bounds the drain on upgraded (websocket) sockets: grace hard-kills them', async () => {

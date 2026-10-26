@@ -635,3 +635,161 @@ export function createClient<
   };
   return client;
 }
+
+/**
+ * One parsed SSE event — field-for-field the shape of `s200/streaming`'s
+ * `SseEvent`, with `data` always the decoded string: a server that
+ * writes objects (`writeSSE({ data: { a: 1 } })`) sends them
+ * JSON-encoded on the wire, so `JSON.parse` on your side.
+ */
+export type ClientSseEvent = {
+  /**
+   * The last `id:` field seen — the resume cursor. It carries across
+   * events per the event-stream spec, so an event that set no `id` of
+   * its own reports the previous one (send it back as
+   * `Last-Event-ID` when reconnecting).
+   */
+  readonly id?: string;
+  /** The `event:` field of THIS event; resets after every dispatch. */
+  readonly event?: string;
+  /** The event's data: one `data:` line verbatim, several joined by `\n`. */
+  readonly data: string;
+  /** The `retry:` field (reconnection delay, ms) — persists across
+   * events like `id` does. */
+  readonly retry?: number;
+};
+
+/** One line taken off the decode buffer: `undefined` when no complete
+ * line is buffered yet. LF, CRLF, and a lone CR all terminate a line; a
+ * CR in the final buffered position might be the first half of a CRLF
+ * split across chunks, so it waits for more bytes unless the stream has
+ * closed (`closed`). */
+function takeSseLine(buffer: string, closed: boolean): { line: string; rest: string } | undefined {
+  const lf = buffer.indexOf('\n');
+  const cr = buffer.indexOf('\r');
+  if (lf === -1 && cr === -1) return undefined;
+  if (cr === -1 || (lf !== -1 && lf < cr)) {
+    return { line: buffer.slice(0, lf), rest: buffer.slice(lf + 1) };
+  }
+  if (buffer.charCodeAt(cr + 1) === 0x0a) {
+    return { line: buffer.slice(0, cr), rest: buffer.slice(cr + 2) };
+  }
+  if (buffer.length === cr + 1 && !closed) return undefined;
+  return { line: buffer.slice(0, cr), rest: buffer.slice(cr + 1) };
+}
+
+/** The event-stream parser, as a pull-driven async generator. */
+async function* parseSse(
+  response: Response
+): AsyncGenerator<ClientSseEvent, void, undefined> {
+  const body = response.body;
+  if (body === null) return;
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let firstChunk = true;
+  // Event-stream field state: `id`/`retry` persist across events (spec
+  // semantics), `event` and the data lines reset on every dispatch.
+  let id: string | undefined;
+  let eventType: string | undefined;
+  let retry: number | undefined;
+  let dataLines: string[] | undefined;
+  const consume = (line: string): ClientSseEvent | undefined => {
+    if (line === '') {
+      // The dispatch point: no data field seen since the last dispatch
+      // means nothing to emit (a bare `event: ping` is not an event).
+      if (dataLines === undefined) return undefined;
+      const event: ClientSseEvent = {
+        ...(id !== undefined ? { id } : {}),
+        ...(eventType !== undefined ? { event: eventType } : {}),
+        data: dataLines.join('\n'),
+        ...(retry !== undefined ? { retry } : {}),
+      };
+      dataLines = undefined;
+      eventType = undefined;
+      return event;
+    }
+    if (line.charCodeAt(0) === 0x3a /* ':' */) return undefined; // comment
+    const colon = line.indexOf(':');
+    const name = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    // Exactly ONE leading space is the separator, never data.
+    if (value.charCodeAt(0) === 0x20) value = value.slice(1);
+    if (name === 'data') {
+      (dataLines ??= []).push(value);
+    } else if (name === 'event') {
+      eventType = value;
+    } else if (name === 'id') {
+      // A NUL can never ride in a header — the spec drops such ids whole.
+      if (!value.includes('\0')) id = value;
+    } else if (name === 'retry') {
+      if (/^[0-9]+$/.test(value)) retry = Number(value);
+    }
+    // Unknown field names are ignored per the spec.
+    return undefined;
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (value !== undefined) {
+        let text = decoder.decode(value, { stream: true });
+        if (firstChunk) {
+          firstChunk = false;
+          // A leading BOM is transport noise, not data.
+          if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+        }
+        buffer += text;
+      }
+      if (done) {
+        buffer += decoder.decode();
+      }
+      let taken = takeSseLine(buffer, done);
+      while (taken !== undefined) {
+        const event = consume(taken.line);
+        buffer = taken.rest;
+        if (event !== undefined) yield event;
+        taken = takeSseLine(buffer, done);
+      }
+      if (done) {
+        // Clean end: a trailing partial event never dispatched is
+        // discarded — only a blank line terminates an event, so a
+        // truncated tail is not silently half-delivered.
+        return;
+      }
+    }
+  } finally {
+    // Early `break` out of the loop, error, or natural end — either way
+    // the body is released (a cancelled pull stops the server's pump).
+    try {
+      await reader.cancel();
+    } catch {
+      // already errored or closed — nothing to release
+    }
+  }
+}
+
+/**
+ * Parses a `text/event-stream` response into events — `for await` the
+ * return value:
+ *
+ * ```ts
+ * const res = await client.get('/events');
+ * for await (const event of readSSE(res)) {
+ *   if (event.event === 'tick') console.log(event.data);
+ * }
+ * ```
+ *
+ * A pure pull-driven parser over the response body: `data:`/`event:`/
+ * `id:`/`retry:` fields per the event-stream spec — multi-line `data`
+ * merges with `\n`, comment lines (leading `:`) are ignored, unknown
+ * field names are ignored, exactly one space after the colon is
+ * stripped, LF/CRLF/lone-CR line endings all parse, and a leading BOM is
+ * dropped. `id` and `retry` persist across events (the resume-cursor
+ * semantics); `event` resets per dispatch. A clean end-of-stream ends
+ * the iteration — a trailing partial event (no terminating blank line)
+ * is discarded; a failed body read (a dropped connection) rejects the
+ * pending `next()`. Breaking out of the loop cancels the body.
+ */
+export function readSSE(response: Response): AsyncIterable<ClientSseEvent> {
+  return parseSse(response);
+}

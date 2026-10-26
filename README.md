@@ -53,7 +53,7 @@ npm install s200
 - Node.js ≥ 20.3 (adapter: `s200/node`), Bun (adapter: `s200/bun`). Edge runtimes can consume the core directly — it only touches Web Standard `Request`/`Response`.
 - Running the TypeScript examples directly needs Node ≥ 23.6 (native type stripping), or ≥ 22.6 with `NODE_OPTIONS=--experimental-strip-types`.
 - `s200` — the runtime-agnostic core
-- `s200/node` — node:http adapter (`serve`, `createFileReader`, `createRealPathGuard`, …)
+- `s200/node` — node:http adapter (`serve`, `createFileReader`, `createRealPathGuard`, …). Memory: the default (Web Standard) path sits at ~99 MB steady-state RSS after a 5000-request warmup — level with hono (2026-10-26 benchmark update). `serve(app, { light: true })` remains the escape hatch when you need the last ~10 MB and +20–40% throughput: it skips the platform `Request`/`Response` constructors entirely.
 - `s200/bun` — Bun.serve adapter (`serve`, `createFileReader`, `createRealPathGuard`, …)
 - `s200/cors` / `s200/logger` / `s200/route-table` / `s200/query` / `s200/websocket` / `s200/etag` / … — opt-in batteries (see [Batteries](https://wmzy.github.io/s200/guides/batteries)); WebSockets bridge to node, Bun, and Cloudflare Workers (`s200/websocket/cloudflare`)
 

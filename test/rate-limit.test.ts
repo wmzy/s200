@@ -207,3 +207,58 @@ describe('rateLimit sliding window', () => {
     hits.should.deep.equal(['unknown', 'unknown']);
   });
 });
+
+describe('rateLimit skip', () => {
+  it('lets skipped requests through uncounted — the window stays clean', async () => {
+    const time = clock();
+    const app = createApp();
+    use(
+      app,
+      rateLimit({
+        windowMs: 1000,
+        limit: 1,
+        now: time.now,
+        skip: (ctx) => ctx.url.pathname === '/health',
+      })
+    );
+    get(app, '/health', () => new Response('ok'));
+    get(app, '/', () => new Response('ok'));
+    // Five skipped requests would bury a limit of 1 — none of them count.
+    for (let i = 0; i < 5; i++) {
+      (await (await handle(app, new Request('http://localhost/health'))).text()).should.equal('ok');
+    }
+    // The first counted request passes…
+    (await (await handle(app, new Request('http://localhost/'))).text()).should.equal('ok');
+    // …the second is over the limit.
+    (await handle(app, new Request('http://localhost/'))).status.should.equal(429);
+  });
+
+  it('never computes the key or touches the store for a skipped request', async () => {
+    const keys: string[] = [];
+    const store = {
+      hit(key: string) {
+        keys.push(key);
+        return { count: 1, retryAt: 0 };
+      },
+    };
+    const app = createApp();
+    use(
+      app,
+      rateLimit({
+        limit: 10,
+        store,
+        key: (ctx) => {
+          keys.push(`key:${ctx.url.pathname}`);
+          return 'k';
+        },
+        skip: (ctx) => ctx.req.headers.has('x-internal'),
+      })
+    );
+    get(app, '/', () => new Response('ok'));
+    await handle(app, new Request('http://localhost/', { headers: { 'x-internal': '1' } }));
+    await handle(app, new Request('http://localhost/', { headers: { 'x-internal': '1' } }));
+    keys.length.should.equal(0);
+    await handle(app, new Request('http://localhost/'));
+    keys.should.deep.equal(['key:/', 'k']);
+  });
+});

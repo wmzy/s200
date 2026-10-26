@@ -3,10 +3,11 @@
  *
  * Repository-level TypeScript, deliberately outside the package exports
  * (s200 is zero-dependency by contract) — vendor it and bring your own
- * provider. The recipe composes the batteries: discovery is one cached
- * fetch per issuer, the login parks state/nonce/verifier in signed
- * cookies (`s200/cookies`), the callback exchanges the code and verifies
- * the id_token with `s200/jwt` (`verifyJwt` + `createJwksResolver` over
+ * provider. The recipe composes the batteries: the flow primitives come
+ * from `s200/oauth` (PKCE pair, authorize URL, code exchange), discovery
+ * is one cached fetch per issuer, the login parks state/nonce/verifier
+ * in signed cookies (`s200/cookies`), the callback verifies the
+ * id_token with `s200/jwt` (`verifyJwt` + `createJwksResolver` over
  * the discovery `jwks_uri`), then hands tokens and claims to your
  * `onLogin` — establish the application session there with
  * `s200/session`. JWS only: encrypted id_tokens (JWE) are unsupported.
@@ -25,6 +26,7 @@ import {
   type JwtHeader,
   type RegisteredClaims,
 } from '../src/jwt';
+import { buildAuthorizeUrl, createPkcePair, exchangeCode, randomState } from '../src/oauth';
 import { redirect } from '../src/respond';
 
 /** The discovery fields the flow needs (OIDC Discovery §3.1.1 subset). */
@@ -125,27 +127,10 @@ const FLOW_COOKIE_MAX_AGE = 600;
  * instead — see {@link OidcOptions.fetch}. */
 const discoveryCache = new Map<string, Promise<OidcDiscovery>>();
 
-/** Base64url without padding: bytes → alphabet, `+` `/` `=` translated. */
-function b64url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 /** One base64url JSON segment (a token header), decoded. */
 function b64urlJson<T>(text: string): T {
   const normalized = text.replace(/-/g, '+').replace(/_/g, '/');
   return JSON.parse(atob(normalized + '='.repeat((4 - (normalized.length % 4)) % 4))) as T;
-}
-
-/** Cryptographic randomness from the platform — no dependency. */
-function randomB64url(bytes: number): string {
-  return b64url(crypto.getRandomValues(new Uint8Array(bytes)));
-}
-
-/** RFC 7636 §4.2 S256: base64url(SHA-256(verifier)). */
-async function s256(text: string): Promise<string> {
-  return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))));
 }
 
 /**
@@ -232,28 +217,27 @@ export function createOidc(options: OidcOptions): Oidc {
     maxAge: FLOW_COOKIE_MAX_AGE,
     path: '/',
   };
-  const scope = (options.scopes ?? ['openid']).join(' ');
 
   const login: Handler = async (ctx) => {
     const doc = await discovery();
-    const state = randomB64url(32);
-    const nonce = randomB64url(32);
-    // RFC 7636 §4.1: 43–128 unreserved characters — 64 random bytes → 86.
-    const verifier = randomB64url(64);
-    const authorize = new URL(doc.authorization_endpoint);
-    const params = authorize.searchParams;
-    params.set('response_type', 'code');
-    params.set('client_id', options.clientId);
-    params.set('redirect_uri', options.redirectUri);
-    params.set('scope', scope);
-    params.set('state', state);
-    params.set('nonce', nonce);
-    params.set('code_challenge', await s256(verifier));
-    params.set('code_challenge_method', 'S256');
-    redirect(ctx, authorize.toString());
+    const state = randomState();
+    const nonce = randomState();
+    const pkce = await createPkcePair();
+    redirect(
+      ctx,
+      buildAuthorizeUrl(
+        {
+          authorizationEndpoint: doc.authorization_endpoint,
+          clientId: options.clientId,
+          redirectUri: options.redirectUri,
+          scope: options.scopes ?? ['openid'],
+        },
+        { state, nonce, codeChallenge: pkce.codeChallenge }
+      )
+    );
     await setSignedCookie(ctx, names.state, state, options.cookieSecret, flowCookie);
     await setSignedCookie(ctx, names.nonce, nonce, options.cookieSecret, flowCookie);
-    await setSignedCookie(ctx, names.verifier, verifier, options.cookieSecret, flowCookie);
+    await setSignedCookie(ctx, names.verifier, pkce.verifier, options.cookieSecret, flowCookie);
   };
 
   const callback: Handler = async (ctx) => {
@@ -277,43 +261,26 @@ export function createOidc(options: OidcOptions): Oidc {
     }
 
     const doc = await discovery();
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: options.redirectUri,
-      code_verifier: verifier,
-    });
-    const headers: Record<string, string> = {
-      'content-type': 'application/x-www-form-urlencoded',
-    };
-    if (options.clientSecret !== undefined) {
-      const encoded = new TextEncoder().encode(`${options.clientId}:${options.clientSecret}`);
-      headers.authorization = `Basic ${b64url(encoded)}`;
-    } else {
-      body.set('client_id', options.clientId);
-    }
-    const tokenRes = await fetchFn(doc.token_endpoint, {
-      method: 'POST',
-      headers,
-      body: body.toString(),
-    });
-    if (!tokenRes.ok) {
-      throw httpError(502, `OIDC token exchange failed: HTTP ${tokenRes.status}`);
-    }
-    const raw = (await tokenRes.json()) as {
-      id_token?: string; access_token?: string; token_type?: string;
-      expires_in?: number; refresh_token?: string; scope?: string;
-    };
-    if (raw.id_token === undefined || raw.access_token === undefined || raw.token_type === undefined) {
+    const tokens = await exchangeCode(
+      {
+        tokenEndpoint: doc.token_endpoint,
+        clientId: options.clientId,
+        clientSecret: options.clientSecret,
+        redirectUri: options.redirectUri,
+        fetch: fetchFn,
+      },
+      { code, codeVerifier: verifier }
+    );
+    if (tokens.idToken === undefined) {
       throw httpError(502, 'OIDC token response lacks a token the flow needs');
     }
     // The verification key comes from the discovery jwks_uri, resolved
     // by kid — rotation is the resolver's business.
     const resolveKey = createJwksResolver(doc.jwks_uri, { fetchFn });
-    const header = b64urlJson<JwtHeader>(raw.id_token.split('.')[0] ?? '');
+    const header = b64urlJson<JwtHeader>(tokens.idToken.split('.')[0] ?? '');
     let claims: OidcClaims;
     try {
-      claims = await verifyJwt<OidcClaims>(raw.id_token, await resolveKey(header), {
+      claims = await verifyJwt<OidcClaims>(tokens.idToken, await resolveKey(header), {
         issuer,
         audience: options.clientId,
         clockTolerance: options.clockTolerance ?? 60,
@@ -330,12 +297,12 @@ export function createOidc(options: OidcOptions): Oidc {
     await options.onLogin(
       ctx,
       {
-        accessToken: raw.access_token,
-        tokenType: raw.token_type,
-        expiresIn: raw.expires_in,
-        refreshToken: raw.refresh_token,
-        scope: raw.scope,
-        idToken: raw.id_token,
+        accessToken: tokens.accessToken,
+        tokenType: tokens.tokenType,
+        expiresIn: tokens.expiresIn,
+        refreshToken: tokens.refreshToken,
+        scope: tokens.scope,
+        idToken: tokens.idToken,
       },
       claims
     );

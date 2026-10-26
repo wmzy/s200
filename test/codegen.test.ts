@@ -244,6 +244,21 @@ describe('generateClient (typed emission)', () => {
     source.should.contain('getPlain: (init?: ClientInit): Promise<Response> =>');
   });
 
+  it('types a multipart body annotation as FormData — the structured-body rule', () => {
+    const app = createApp();
+    const upload = post(app, '/avatars', (ctx) => ctx);
+    describeRoute(upload, 'POST', '/avatars', {
+      body: { form: { label: { type: 'string' }, avatar: { file: true } } },
+    });
+    const source = generateClient(app);
+
+    // The caller builds the FormData; the client sends it untouched.
+    source.should.contain('postAvatars: (init: PostAvatarsInit): Promise<Response> =>');
+    source.should.contain(
+      "export type PostAvatarsInit = Omit<ClientInit, 'body'> & { body: FormData };"
+    );
+  });
+
   it('emits the Branch helper only when a route declares responses', () => {
     generateClient(representativeApp()).should.not.contain('Branch<');
     generateClient(createApp()).should.not.contain('type Branch<');

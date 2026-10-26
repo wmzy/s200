@@ -134,6 +134,12 @@ s200 子进程导入构建后的核心（`dist/`），其他框架按任何用�
 | fastify | 94.0     | 24664        |
 | elysia  | 97.1     | 23665        |
 
+**2026-10-26 更新：** 上表的 s200 行已被取代。node 适配器不再把
+disconnect 信号经由 undici 的 `init.signal` follow 机制传递（那组对象
+要等 major GC 才回收）；同一协议下重测 s200 落在 **99.2 MB——与
+hono（98.6）同档**，每请求 CPU 再降约 16%。完整剖析与前后对照表见
+下方 [History](#rss-update-2026-10-26) 一节。
+
 hono/express/fastify/elysia 聚在 88–97 MB；s200 在同一负载后读到
 ~127 MB。两次一次性探针（不属于脚本的一部分）把这笔差钉清楚是什么、
 不是什么：
@@ -337,3 +343,42 @@ pre-lazy 运行的排序一致，`mw` 各格在 ~±4% 之内，`s200-light mw`
 与整请求一节相同的方法论注意事项同样适用——快照而非保证；每个子进程
 一台服务器；请在你自己的硬件上重跑
 （`node scripts/bench-http.mjs --only mw`）。
+
+### 2026-10-26 更新（disconnect 信号直接安装，不再经由 `init.signal`） {#rss-update-2026-10-26}
+
+用 `node:inspector` 采样堆剖析器（16 KiB 间隔）对场景 B 的入口做
+**默认（非 light）路径**剖析——并发 8 下 30 000 个请求——**78%** 的
+采样字节落在 undici `_Request` 构造器之下，其中 **53%** 集中在一个
+子树：传入 `init.signal` 时它的构造器搭起的 follow 机制（一个内部
+`AbortController`、一个 `WeakRef`、一个作为监听器登记*在我们的信号上*
+的 abort 闭包，以及持有这一切的 `FinalizationRegistry` 项）。s200
+自身代码只占 ≤ 4%。
+
+稳态 RSS 的差距来自这套机制的*生命周期*，而不是分配速率。负载后的
+堆快照（5 000 请求）显示约 4 000 组存活的 `AbortSignal` +
+`Listener` + `Map` + `WeakRef`——每组对应一个请求：finalizer 项要等
+下一次 major GC 才回收，期间 V8 堆线性增长（预热阶段 heapUsed
+8.5 → 28.3 MB，**零** GC 事件；80 000 请求时 RSS 一路爬到 164 MB）。
+
+`src/node.ts` 现在把 disconnect 控制器的信号作为自有 `signal`
+属性装进平台 `Request`（`Object.defineProperty`，不可枚举），不再传
+`init.signal`。同一个对象、同样的中止时机与 reason——并且
+`ctx.req.signal === ctx.signal` 现在字面成立，正是适配器文档承诺的
+行为（undici 的 follow 从来没给过同一性）。已在 node 22、24、26 上
+验证；契约测试 `test/signal.test.ts` 原样通过。
+
+| metric (same machine, same session) | before | after |
+|---|---:|---:|
+| sampled allocations, 30 k req | 9.7 MB | 1.9 MB (−80%) |
+| heapUsed after 5 k warmup | 28.3 MB | 10.9 MB |
+| RSS plateau (80 k req) | 164 MB | 102 MB |
+| **B · steady-state RSS** (median ×5) | **126.8 MB** | **99.2 MB (−21.8%)** |
+| B drift control — hono (median ×5) | 98.7 MB | 98.6 MB |
+| CPU per request (10 interleaved pairs) | 67.8 µs | 57.9 µs (median −16.0%, faster in 10/10) |
+| wall rps in the same pairs | 19 271 | 21 152 (median +9.8%) |
+| C · heap per route | 554 B | 554 B (unchanged) |
+
+其余部分是契约锁定的：平台 `Request` 构造本身（剩余剖析的 ~25%）是
+文档化的 Web Standard 表面，每请求的 `AbortController`（~10%）是
+disconnect 协作取消契约。`serve(app, { light: true })` 仍是彻底跳过
+平台构造器的退出通道。

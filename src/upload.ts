@@ -43,6 +43,10 @@ const decoder = new TextDecoder();
  * `multipart.ts`'s `DEFAULT_MAX_PART_SIZE`. */
 const DEFAULT_PART_SIZE = 8 * 1024 * 1024;
 
+/** Default bytes of head handed to the `sniff` hook per file part —
+ * comfortably past every common content signature. */
+const DEFAULT_SNIFF_BYTES = 512;
+
 /** One file part, buffered whole and ready to land. `size` is
  * `data.length` — carried separately so sinks can log it cheaply. */
 export type UploadFile = {
@@ -86,6 +90,31 @@ export type UploadSink = (file: UploadFile) => Promise<string | void> | string |
  */
 export type UploadAccept = readonly string[] | ((part: FormPart) => boolean);
 
+/**
+ * Content sniff hook — the injection seam for content-type trust: the
+ * first `sniffBytes` bytes (default 512) of every file part, plus the
+ * part itself, and the verdict is entirely yours. No magic tables ship —
+ * the classic signatures (PNG's `\x89PNG`, JPEG's `\xff\xd8\xff`) are a
+ * three-line predicate away:
+ *
+ * ```ts
+ * uploadForm(ctx, sink, {
+ *   sniff: (head, part) =>
+ *     part.contentType === 'image/png'
+ *       ? head[0] === 0x89 && head[1] === 0x50
+ *       : true,
+ * });
+ * ```
+ *
+ * `false` rejects the upload with a `415` before the sink ever runs —
+ * same mid-stream semantics as the other gates: the parse stops, later
+ * parts are never read, the platform source is cancelled.
+ */
+export type UploadSniff = (
+  head: Uint8Array,
+  part: FormPart
+) => boolean | Promise<boolean>;
+
 export type UploadOptions = {
   /** Total byte budget for the whole body, streamed through `streamForm`:
    * an oversized upload rejects with a 413 while bytes are still
@@ -109,6 +138,17 @@ export type UploadOptions = {
    * part without one is rejected (strict allowlist); the callback form
    * decides that case itself. */
   readonly accept?: UploadAccept;
+  /**
+   * Content sniff hook (see {@link UploadSniff}): the first
+   * `sniffBytes` of every file part go in, `false` rejects with a `415`
+   * before the sink runs. Gate order: `accept` → `maxFiles` →
+   * `maxFileSize` → `sniff` → sink.
+   */
+  readonly sniff?: UploadSniff;
+  /** Bytes of head handed to `sniff` per file part; default 512. A file
+   * shorter than that hands its whole body — the head is a view into the
+   * part buffer, not a copy. */
+  readonly sniffBytes?: number;
 };
 
 /** One landed file in {@link UploadResult}. `id` is present exactly when
@@ -192,11 +232,12 @@ export function safeFilename(name: string): string {
  * - Field parts (no `filename`) decode as UTF-8 and collect into
  *   `fields` with `parseQuery`'s convention: a name seen once is a
  *   `string`, a repeated name a `string[]`.
- * - File parts pass the `accept`/`maxFiles`/`maxFileSize` gates in that
- *   order, then reach the sink. A sink-returned string is reported as
- *   that file's `id`; a sink rejection aborts everything and propagates.
+ * - File parts pass the `accept`/`maxFiles`/`maxFileSize`/`sniff` gates in
+ *   that order, then reach the sink. A sink-returned string is reported
+ *   as that file's `id`; a sink rejection aborts everything and propagates.
  * - Errors, all bubbling for the error boundary: a 415 `HttpError` for a
- *   non-multipart content type or an allowlist rejection, a 413 for the
+ *   non-multipart content type, an allowlist rejection, or a failed
+ *   content sniff; a 413 for the
  *   total `limit`, the part count `maxParts` (default 256), `maxFiles`,
  *   or `maxFileSize` (file parts only), a 400 for a malformed body.
  * - Terminal for the body: a later `readJson`/`readText`/`readForm`
@@ -207,7 +248,13 @@ export async function uploadForm(
   sink: UploadSink,
   options: UploadOptions = {}
 ): Promise<UploadResult> {
-  const { accept, limit, maxFiles, maxFileSize, maxParts } = options;
+  const { accept, limit, maxFiles, maxFileSize, maxParts, sniff } = options;
+  const sniffBytes = options.sniffBytes ?? DEFAULT_SNIFF_BYTES;
+  if (!Number.isSafeInteger(sniffBytes) || sniffBytes < 0) {
+    throw new Error(
+      `Invalid upload sniffBytes ${String(sniffBytes)}: must be a non-negative integer`
+    );
+  }
   const files: UploadedFile[] = [];
   // Null prototype, same reason as `parseQuery`: `__proto__` must land as
   // a plain own key, `constructor` must not shadow inherited members.
@@ -243,6 +290,17 @@ export async function uploadForm(
         throw httpError(
           413,
           `File "${part.filename}" is ${part.data.length} bytes; the per-file limit is ${maxFileSize}`
+        );
+      }
+      // Content sniff, last gate before the sink: the caller's verdict on
+      // the head bytes decides whether the declared Content-Type is
+      // trustworthy. A `false` is a 415 like an allowlist miss — same
+      // mid-stream abort semantics (later parts never parse, the source
+      // is cancelled).
+      if (sniff !== undefined && !(await sniff(part.data.subarray(0, sniffBytes), part))) {
+        throw httpError(
+          415,
+          `File "${part.filename}" failed the content sniff — its bytes do not match the declared "${part.contentType ?? 'none'}"`
         );
       }
       const file: UploadFile = {

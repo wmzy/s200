@@ -96,7 +96,9 @@ describeRoute(app, 'GET', '/users/:id', {
 get(app, '/openapi.json', (ctx) => openapiJson(ctx, app));   // serve the spec
 ```
 
-同一套标注可以变成运行时门：`withRouteValidation(app)` 是纯数据变换（mount 家族），只重建带 `body` 或 `query` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 —— `serialize()` 的读取侧孪生，覆盖完全相同的 DSL 子集。违规以 `422` 应答并点名每一条出问题的路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），体的 `issues` 数组携带全量列表，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入原样流过 —— 什么都不落到 `ctx.state`，什么都不强制转换（query 值保持字符串，因此 `?page=2` 对上 `{ type: 'integer' }` 是 422 —— 想要解析时用 `s200/query` 的 `queryParams`）。spec 与门共享一个来源：标注被重新挂到重建的路由上，因此 `openapiSpec(gated)` 继续记录它们。在 `mount` 之后于父应用上标注挂载的子应用（元数据注册表按路由身份寻址）。
+同一套标注可以变成运行时门：`withRouteValidation(app)` 是纯数据变换（mount 家族），只重建带 `body`、`query`、`params` 或 `headers` 标注的路由，用 `s200/serialize` 的 `compileValidator` 检查请求 —— `serialize()` 的读取侧孪生，覆盖完全相同的 DSL 子集。违规以 `422` 应答并点名每一条出问题的路径 —— `error` 保留第一条（`{"error":"body.tags.1: expected string, got number"}`），体的 `issues` 数组携带全量列表，全部由与 `s200/validate` 共用的 `validationError` 构建器产生；合法输入原样流过 —— 什么都不落到 `ctx.state`，什么都不强制转换（query 值保持字符串，因此 `?page=2` 对上 `{ type: 'integer' }` 是 422 —— 想要解析时用 `s200/query` 的 `queryParams`）。spec 与门共享一个来源：标注被重新挂到重建的路由上，因此 `openapiSpec(gated)` 继续记录它们。在 `mount` 之后于父应用上标注挂载的子应用（元数据注册表按路由身份寻址）。
+
+`headers`/`cookies` 条目以同样方式标注请求头与 cookie（`in: 'header'`/`in: 'cookie'`）—— headers 运行时像 `query` 一样过闸（`'headers.<name>: …'`），cookies 仅文档化（cookie 解析属于 `s200/cookies`）。`body: { form: … }` 文档化 `multipart/form-data` 请求：文本部件走 `SerializeSchema` DSL，文件部件（`{ file: true, contentTypes? }`）输出为 `{ type: 'string', format: 'binary' }` 并带 `encoding` 条目 —— spec 的标准文件形态，也是 s200 输出的唯一 `format`（出自显式标记，绝不来自 schema 转换）。闸门文档化 multipart 体但不读取它 —— 运行时校验归 `s200/multipart`/`s200/upload`。发出的 spec 可喂给任何 OpenAPI 工具链，s200 自带客户端可选：`openapi-typescript` 出零运行时类型，`openapi-generator` 出 Python/Go SDK —— 完整形状与非 TypeScript 客户端章节见 [API 参考](/zh/api/openapi)。
 
 为 spec 配上文档 UI —— `swaggerUi` 服务 Scalar API Reference 页面（资源从固定的 CDN 加载，因此 s200 保持零依赖）：
 
@@ -226,13 +228,32 @@ use(app, secureHeaders());  // nosniff, DENY framing, strict-origin-when-cross-o
 use(app, secureHeaders({ strictTransportSecurity: 'max-age=31536000' }));  // HSTS is opt-in
 ```
 
+`contentSecurityPolicy: { nonce: true, policy }` 自动接线每请求 nonce —— 新的 `cspNonce()` 挂到 `ctx.state.cspNonce` 供标记使用，盖头时把策略里每个 `{{nonce}}` 占位符替换进去（`reportOnly: true` 盖 report-only 变体）：
+
+```ts
+use(app, secureHeaders({
+  contentSecurityPolicy: { nonce: true, policy: { 'script-src': ["'nonce-{{nonce}}'"] } },
+}));
+```
+
 ## Auth
 
 `basicAuth`/`bearerAuth` 门：注入的 `verify` 函数决定，失败抛出携带 `WWW-Authenticate` 质询的 401 `HttpError` 进入错误边界（含 `onError`；默认映射应答 `401` + 质询），其下的链永不运行：
 
 ```ts
 use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
-use(app, bearerAuth(async (token) => token === API_TOKEN));
+use(app, bearerAuth(async (token) => API_TOKEN));
+```
+
+`verify` 内的凭据比较是你的责任 —— 用 `s200/cookies` 的 `timingSafeEqual(a, b)` 做常量时间比较（长度不等返回 `false`）。
+
+## OAuth
+
+授权码 + PKCE（S256）原语，纯函数：`createPkcePair()` 铸造 verifier 与其 S256 challenge，`randomState()` 铸造不可猜测的 state（或 nonce），`buildAuthorizeUrl` 渲染重定向（恒为 `code_challenge_method=S256`），`exchangeCode` 兑换 code —— 给了 `clientSecret` 走 HTTP Basic，否则 `client_id` 进请求体；非 2xx 应答抛 502。存储由你掌控 —— 在重定向与回调之间把 state 和 verifier 存进签名 cookie。`fetch` 可注入；OIDC recipe（`recipes/oidc.ts`）端到端组合了它们：
+
+```ts
+const pkce = await createPkcePair();
+redirect(ctx, buildAuthorizeUrl(opts, { state, codeChallenge: pkce.codeChallenge }));
 ```
 
 ## CSRF
@@ -247,7 +268,7 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 
 ## JWT
 
-HS256/384/512、RS256/384/512、PS256/384/512 与 ES256/384/512，基于 WebCrypto，零依赖。`signJwt`/`verifyJwt` 接收密钥字符串、`CryptoKey` 或 JWK；验证无条件拒绝 `alg:none`，强制 `exp`/`nbf`，按请求检查 `aud`/`iss`，且密钥家族必须匹配头算法（HS 需要秘密，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥 —— 混淆攻击被结构性封闭）。`jwtAuth` 是门，把 payload 存到 `ctx.state.jwt` 并在其下的链运行之前应答 `401`：
+HS256/384/512、RS256/384/512、PS256/384/512、ES256/384/512 与 EdDSA（Ed25519），基于 WebCrypto，零依赖。`signJwt`/`verifyJwt` 接收密钥字符串、`CryptoKey` 或 JWK；验证无条件拒绝 `alg:none`，强制 `exp`/`nbf`，按请求检查 `aud`/`iss`，且密钥家族必须匹配头算法（HS 需要秘密，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥，EdDSA 需要 Ed25519 OKP 密钥 —— 混淆攻击被结构性封闭）。`jwtAuth` 是门，把 payload 存到 `ctx.state.jwt` 并在其下的链运行之前应答 `401`：
 
 ```ts
 const token = await signJwt({ sub: userId }, JWT_SECRET, { expiresIn: 3600 });
@@ -269,6 +290,16 @@ use(app, cache({ store: redisCacheStore }));   // shared store across instances
 ```
 
 默认 store 在进程内；自定义 `store`（在 `{ exp, status, headers, body }` 条目上的 `get`/`set`/`delete`）跨实例共享缓存 —— 过期仍由中间件每次读取时检查。
+
+`cacheControl({ maxAge, sMaxAge, staleWhileRevalidate, noStore, noCache, private, immutable, mustRevalidate })` 为你与客户端之间的缓存构造 `Cache-Control` 值 —— 一次调用、固定顺序，`noStore` 直接短路为 `no-store`：
+
+```ts
+get(app, '/assets/:f', (ctx) =>
+  text(ctx, body, {
+    headers: { 'cache-control': cacheControl({ maxAge: 3600, staleWhileRevalidate: 86400 }) },
+  })
+);
+```
 
 ## Trust proxy
 
@@ -296,6 +327,8 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 ```
 
 默认键读取 `x-forwarded-for` —— 只有在会覆写它的代理之后才有意义；其他身份传 `key: (ctx) => …`（测试可传 `now` 时钟）。计数器默认在进程内 —— 每实例限额。跨实例共享限额请注入 `store`（原子的 `hit(key, now, limit, windowMs) → { count, retryAt }` —— Redis INCR 形状）。
+
+`skip: (ctx) => boolean` 完全豁免一个请求 —— 不算密钥、不碰 store、不计数、永不拦截（健康检查、内部网段）。
 
 ## Serialize
 
@@ -529,6 +562,13 @@ await client.post('/users/:id?', {});          // id optional — absent is allo
 ```
 
 客户端说纯 `fetch` —— 任何说同种模式的服务器都应答，不只是 s200 应用。类型化源自注册器的返回类型，因此**串联返回值**（如上）以保留路由日志；`usePlugin` 注册的路由与 `removeRoute` 擦除是文档化的例外。处理器返回 `json(ctx, data)` 时响应体是类型化的 —— 品牌返回把请求体形状带进路由日志，`client.get(...).json()` 解析它（纯 `Response` 处理器为 `unknown`）。
+
+`readSSE(res)` 把 SSE 响应解析成事件 —— `for await` 它；多行 `data` 以 `\n` 合并、注释忽略、`id`/`retry` 跨事件保留（断线重连游标），连接掉线让 pending 的 `next()` 拒绝：
+
+```ts
+const res = await client.get('/events');
+for await (const event of readSSE(res)) console.log(event.event, event.data);
+```
 
 ### 输入类型
 

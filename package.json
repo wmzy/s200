@@ -309,6 +309,16 @@
         "default": "./dist/jwt.cjs"
       }
     },
+    "./oauth": {
+      "import": {
+        "types": "./dist/types/oauth.d.mts",
+        "default": "./dist/oauth.mjs"
+      },
+      "require": {
+        "types": "./dist/types/oauth.d.ts",
+        "default": "./dist/oauth.cjs"
+      }
+    },
     "./cache": {
       "import": {
         "types": "./dist/types/cache.d.mts",
@@ -643,7 +653,7 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "9.6 KB"
+      "limit": "9.7 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
@@ -659,7 +669,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "6.4 KB"
+      "limit": "6.5 KB"
     },
     {
       "name": "compress battery (min+gz)",
@@ -722,26 +732,26 @@
       "name": "aws-lambda adapter (min+gz)",
       "path": "dist/aws-lambda.mjs",
       "gzip": true,
-      "limit": "4.3 KB"
+      "limit": "4.35 KB"
     },
     {
       "name": "vercel adapter (min+gz)",
       "path": "dist/vercel.mjs",
       "gzip": true,
-      "limit": "3.9 KB"
+      "limit": "3.95 KB"
     },
     {
       "name": "mcp battery (min+gz)",
       "path": "dist/mcp.mjs",
       "gzip": true,
-      "limit": "5.25 KB"
+      "limit": "5.35 KB"
     },
     {
       "name": "openapi battery: meta + openapi (min+gz)",
       "path": "src/openapi.ts",
       "import": "{ openapiSpec, openapiJson }",
       "gzip": true,
-      "limit": "3.5 KB"
+      "limit": "3.75 KB"
     },
     {
       "name": "dev battery (min+gz)",

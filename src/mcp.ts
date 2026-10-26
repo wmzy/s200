@@ -27,8 +27,11 @@ import { handle } from './app';
 import {
   getAppMeta,
   getRouteMeta,
+  isMultipartBody,
   isQueryRequired,
+  multipartFormSchema,
   querySchemaOf,
+  type MultipartBody,
   type RouteMeta,
 } from './meta';
 import { toJsonSchema, type SerializeSchema } from './serialize';
@@ -136,7 +139,10 @@ function descriptionOf(meta: RouteMeta | undefined, route: Route): { description
  *    `required` so tool callers send it.
  * 3. the body annotation — an object schema flattens its `properties`
  *    and `required` into the top level; any other shape nests under a
- *    required `body` key.
+ *    required `body` key. A multipart `{ form: … }` annotation nests the
+ *    same way (JSON-RPC arguments are JSON, not file parts — the form
+ *    keeps its shape, file parts as binary strings, and the invocation
+ *    rides as JSON; the route answers with its real status).
  *
  * `required` is deduplicated in first-seen order (path params before
  * query names before body names): a name declared by both — `PUT
@@ -162,7 +168,15 @@ function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['in
     }
   }
   const body = meta?.body;
-  if (body?.type === 'object') {
+  if (isMultipartBody(body)) {
+    // A multipart form cannot flatten: JSON-RPC arguments are JSON, not
+    // file parts, so the form degrades to one required `body` argument
+    // carrying the form's shape (file parts as binary strings). The
+    // invocation is sent as JSON and the route answers with its real
+    // status (a multipart runtime reports the 415) — the honest degrade.
+    properties.body = multipartFormSchema(body.form);
+    required.add('body');
+  } else if (body?.type === 'object') {
     for (const [name, schema] of Object.entries(body.properties)) {
       properties[name] = toJsonSchema(schema);
     }
@@ -221,10 +235,17 @@ export function toolManifest(app: App, options: McpOptions = {}): McpToolManifes
 /**
  * The JSON body a tool call sends: an object-typed body annotation picks
  * its own keys back out of the flattened arguments; any other shape
- * reads the whole `body` argument.
+ * reads the whole `body` argument. A multipart annotation reads the
+ * whole `body` argument too — its fields ride as JSON (the honest
+ * degrade; see `toolInputSchema`).
  */
-function bodyOf(declared: SerializeSchema | undefined, args: Record<string, unknown>): unknown {
-  if (declared === undefined || declared.type !== 'object') return args.body;
+function bodyOf(
+  declared: SerializeSchema | MultipartBody | undefined,
+  args: Record<string, unknown>
+): unknown {
+  if (declared === undefined || isMultipartBody(declared) || declared.type !== 'object') {
+    return args.body;
+  }
   const body: Record<string, unknown> = {};
   for (const key of Object.keys(declared.properties)) {
     if (args[key] !== undefined) body[key] = args[key];

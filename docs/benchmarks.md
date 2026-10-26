@@ -142,6 +142,14 @@ context — the canonical throughput table lives above:
 | fastify   | 94.0     | 24664          |
 | elysia    | 97.1     | 23665          |
 
+**2026-10-26 update:** the s200 row above is superseded. The node adapter
+stopped feeding its disconnect signal through undici's `init.signal`
+follow machinery (retained until a major GC); re-measured under the same
+protocol s200 lands at **99.2 MB — level with hono (98.6)**, with CPU per
+request down a further ~16%. Full profile and before/after table in the
+[History](#rss-update-2026-10-26) section
+below.
+
 hono/express/fastify/elysia cluster at 88–97 MB; s200 reads ~127 MB after
 the same load. Two one-off probes (not part of the script) pin down what
 that delta is and is not:
@@ -376,3 +384,46 @@ The same methodology caveats as the whole-request section apply —
 snapshots, not guarantees; one server per child process; re-run on your
 hardware (`node scripts/bench-http.mjs --only mw`).
 
+
+### 2026-10-26 update (disconnect signal installed directly, not via `init.signal`) {#rss-update-2026-10-26}
+
+An `node:inspector` sampling heap profile (16 KiB interval) of the
+scenario-B entry on the **default (non-light) path** — 30 000 requests at
+concurrency 8 — put **78%** of all sampled bytes under undici's `_Request`
+constructor, and **53%** under a single sub-tree: the follow machinery its
+constructor builds when `init.signal` is passed (an internal
+`AbortController`, a `WeakRef`, an abort closure registered as a listener
+*on our signal*, and a `FinalizationRegistry` entry holding all of it).
+s200's own code accounted for ≤ 4%.
+
+The steady-RSS gap was this machinery's *lifetime*, not its allocation
+rate. A post-warmup heap snapshot (5 000 requests) showed ~4 000 retained
+`AbortSignal` + `Listener` + `Map` + `WeakRef` — one set per request: the
+finalizer entry is only reclaimed at the next major GC, so V8's heap grew
+linearly in between (heapUsed 8.5 → 28.3 MB over the warmup with **zero**
+GC events; RSS kept climbing to 164 MB at 80 000 requests).
+
+`src/node.ts` now installs the disconnect controller's signal as an own
+`signal` property on the platform `Request` (`Object.defineProperty`,
+non-enumerable) instead of passing `init.signal`. Same object, same abort
+timing and reason — and `ctx.req.signal === ctx.signal` now holds
+literally, as the adapter docs promise (undici's follow never gave
+identity). Verified on node 22, 24 and 26; `test/signal.test.ts` (the
+contract test) passes unchanged.
+
+| metric (same machine, same session) | before | after |
+|---|---:|---:|
+| sampled allocations, 30 k req | 9.7 MB | 1.9 MB (−80%) |
+| heapUsed after 5 k warmup | 28.3 MB | 10.9 MB |
+| RSS plateau (80 k req) | 164 MB | 102 MB |
+| **B · steady-state RSS** (median ×5) | **126.8 MB** | **99.2 MB (−21.8%)** |
+| B drift control — hono (median ×5) | 98.7 MB | 98.6 MB |
+| CPU per request (10 interleaved pairs) | 67.8 µs | 57.9 µs (median −16.0%, faster in 10/10) |
+| wall rps in the same pairs | 19 271 | 21 152 (median +9.8%) |
+| C · heap per route | 554 B | 554 B (unchanged) |
+
+What remains is contract-locked: the platform `Request` construction
+itself (~25% of the remaining profile) is the documented Web Standard
+surface, and the per-request `AbortController` (~10%) is the
+disconnect-cancellation contract. `serve(app, { light: true })` stays the
+opt-out that skips the platform constructors entirely.

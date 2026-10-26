@@ -21,7 +21,7 @@ await server.close();
 | `light` | `false` | 启用快速路径：适配器构造轻量 `Request`/`Response` 对象（不打全局补丁；handler 仍见 Web Standard 形状）。注意：`clone()` 仅对字节支撑体有效；奇异 `BodyInit`（Blob/FormData）需一次真实 `Response` 构造 |
 | `abortOnDisconnect` | `true` | 客户端在响应完成前断开时中止 `ctx.signal`；`false` 跳过每请求 `AbortController` |
 | `https` | — | `NodeHttpsOptions`：经 `node:https` 提供 TLS，或 `http2: true` 走 HTTP/2-over-TLS（不支持明文 h2c；HTTP/2 无 `upgrade` 事件，故 `http2: true` + `upgrade` 在 `serve` 时抛错 —— WSS 需要 HTTP/1.1-over-TLS） |
-| `server` | — | `NodeServerTunables`：精选的 node 服务器旋钮（`maxHeaderSize`、`requestTimeout`、`headersTimeout`、`keepAliveTimeout`、`connectionsCheckingInterval`、`keepAlive`、`noDelay`、`highWaterMark`），在每条路径（http、https、HTTP/2-over-TLS）的构造期生效 —— 只有这些白名单字段会传给 node 的构造器 |
+| `server` | — | `NodeServerTunables`：精选的 node 服务器旋钮（`maxHeaderSize`、`requestTimeout`、`headersTimeout`、`keepAliveTimeout`、`connectionsCheckingInterval`、`keepAlive`、`noDelay`、`highWaterMark` —— 每条路径的构造器选项；`maxConnections`（每条路径）与 `maxRequestsPerSocket`（仅 HTTP/1.1）为构造后的 setter；`backlog` 经 `listen` 传入）—— 见[服务器旋钮](#server-tunables) |
 | `closeGraceMs` | `10_000` | 优雅关闭预算（ms）。`close()` 停止接受新连接、销毁空闲 keep-alive socket、放行在途响应 —— 最后一个落地即 resolve。预算耗尽时仍未结束的连接被硬杀（`closeAllConnections()`，外加适配器自行登记的 upgraded/websocket socket 与 HTTP/2 会话）。`0` 立即硬杀：调用 `close()` 的那一刻在途响应即死 |
 | `clientError` | — | `(err, socket) => void`，接到服务器的 `'clientError'` 事件 —— 畸形请求进入你的钩子而非 node 默认行为（销毁肇事 socket）。不传时 node 自身行为原样保留 |
 
@@ -51,7 +51,7 @@ HTTP/2-over-TLS 上跑同一序列：适配器从 `'session'` 事件登记会话
 
 ## 服务器旋钮 {#server-tunables}
 
-`server: NodeServerTunables` 把精选的 node 服务器旋钮传给底层构造器 —— 同样八个字段在 http、https、HTTP/2-over-TLS 三条路径都生效：
+`server: NodeServerTunables` 把精选的 node 服务器旋钮传给底层构造器 —— 八个构造器认识的字段在 http、https、HTTP/2-over-TLS 三条路径都生效：
 
 | 字段 | node 默认 | 含义 |
 | --- | --- | --- |
@@ -64,13 +64,21 @@ HTTP/2-over-TLS 上跑同一序列：适配器从 `'session'` 事件登记会话
 | `noDelay` | `true` | `socket.setNoDelay` —— 关闭 Nagle |
 | `highWaterMark` | `16384` | 每 socket 流缓冲大小（字节） |
 
+另外三个字段不走构造器 —— node 的构造器不从 options 读它们：
+
+| 字段 | node 默认 | 生效方式 |
+| --- | --- | --- |
+| `maxConnections` | 无限制 | `server.maxConnections` setter —— 超过后 node 在连接到达时直接销毁。每条路径：http、https、HTTP/2-over-TLS |
+| `maxRequestsPerSocket` | `0`（关闭） | `server.maxRequestsPerSocket` setter —— 一个 HTTP/1.x socket 最多服务的请求数，达到后 node 关闭该 keep-alive 连接。**仅 HTTP/1.1**：HTTP/2 在一个会话上多路复用大量 stream，该字段在 http2 路径不适用、被忽略 |
+| `backlog` | `511` | `listen(port, host, backlog)` 的第三个参数 —— 内核 accept 队列深度，即进程忙于接受时可等待的连接数。每条路径 |
+
 **生产提示。** 让 `keepAliveTimeout` 明显低于上游负载均衡的空闲超时：LB 认为连接已闲置而丢弃、后端却仍持有它，是经典的静默 502 陷阱（下一个请求骑上了 LB 早已抛弃的 socket）。惯用配方是 LB 空闲超时 ≥ `keepAliveTimeout` + 几秒余量。`requestTimeout` 限制的是*整个*请求（含 body）—— 超长时间流式上传/下载会被它拦腰截断，流式端点请自行调大（或设 `0` 关闭，改靠 `headersTimeout` + 自己的 body 限制）。
 
 ## Host 头加固
 
 适配器用 `Host` 头（HTTP/2 上是 `:authority`）拼出每个请求的 URL。超出 authority 语法的 Host —— 除字母数字、`.`、`-`、`:`（端口）、`[`/`]`（IPv6 字面量）之外的任何字符，包括 `/ \ ? # @`、空白、percent 转义与空值 —— 一律回退为 `localhost`，不进入 URL：伪造的 `Host: evil.com/a` 既污染不了解析出的 pathname，也不会让 URL 无法解析。合法 Host 原样通过 —— `example.com`、`example.com:8080`、`[::1]:3000`。
 
-## `onFinish(ctx, fn)`（core barrel） {#onfinish}
+## `onFinish(ctx, fn)` / `finishersIdle()`（core barrel） {#onfinish}
 
 ```ts
 import { onFinish } from 's200';
@@ -91,6 +99,8 @@ get(app, '/report', (ctx) => {
 回调是 fire-and-forget：同步抛错（或返回的 promise 拒绝）会经 app 的 `logError` 记录，绝不打断响应或其他回调。请在 finish 之前注册 —— 之后的注册会被静默丢弃。
 
 node 适配器上的触发点是 socket 写完成与提前 `'close'`；有无 `light` 都会触发，`abortOnDisconnect: false` 只跳过 `ctx.signal` 的中止 —— finish 回调照常运行。
+
+`finishersIdle()`（同为 core barrel 导出）在所有在途 `onFinish` 回调落定后 resolve —— fire-and-forget 契约的排空侧伙伴。[`s200/lifecycle`](/zh/api/lifecycle) 在连接排空后等待它（`waitForFinishers`，默认开启），异步 finisher（指标刷写、缓冲写盘）因此不会被停机拦腰截断。只有返回 promise 的回调被计数（同步回调在任何等待者能观察到之前就已落定）；调用时没有在途回调则立即 resolve；等待本身不设时限：永不落定的回调会一直挂住它。
 
 ## 流式响应的断连传播
 

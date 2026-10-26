@@ -159,10 +159,25 @@ const result = await uploadForm(
 | `UploadFile` | `{ name, filename, contentType?, data: Uint8Array, size }` — one buffered file part |
 | `UploadSink` | `(file: UploadFile) => Promise<string \| void> \| string \| void` — a returned string is reported as that file's `id`; a rejection aborts the whole upload |
 | `UploadAccept` | `readonly string[]` (media-type prefixes) or `(part: FormPart) => boolean` |
-| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, maxParts?, accept? }` — all optional; the gates the example above shows |
+| `UploadSniff` | `(head: Uint8Array, part: FormPart) => boolean \| Promise<boolean>` — the content-trust verdict on the first `sniffBytes` (default 512) of every file part; `false` rejects with a `415` |
+| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, maxParts?, accept?, sniff?, sniffBytes? }` — all optional; the gates the example above shows plus the sniff hook |
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 
 Gates: `accept` (415) and `maxFiles` (413) run at part delivery; `maxFileSize` caps FILE parts only — a file over the cap rejects with a `413` (naming the file and the limit) before the sink sees it, at part completion for a file below the 8 MiB streaming floor and mid-stream above it (the crossing byte rejects, the source is cancelled). Text fields are never bounded by it: they keep the total `limit` plus the stream's own 8 MiB per-part default. `maxParts` (default 256, fields included) rejects endless-part forms mid-stream the same way. Every rejection and any sink error abort the upload: the parse stops, the platform source is cancelled, the error bubbles. A part is the unit of buffering: each file sits fully in memory by the time the sink sees it — for truly huge files, use `streamForm` directly.
+
+Content sniffing is an injection seam, not a feature: `sniff` receives the first `sniffBytes` (default 512) of every file part plus the part itself, and its verdict decides whether the declared Content-Type is trustworthy — `false` rejects with a `415` (gate order `accept` → `maxFiles` → `maxFileSize` → `sniff` → sink, so an allowlist miss never reaches the hook, and field parts are never sniffed). No magic tables ship — the classic signatures are a three-line predicate:
+
+```ts
+uploadForm(ctx, sink, {
+  accept: ['image/'],
+  sniff: (head, part) =>
+    part.contentType === 'image/png'
+      ? head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e
+      : true,   // the verdict is entirely yours — zero built-in signatures
+});
+```
+
+The head is a view into the part buffer (zero copies) — a file shorter than the window hands its whole body. A failed verdict aborts the upload exactly like the other gates: mid-stream, later parts never parsed, the platform source cancelled.
 
 Filenames are raw client input: never splice one into a path unsanitized — an `../../etc/cron.d/x` upload would escape the target directory. `safeFilename` is the companion for exactly that: it strips control characters (NUL included), takes the basename across both `/` and `\`, trims edge dots and spaces (so `..`, win32 dot-aliases, and dotfiles like `.env` never land), keeps unicode letters/digits and common safe punctuation untouched, and falls back to `'upload'` when nothing survives. It deliberately does not cover Windows reserved device names (`CON`, `NUL`, `COM1`, …) or NTFS alternate data streams (`file.txt:ads` keeps its colon), and sets no length cap — enforce those in the sink if the target platform needs them.

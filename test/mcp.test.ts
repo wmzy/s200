@@ -123,6 +123,36 @@ describe('toolManifest', () => {
     // The same flag `openapiSpec` emits and `withRouteValidation` gates.
     (report?.inputSchema.required ?? []).should.deep.equal(['format']);
   });
+
+  it('nests a multipart body under one required body argument', () => {
+    const app = createApp();
+    post(app, '/avatars', (ctx) => json(ctx, { ok: true }));
+    describeRoute(app, 'POST', '/avatars', {
+      summary: 'Upload an avatar',
+      body: {
+        form: {
+          label: { schema: { type: 'string' }, required: true },
+          avatar: { file: true, contentTypes: ['image/png'] },
+        },
+      },
+    });
+    const { tools } = toolManifest(app);
+    const upload = tools.find((tool) => tool.name === 'post_avatars');
+
+    // JSON-RPC arguments are JSON, not file parts: the form keeps its
+    // shape (files as binary strings) under one `body` argument.
+    upload?.inputSchema.properties.should.deep.equal({
+      body: {
+        type: 'object',
+        properties: {
+          label: { type: 'string' },
+          avatar: { type: 'string', format: 'binary' },
+        },
+        required: ['label'],
+      },
+    });
+    (upload?.inputSchema.required ?? []).should.deep.equal(['body']);
+  });
 });
 
 describe('createMcpHandler (JSON-RPC surface)', () => {

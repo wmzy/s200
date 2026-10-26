@@ -22,6 +22,29 @@ export type Directive = string | readonly string[];
 /** Directive map — keys serialize in insertion order. */
 export type Directives = Readonly<Record<string, Directive>>;
 
+/**
+ * The nonce-carrying CSP shape of `contentSecurityPolicy`: `{ nonce: true,
+ * policy }` wires the per-request nonce automatically. On entry a fresh
+ * cryptographically random nonce (from {@link cspNonce}) is parked on
+ * `ctx.state.cspNonce` (a string) so handlers can embed it in markup
+ * (`<script nonce="…">`); on the unwind every `{{nonce}}` placeholder in
+ * the policy is replaced with it before the header lands —
+ * `script-src: ["'nonce-{{nonce}}'"]` ships as
+ * `script-src 'nonce-m2Z…=='`. `reportOnly: true` stamps
+ * `Content-Security-Policy-Report-Only` instead. The fill-only contract
+ * is unchanged: a CSP header the response already carries wins, and the
+ * handler builds its own from `ctx.state.cspNonce`.
+ */
+export type NonceCsp = {
+  /** Literal `true` — the marker selecting this shape. */
+  readonly nonce: true;
+  /** Stamp the report-only header variant instead. */
+  readonly reportOnly?: boolean;
+  /** The policy — a directives object or a raw value, with `{{nonce}}`
+   * wherever the nonce goes. */
+  readonly policy: Directives | string;
+};
+
 /** Serializes a directives object into a header value: `key value(s)`
  * joined by `; ` — keys in insertion order, arrays space-joined, a
  * valueless directive renders as the bare key. */
@@ -44,10 +67,12 @@ export type SecureHeadersOptions = {
   readonly referrerPolicy?: string | false;
   /** `strict-transport-security`; off by default — enable explicitly. */
   readonly strictTransportSecurity?: string | false;
-  /** `content-security-policy`; off by default — a raw header value or a
+  /** `content-security-policy`; off by default — a raw header value, a
    * directives object (`{ 'default-src': ["'self'"] }` serializes to
-   * `default-src 'self'`, keys in insertion order). */
-  readonly contentSecurityPolicy?: Directives | string | false;
+   * `default-src 'self'`, keys in insertion order), or the nonce-carrying
+   * shape {@link NonceCsp} (`{ nonce: true, policy }` — per-request nonce
+   * on `ctx.state.cspNonce`, `{{nonce}}` spliced in on the unwind). */
+  readonly contentSecurityPolicy?: Directives | string | NonceCsp | false;
   /** `permissions-policy`; off by default — same shapes as CSP. */
   readonly permissionsPolicy?: Directives | string | false;
   /** `cross-origin-opener-policy`; default `same-origin`. */
@@ -84,6 +109,11 @@ export type SecureHeadersOptions = {
  *
  * Registered after `secureHeaders`, this middleware's unwind runs first,
  * so the per-request CSP lands before the static fill-only pass.
+ *
+ * Or skip the middleware: `secureHeaders({ contentSecurityPolicy: { nonce:
+ * true, policy } })` generates the nonce per request, parks it on
+ * `ctx.state.cspNonce`, and splices it into every `{{nonce}}` placeholder
+ * in `policy` when the header lands — see {@link NonceCsp}.
  */
 export function cspNonce(): string {
   const bytes = new Uint8Array(16);
@@ -147,13 +177,47 @@ export function secureHeaders(options: SecureHeadersOptions = {}): Middleware {
       typeof value === 'string' ? value : serializeDirectives(value)
     );
   };
-  addDirectives('content-security-policy', options.contentSecurityPolicy);
+  // The nonce shape is per-request (the placeholder is spliced in on the
+  // unwind), so it never enters the static `wanted` map; every other
+  // shape serializes once here.
+  const csp = options.contentSecurityPolicy;
+  const nonceWanted =
+    typeof csp === 'object' && csp !== null && (csp as Partial<NonceCsp>).nonce === true;
+  const cspHeaderName =
+    nonceWanted && (csp as NonceCsp).reportOnly === true
+      ? 'content-security-policy-report-only'
+      : 'content-security-policy';
+  const policy = nonceWanted ? (csp as NonceCsp).policy : undefined;
+  const cspTemplate =
+    policy === undefined
+      ? undefined
+      : typeof policy === 'string'
+        ? policy
+        : serializeDirectives(policy);
+  if (!nonceWanted) {
+    // The cast is honest: `nonceWanted === false` rules the NonceCsp shape
+    // out, but the `nonce === true` runtime probe cannot narrow the union.
+    addDirectives(
+      'content-security-policy',
+      csp as Directives | string | false | undefined
+    );
+  }
   addDirectives('permissions-policy', options.permissionsPolicy);
   const remove = options.removeHeaders;
   return async (ctx, next) => {
+    // Entry segment, nonce shape only: generate and park the nonce where
+    // handlers (and the unwind below) can read it. No CSP option, no
+    // per-request crypto call — the static path stays exactly as it was.
+    const nonce = nonceWanted ? cspNonce() : undefined;
+    if (nonce !== undefined) {
+      ctx.state.cspNonce = nonce;
+    }
     await next();
     const res = ctx.res;
     if (res === undefined) return;
+    if (nonce !== undefined && !res.headers.has(cspHeaderName)) {
+      res.headers.set(cspHeaderName, (cspTemplate ?? '').replaceAll('{{nonce}}', nonce));
+    }
     for (const [name, value] of wanted) {
       if (!res.headers.has(name)) {
         res.headers.set(name, value);

@@ -3,11 +3,15 @@ import { describe, expectTypeOf, it } from 'vitest';
 import { createApp, get, post, all, del, mount, removeRoute, use } from '../src/app';
 import {
   createClient,
+  readSSE,
   type ClientInit,
   type ClientMiddleware,
   type ClientResponse,
+  type ClientSseEvent,
 } from '../src/client';
 import { json } from '../src/respond';
+import { streamSSE } from '../src/streaming';
+import { testClient } from '../src/test';
 import { bodyShape } from '../src/validate';
 
 // vitest's should chain has no rejectedWith; capture manually instead.
@@ -521,5 +525,147 @@ describe('client middleware', () => {
     const res = await hooked.get('/users/:id', { id: '7' });
     res.status.should.equal(200);
     (await res.json()).id.should.equal('7');
+  });
+});
+
+describe('client readSSE', () => {
+  it('parses fields, merges multi-line data, ignores comments and unknown fields', async () => {
+    // First event framed with CRLF, second with LF — both terminators parse.
+    const wire =
+      'id: 1\r\n' +
+      'event: add\r\n' +
+      'data: {"a":1}\r\n' +
+      '\r\n' +
+      ': keepalive\n' +
+      '\n' +
+      'retry: 250\n' +
+      'unknown: ignored\n' +
+      'data: line1\n' +
+      'data: line2\n' +
+      '\n';
+    const events: ClientSseEvent[] = [];
+    for await (const event of readSSE(new Response(wire))) {
+      events.push(event);
+    }
+    events.length.should.equal(2);
+    (events[0]!.id ?? '').should.equal('1');
+    (events[0]!.event ?? '').should.equal('add');
+    events[0]!.data.should.equal('{"a":1}');
+    // Second event: multi-line data merged, retry picked up, event name
+    // reset; id persists per spec (the resume cursor).
+    events[1]!.data.should.equal('line1\nline2');
+    (events[1]!.retry ?? 0).should.equal(250);
+    (events[1]!.event === undefined).should.equal(true);
+    (events[1]!.id ?? '').should.equal('1');
+  });
+
+  it('strips exactly one space after the colon, and dispatches empty data', async () => {
+    const wire = 'data:  two spaces\ndata:\ndata:x\n\n';
+    const events: ClientSseEvent[] = [];
+    for await (const event of readSSE(new Response(wire))) {
+      events.push(event);
+    }
+    events.length.should.equal(1);
+    events[0]!.data.should.equal(' two spaces\n\nx');
+  });
+
+  it('drops a leading BOM and tolerates lone-CR line endings', async () => {
+    const events: ClientSseEvent[] = [];
+    for await (const event of readSSE(new Response('\uFEFFdata: a\rdata: b\r\r'))) {
+      events.push(event);
+    }
+    events.length.should.equal(1);
+    events[0]!.data.should.equal('a\nb');
+  });
+
+  it('discards a trailing partial event on clean close', async () => {
+    const events: ClientSseEvent[] = [];
+    for await (const event of readSSE(new Response('data: complete\n\ndata: truncated'))) {
+      events.push(event);
+    }
+    events.length.should.equal(1);
+    events[0]!.data.should.equal('complete');
+  });
+
+  it('ends cleanly on a null body', async () => {
+    const events: ClientSseEvent[] = [];
+    for await (const event of readSSE(new Response(null))) {
+      events.push(event);
+    }
+    events.length.should.equal(0);
+  });
+
+  it('cancels the body when the consumer breaks early', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: a\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: b\n\n'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const events: ClientSseEvent[] = [];
+    for await (const event of readSSE(new Response(body))) {
+      events.push(event);
+      break;
+    }
+    events.length.should.equal(1);
+    events[0]!.data.should.equal('a');
+    cancelled.should.be.true;
+  });
+
+  it('iterates a streamSSE response end to end via testClient', async () => {
+    const withEvents = get(
+      createApp(),
+      '/events',
+      (ctx) =>
+        streamSSE(ctx, async (writer) => {
+          await writer.writeSSE({ id: '1', event: 'hello', data: { a: 1 } });
+          await writer.heartbeat();
+          await writer.writeSSE({ data: 'plain' });
+          await writer.writeSSE({ data: 'line1\nline2', retry: 250 });
+        })
+    );
+    const client = testClient(withEvents);
+    const res = await client.get('/events');
+    res.headers.get('content-type')!.should.equal('text/event-stream');
+    const events: ClientSseEvent[] = [];
+    for await (const event of readSSE(res)) {
+      events.push(event);
+    }
+    events.length.should.equal(3);
+    (events[0]!.id ?? '').should.equal('1');
+    (events[0]!.event ?? '').should.equal('hello');
+    // Objects ship JSON-encoded on the wire — data is the decoded string.
+    events[0]!.data.should.equal('{"a":1}');
+    events[1]!.data.should.equal('plain');
+    events[2]!.data.should.equal('line1\nline2');
+    (events[2]!.retry ?? 0).should.equal(250);
+  });
+
+  it('surfaces a dropped stream as a rejected next() — complete events survive', async () => {
+    const withBoom = get(
+      createApp(),
+      '/boom',
+      (ctx) =>
+        streamSSE(ctx, async (writer) => {
+          await writer.writeSSE({ data: 'first' });
+          writer.abort(new Error('pump died'));
+        })
+    );
+    const client = testClient(withBoom);
+    const res = await client.get('/boom');
+    const seen: string[] = [];
+    const error = await rejectionOf(
+      (async () => {
+        for await (const event of readSSE(res)) {
+          seen.push(event.data);
+        }
+      })()
+    );
+    seen.should.deep.equal(['first']);
+    (error as Error).message.should.equal('pump died');
   });
 });

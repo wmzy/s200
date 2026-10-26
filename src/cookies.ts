@@ -119,13 +119,15 @@ export async function signCookie(value: string, secret: string): Promise<string>
 }
 
 /**
- * Constant-time comparison for HMAC signatures: a plain `===` leaks byte
- * agreement through its runtime, letting an attacker iteratively forge a
- * signature. The loop is fixed-count over equal-length inputs; unequal
- * lengths bail early — the length of a signature is public (the format is
- * fixed) and carries no secret bits.
+ * Constant-time string comparison for secrets (HMAC signatures, tokens,
+ * credentials): a plain `===` leaks byte agreement through its runtime,
+ * letting an attacker iteratively forge a secret one character at a
+ * time. Equal-length inputs scan every byte and decide once at the end;
+ * unequal lengths return `false` immediately — the length of a secret is
+ * public knowledge when the format is fixed (a signature, a digest), so
+ * it carries no secret bits.
  */
-function timingSafeEqual(a: string, b: string): boolean {
+export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) {
     return false;
   }

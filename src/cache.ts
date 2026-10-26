@@ -179,3 +179,84 @@ export function cache(options: CacheOptions = {}): Middleware {
     await store.set(key, { exp: now + ttl, status: res.status, headers, body: bytes });
   };
 }
+
+/** Directive inputs for {@link cacheControl} — every field optional, at
+ * least one required. Seconds fields must be non-negative integers. */
+export type CacheControlOptions = {
+  /** `max-age=N` — freshness lifetime in seconds, shared and private
+   * caches alike. */
+  readonly maxAge?: number;
+  /** `s-maxage=N` — the shared-cache override of `max-age` (a CDN may
+   * serve longer than a browser). */
+  readonly sMaxAge?: number;
+  /** `stale-while-revalidate=N` — a shared cache may serve stale content
+   * while it revalidates in the background for this many seconds past
+   * expiry. */
+  readonly staleWhileRevalidate?: number;
+  /** `no-store` — nothing is stored anywhere, by any cache, ever. */
+  readonly noStore?: boolean;
+  /** `no-cache` — stored, but every serve revalidates first. */
+  readonly noCache?: boolean;
+  /** `private` — the response is for one user; shared caches must not
+   * store it. */
+  readonly private?: boolean;
+  /** `immutable` — the body never changes while fresh (fingerprinted
+   * assets). */
+  readonly immutable?: boolean;
+  /** `must-revalidate` — once stale, no serving without a successful
+   * revalidation (stale-on-error is off). */
+  readonly mustRevalidate?: boolean;
+};
+
+/**
+ * Builds a `Cache-Control` header value from directives — the one-call
+ * shape for stamping freshness on a response:
+ *
+ * ```ts
+ * get(app, '/asset/main.9f3c.js', (ctx) =>
+ *   text(ctx, body, {
+ *     headers: {
+ *       'cache-control': cacheControl({ maxAge: 31_536_000, immutable: true }),
+ *     },
+ *   })
+ * );
+ * ```
+ *
+ * Directives land in a fixed order (`no-cache, private, max-age=N,
+ * s-maxage=N, must-revalidate, stale-while-revalidate=N, immutable`) —
+ * order carries no meaning per RFC 9111, a stable one just reads and
+ * diffs well. `noStore: true` short-circuits to exactly `no-store`:
+ * every other directive is meaningless once storage is forbidden.
+ * Throws on an empty directive set (a no-op header is a bug) and on
+ * negative or non-integer seconds.
+ *
+ * This is a builder for the header your *clients and CDNs* read — it
+ * composes with, but is independent of, the `cache()` middleware: the
+ * middleware's own freshness window is `ttl` (it does not serve stale),
+ * while `stale-while-revalidate` governs what downstream shared caches
+ * do between your server and the user.
+ */
+export function cacheControl(options: CacheControlOptions): string {
+  if (options.noStore === true) return 'no-store';
+  const parts: string[] = [];
+  const seconds = (name: string, value: number | undefined): void => {
+    if (value === undefined) return;
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(
+        `Invalid cache-control ${name} ${String(value)}: must be a non-negative integer (seconds)`
+      );
+    }
+    parts.push(`${name}=${String(value)}`);
+  };
+  if (options.noCache === true) parts.push('no-cache');
+  if (options.private === true) parts.push('private');
+  seconds('max-age', options.maxAge);
+  seconds('s-maxage', options.sMaxAge);
+  if (options.mustRevalidate === true) parts.push('must-revalidate');
+  seconds('stale-while-revalidate', options.staleWhileRevalidate);
+  if (options.immutable === true) parts.push('immutable');
+  if (parts.length === 0) {
+    throw new Error('cacheControl() requires at least one directive');
+  }
+  return parts.join(', ');
+}

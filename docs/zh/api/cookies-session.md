@@ -23,6 +23,7 @@ const sid = await getSignedCookie(ctx, 'sid', SECRET);      // 未验证通过�
 | `verifyCookieSignature(value, sig, secret)` | 常量时间验证；不匹配返回 `false` |
 | `setSignedCookie(ctx, name, value, secret, options?)` | 设置 `name=value` 及 `name.sig` 伙伴 cookie |
 | `getSignedCookie(ctx, name, secret)` | 签名通过验证时返回值，否则 `undefined` |
+| `timingSafeEqual(a, b)` | 常数时间字符串比较 —— `s200/auth` 的 verify 回调应使用的原语 |
 
 `CookieOptions`：
 

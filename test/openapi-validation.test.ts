@@ -442,3 +442,139 @@ describe('withRouteValidation (transform semantics)', () => {
     );
   });
 });
+
+describe('withRouteValidation (headers)', () => {
+  /** `/report` with a required `x-trace-id` and an optional `x-verbose`. */
+  function traceApp() {
+    const app = get(createApp(), '/report', (ctx) =>
+      json(ctx, { trace: ctx.req.headers.get('x-trace-id') })
+    );
+    describeRoute(app, 'GET', '/report', {
+      headers: {
+        'x-trace-id': { schema: { type: 'string' }, required: true },
+        'x-verbose': { type: 'boolean' },
+      },
+    });
+    return withRouteValidation(app);
+  }
+
+  it('checks present headers against their schema; absent optional headers pass', async () => {
+    const app = traceApp();
+    const ok = await request(app, '/report', { headers: { 'x-trace-id': 't-1' } });
+    ok.status.should.equal(200);
+    ((await ok.json()) as { trace: string }).trace.should.equal('t-1');
+
+    // The marker only decides absence; the schema still owns the value.
+    const bad = await request(app, '/report', {
+      headers: { 'x-trace-id': 't-1', 'x-verbose': 'maybe' },
+    });
+    bad.status.should.equal(422);
+    (await errorOf(bad)).should.contain('headers.x-verbose');
+  });
+
+  it('answers a missing required header with 422 and the validationError body', async () => {
+    const bad = await request(traceApp(), '/report');
+    bad.status.should.equal(422);
+    (await bad.json()).should.deep.equal({
+      error: 'headers.x-trace-id: required',
+      issues: [{ path: 'headers.x-trace-id', message: 'required' }],
+    });
+  });
+
+  it('matches header names case-insensitively — the platform rule', async () => {
+    const res = await request(traceApp(), '/report', { headers: { 'X-Trace-Id': 't-2' } });
+    res.status.should.equal(200);
+    ((await res.json()) as { trace: string }).trace.should.equal('t-2');
+  });
+
+  it('rebuilds a route whose only annotation is headers', async () => {
+    // A headers-only annotation must still get the gate — the transform
+    // condition counts it.
+    const app = get(createApp(), '/ping', (ctx) => json(ctx, { ok: true }));
+    describeRoute(app, 'GET', '/ping', {
+      headers: { 'x-api-key': { schema: { type: 'string' }, required: true } },
+    });
+    const gated = withRouteValidation(app);
+    (await request(gated, '/ping')).status.should.equal(422);
+    (await request(gated, '/ping', { headers: { 'x-api-key': 'k' } })).status.should.equal(200);
+  });
+});
+
+describe('withRouteValidation (cookies — spec-only)', () => {
+  it('documents cookies without gating them: the request passes without the cookie', async () => {
+    const app = get(createApp(), '/who', (ctx) => json(ctx, { ok: true }));
+    describeRoute(app, 'GET', '/who', {
+      cookies: { session: { schema: { type: 'string' }, required: true } },
+    });
+    const gated = withRouteValidation(app);
+    // No gate fires — parsing the cookie header is the cookies battery's
+    // job, not the spec emitter's.
+    (await request(gated, '/who')).status.should.equal(200);
+    // The spec still documents the annotation.
+    const spec = openapiSpec(gated, { title: 't', version: '1' });
+    const parameters = (
+      spec.paths['/who']?.get as {
+        parameters: { name: string; in: string; required: boolean }[];
+      }
+    ).parameters;
+    parameters.should.deep.equal([
+      { name: 'session', in: 'cookie', required: true, schema: { type: 'string' } },
+    ]);
+  });
+});
+
+describe('withRouteValidation (multipart bodies)', () => {
+  /** POST /avatars documented as a multipart form, gated. */
+  function uploadApp() {
+    const app = post(createApp(), '/avatars', async (ctx) =>
+      json(ctx, { type: ctx.req.headers.get('content-type') ?? '' }, { status: 201 })
+    );
+    describeRoute(app, 'POST', '/avatars', {
+      body: {
+        form: {
+          label: { schema: { type: 'string' }, required: true },
+          avatar: { file: true, contentTypes: ['image/png'] },
+        },
+      },
+    });
+    return withRouteValidation(app);
+  }
+
+  it('documents the form without reading the body — multipart requests pass through', async () => {
+    const form = new FormData();
+    form.append('label', 'avatar');
+    form.append('avatar', new Blob([new Uint8Array([1, 2, 3])]), 'a.png');
+    const res = await request(uploadApp(), '/avatars', { method: 'POST', body: form });
+    // The gate never JSON-parses the body; the handler runs.
+    res.status.should.equal(201);
+  });
+
+  it('never reads the body even when it is JSON — the 415 is the route runtime\'s', async () => {
+    const res = await request(uploadApp(), '/avatars', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'x' }),
+    });
+    res.status.should.equal(201);
+  });
+
+  it('still emits the multipart requestBody after the transform', () => {
+    const spec = openapiSpec(uploadApp(), { title: 't', version: '1' });
+    const media = (
+      (spec.paths['/avatars']?.post as { requestBody: { content: Record<string, unknown> } })
+        .requestBody.content['multipart/form-data'] as {
+        schema: Record<string, unknown>;
+        encoding: Record<string, unknown>;
+      }
+    );
+    media.schema.should.deep.equal({
+      type: 'object',
+      properties: {
+        label: { type: 'string' },
+        avatar: { type: 'string', format: 'binary' },
+      },
+      required: ['label'],
+    });
+    media.encoding.should.deep.equal({ avatar: { contentType: 'image/png' } });
+  });
+});

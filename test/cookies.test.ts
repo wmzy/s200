@@ -8,6 +8,7 @@ import {
   getSignedCookie,
   setCookie,
   setSignedCookie,
+  timingSafeEqual,
   verifyCookieSignature,
 } from '../src/cookies';
 import { neverSignal } from '../src/signal';
@@ -146,5 +147,22 @@ describe('signed cookies', function () {
     get(app, '/', async (ctx) => new Response((await getSignedCookie(ctx, 'sid', 'sekret')) ?? ''));
     const res = await handle(app, requestWith('sid=alice'));
     (await res.text()).should.equal('');
+  });
+});
+
+describe('timingSafeEqual', function () {
+  it('returns true only for equal strings, comparing UTF-8 bytes', function () {
+    timingSafeEqual('abc', 'abc').should.be.true;
+    timingSafeEqual('', '').should.be.true;
+    timingSafeEqual('héllo', 'héllo').should.be.true; // multi-byte, byte-for-byte
+  });
+
+  it('returns false for any difference', function () {
+    timingSafeEqual('abc', 'abd').should.be.false; // same length, one byte off
+    timingSafeEqual('abc', 'abC').should.be.false; // case is a byte difference
+    timingSafeEqual('abc', 'abcd').should.be.false; // longer
+    timingSafeEqual('abcd', 'abc').should.be.false; // shorter
+    timingSafeEqual('abc', '').should.be.false;
+    timingSafeEqual('a\u00e9', 'a\u0065\u0301').should.be.false; // same glyph, different bytes
   });
 });

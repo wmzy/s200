@@ -22,6 +22,7 @@ const { serve } = await import('../dist/node.mjs');
 const { cors } = await import('../dist/cors.mjs');
 const { setCookie, getCookie } = await import('../dist/cookies.mjs');
 const { compress } = await import('../dist/compress.mjs');
+const { signJwt, verifyJwt } = await import('../dist/jwt.mjs');
 
 let failures = 0;
 function check(name, ok, detail) {
@@ -52,6 +53,20 @@ check('s200/node exports serve', typeof serve === 'function', `typeof serve === 
 check('s200/cors exports cors', typeof cors === 'function', `typeof cors === ${typeof cors}`);
 check('s200/cookies exports setCookie', typeof setCookie === 'function', `typeof setCookie === ${typeof setCookie}`);
 check('s200/compress exports compress', typeof compress === 'function', `typeof compress === ${typeof compress}`);
+check('s200/jwt exports signJwt', typeof signJwt === 'function', `typeof signJwt === ${typeof signJwt}`);
+
+// EdDSA (Ed25519) over WebCrypto is stable on the floor node (>= 20.3):
+// the roundtrip proves the family survives the oldest supported LTS.
+{
+  const pair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  const token = await signJwt({ sub: 'floor' }, pair.privateKey, { alg: 'EdDSA' });
+  const payload = await verifyJwt(token, pair.publicKey);
+  check(
+    'jwt EdDSA (Ed25519) roundtrip on the floor node',
+    payload.sub === 'floor',
+    `sub === ${String(payload.sub)}`,
+  );
+}
 check(
   'isHttpError recognizes httpError',
   core.isHttpError(core.httpError(418, 'teapot')) === true,

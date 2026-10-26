@@ -4,7 +4,7 @@
 
 ## 生命周期（`s200/lifecycle`）
 
-NestJS 的 `enableShutdownHooks` + `onApplicationShutdown` 等价物：`stop()` 与 OS 信号共享同一条优雅排空路径。顺序是负载均衡器安全的：先翻就绪闸门（探针转 503、流量停止到达），然后停止接受新连接、在预算内等待在途请求、强杀拖尾者，最后才运行应用自己的 `onShutdown`。
+NestJS 的 `enableShutdownHooks` + `onApplicationShutdown` 等价物：`stop()` 与 OS 信号共享同一条优雅排空路径。顺序是负载均衡器安全的：先翻就绪闸门（探针转 503、流量停止到达），然后停止接受新连接、在预算内等待在途请求、强杀拖尾者、等在途的 `onFinish` 回调落定，最后才运行应用自己的 `onShutdown` 钩子。
 
 ```ts
 import { lifecycle } from 's200/lifecycle';
@@ -31,7 +31,10 @@ await handle.stop();        // 或：SIGTERM / SIGINT
 | `signals` | `['SIGTERM', 'SIGINT']` | 触发与 `stop()` 同一排空的信号；`[]` 把信号处理留给自己。排空**期间**的第二个信号立即强杀 |
 | `timeout` | `10_000` | 排空预算（毫秒） —— 在途请求获得此时长，之后其连接被强制关闭 |
 | `readiness` | — | 作为第一步翻为关闭 —— 传 `s200/health` 的 `createGate()`（结构性的：任何带 `close(reason?)` 的都行） |
-| `onShutdown` | — | 连接排空后（或预算到期后）运行 —— `onApplicationShutdown` 钩子 |
+| `onShutdown` | — | `onApplicationShutdown` 钩子：单个函数或数组。连接排空后（或预算到期后）、且（开着 `waitForFinishers` 时）在途 `onFinish` 回调落定后运行 |
+| `waitForFinishers` | `true` | 连接排空后、运行 `onShutdown` 前等待在途 `onFinish` 回调（core barrel 的 `finishersIdle()`）—— 停机钩子通常要关闭 finisher 写入的目标（指标、连接池），这个等待保住该顺序。`false` 让 finisher 从排空的视角回到纯 fire-and-forget。等待本身不设时限：永不落定的 finisher 会一直挂住排空，正如永不落定的 `onShutdown` 一样 |
+
+`onShutdown` 接受单个函数（即只有一个元素的数组）或钩子数组。数组按**注册序**运行，且一个钩子失败不会阻断其余钩子 —— Fastify `onClose` 语义：第一个错误令 `stop()` 拒绝（信号触发的排空改为 `console.error` 记录，`stopped` 仍 resolve），之后的每个错误也各自 `console.error`，任何失败都不会静默消失。
 
 信号监听器在排空落定后移除 —— 无泄漏、无第二个生命周期争抢同一进程。
 

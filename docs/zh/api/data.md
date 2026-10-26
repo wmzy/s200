@@ -27,6 +27,21 @@ use(app, cache({ store: redisCacheStore }));   // 跨实例共享
 
 `CacheStore`：`get(key)`、`set(key, entry)`、`delete(key)` —— `get`/`delete` 可异步（网络化存储）；`set` 原子存储整个条目。`CacheEntry`：`{ exp, status, headers: [string, string][], body: Uint8Array }`。过期由中间件每次读取时检查；存储亦可提前驱逐。
 
+`cacheControl(options): string` —— `Cache-Control` 构造器：一次调用一条指令串，面向你与客户端之间的缓存：
+
+```ts
+import { cacheControl } from 's200/cache';
+get(app, '/assets/main.9f3c.js', (ctx) =>
+  text(ctx, body, {
+    headers: { 'cache-control': cacheControl({ maxAge: 31_536_000, immutable: true }) },
+  })
+);
+```
+
+`CacheControlOptions`：`{ maxAge?, sMaxAge?, staleWhileRevalidate?, noStore?, noCache?, private?, immutable?, mustRevalidate? }` —— 秒数字段为非负整数，开关为 `true`。指令按固定顺序落位（`no-cache, private, max-age=N, s-maxage=N, must-revalidate, stale-while-revalidate=N, immutable`；RFC 9111 里顺序无意义，固定顺序只是便于 diff）。`noStore: true` 直接短路为 `no-store` —— 存储一旦被禁，其余指令皆无意义。空指令集与负数/小数秒抛错。
+
+构造器与上面的中间件可组合但相互独立：中间件自身的新鲜度窗口是它的 `ttl`，且从不服务过期内容 —— `stale-while-revalidate` 管的是下游共享缓存（CDN）在**它们**的副本过期后做什么。
+
 ## 配置（`s200/config`）
 
 类型化的快速失败配置，基于 `s200/validate` 使用的同一 Standard Schema 通道。`parseEnv` 是纯 `.env` 解析器；`createConfig` 在**构造时**校验合并后的记录 —— 失败抛出聚合全部问题的单个 `Error`，因此错误部署在启动时死亡并带完整清单，而非首个问题。

@@ -30,6 +30,12 @@ const PKG_MAP = {
   's200/swagger': 'swagger.ts',
   's200/codegen': 'codegen.ts',
   's200/test': 'test.ts',
+  's200/lifecycle': 'lifecycle.ts',
+  's200/health': 'health.ts',
+  's200/config': 'config.ts',
+  's200/schedule': 'schedule.ts',
+  's200/logger': 'logger.ts',
+  's200/request-id': 'request-id.ts',
 };
 
 export function resolve(specifier, context, nextResolve) {

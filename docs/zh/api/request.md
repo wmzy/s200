@@ -159,10 +159,25 @@ const result = await uploadForm(
 | `UploadFile` | `{ name, filename, contentType?, data: Uint8Array, size }` —— 一个缓冲的文件 part |
 | `UploadSink` | `(file: UploadFile) => Promise<string \| void> \| string \| void` —— 返回的字符串作为该文件的 `id` 报告；拒绝则中止整个上传 |
 | `UploadAccept` | `readonly string[]`（媒体类型前缀）或 `(part: FormPart) => boolean` |
-| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, maxParts?, accept? }` —— 全部可选；即上文示例展示的闸门 |
+| `UploadSniff` | `(head: Uint8Array, part: FormPart) => boolean \| Promise<boolean>` —— 对每个文件 part 前 `sniffBytes` 字节（默认 512）的内容信任裁定；`false` 以 `415` 拒绝 |
+| `UploadOptions` | `{ limit?, maxFileSize?, maxFiles?, maxParts?, accept?, sniff?, sniffBytes? }` —— 全部可选；即上文示例展示的闸门加 sniff 钩子 |
 | `UploadedFile` | `{ name, filename, contentType?, size, id? }` |
 | `UploadResult` | `{ files: readonly UploadedFile[]; fields: QueryRecord }` |
 
 闸门：`accept`（415）与 `maxFiles`（413）在 part 交付时运行；`maxFileSize` 只管文件 part —— 超限文件在 sink 看到它之前即以 `413` 拒绝（消息里带上文件名与上限）：低于 8 MiB 流式地板的文件在 part 交付时拒绝，高于它的则中途拒绝（越限字节即拒、源被取消）。文本字段不受它约束：它们保留总体 `limit` 与流自身的 8 MiB 每 part 默认上限。`maxParts`（默认 256，字段也计入）以同样方式在流中拒绝无尽 part 的表单。任何拒绝与任何 sink 错误都会中止上传：解析停止、平台源取消、错误冒泡。part 是缓冲单元：文件到达 sink 时已整体在内存 —— 真正巨大的文件请直接用 `streamForm`。
+
+内容嗅探是一条注入缝，不是一个内置功能：`sniff` 收到每个文件 part 的前 `sniffBytes` 字节（默认 512）加上 part 本身，由它的裁定决定声明的 Content-Type 是否可信 —— `false` 以 `415` 拒绝（闸门顺序 `accept` → `maxFiles` → `maxFileSize` → `sniff` → sink，白名单未命中不会到达钩子，字段 part 永不嗅探）。不内置任何魔数表 —— 经典签名只是三行谓词：
+
+```ts
+uploadForm(ctx, sink, {
+  accept: ['image/'],
+  sniff: (head, part) =>
+    part.contentType === 'image/png'
+      ? head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e
+      : true,   // 裁定完全归你 —— 零内置签名
+});
+```
+
+head 是 part 缓冲的视图（零拷贝）—— 短于窗口的文件交出整个 body。裁定失败与其他闸门一样中止上传：中途停止、后续 part 永不解析、平台源被取消。
 
 文件名是原始客户端输入：绝不要未经净化就拼进路径 —— 一个 `../../etc/cron.d/x` 的上传会逃出目标目录。`safeFilename` 正是为此准备的配套助手：剥控制字符（含 NUL）、按 `/` 与 `\` 取 basename、削首尾的点与空格（于是 `..`、win32 点别名、`.env` 这类隐藏文件都落不了地），unicode 字母数字与常见安全标点原样保留，全部剥空时回退为 `'upload'`。它刻意不覆盖 Windows 保留设备名（`CON`、`NUL`、`COM1` 等）与 NTFS 备用数据流（`file.txt:ads` 的冒号会保留），也不设长度上限 —— 目标平台需要的话在 sink 里自行强制。

@@ -4,8 +4,8 @@
  * and the OS signals. The order is the load-balancer-safe one: flip the
  * readiness gate FIRST (probes go 503, traffic stops arriving), then stop
  * accepting new connections, wait out in-flight requests within the
- * budget, hard-kill the stragglers, and only then run the app's own
- * `onShutdown`.
+ * budget, hard-kill the stragglers, let in-flight `onFinish` callbacks
+ * settle, and only then run the app's own `onShutdown`.
  *
  * Runtime-agnostic by duck typing — no node/bun imports: a raw server with
  * `closeIdleConnections` (node http/https/http2) gets `close()` plus
@@ -18,6 +18,8 @@
  * @module
  */
 
+import { finishersIdle } from './finish';
+
 /**
  * The minimal server surface {@link lifecycle} needs: every adapter
  * `serve()` result satisfies it structurally. `server` — the runtime's raw
@@ -27,6 +29,12 @@ export type LifecycleServer = {
   close(): Promise<void>;
   server?: unknown;
 };
+
+/**
+ * One shutdown hook — the `onApplicationShutdown` callback; see
+ * `LifecycleOptions.onShutdown` for the array semantics.
+ */
+export type ShutdownHook = () => void | Promise<void>;
 
 export type LifecycleOptions = {
   /**
@@ -48,12 +56,27 @@ export type LifecycleOptions = {
    */
   readiness?: { close(reason?: string): void };
   /**
-   * Runs after connections drained (or the budget expired) — the
-   * `onApplicationShutdown` hook. A throw rejects `stop()`; a
-   * signal-triggered drain logs it via `console.error` and still resolves
-   * `stopped`.
+   * Runs after connections drained (or the budget expired) and — with
+   * `waitForFinishers` (the default) — after in-flight `onFinish`
+   * callbacks settled: the `onApplicationShutdown` hook. Pass a single
+   * function or an array; an array runs in registration order, and one
+   * hook failing never blocks the rest (Fastify `onClose` semantics) —
+   * the first error rejects `stop()` (a signal-triggered drain logs it
+   * via `console.error`, `stopped` still resolves), every later error is
+   * `console.error`'d so it cannot disappear.
    */
-  onShutdown?: () => void | Promise<void>;
+  onShutdown?: ShutdownHook | readonly ShutdownHook[];
+  /**
+   * After connections drained, wait for in-flight `onFinish` callbacks
+   * (`finishersIdle()` from the core barrel) before running `onShutdown`.
+   * Default `true`: by then the drain budget's hard kill has already
+   * bounded the connection side, and shutdown hooks usually close the
+   * sinks finishers write into (metrics, pools) — waiting keeps that
+   * order honest. `false` keeps finishers strictly fire-and-forget from
+   * the drain's point of view. Like `onShutdown`, the wait is not
+   * time-boxed: a finisher that never settles holds the drain open.
+   */
+  waitForFinishers?: boolean;
 };
 
 export type LifecycleHandle = {
@@ -82,9 +105,11 @@ type RawServer = {
  * SIGTERM/SIGINT (or your list) to the same `stop()` path, takes the
  * process out of rotation via the readiness gate before touching sockets,
  * waits out in-flight requests within the budget, hard-kills on deadline
- * or a second signal, then awaits `onShutdown`. Signal listeners are
- * removed once the drain settles — no leaks, no second lifecycle fighting
- * over the same process.
+ * or a second signal, waits out in-flight `onFinish` callbacks (unless
+ * `waitForFinishers: false`), then awaits `onShutdown` — one function or
+ * an array, in registration order. Signal listeners are removed once the
+ * drain settles — no leaks, no second lifecycle fighting over the same
+ * process.
  */
 export function lifecycle(
   server: LifecycleServer,
@@ -92,6 +117,15 @@ export function lifecycle(
 ): LifecycleHandle {
   const signals = options.signals ?? ['SIGTERM', 'SIGINT'];
   const timeoutMs = options.timeout ?? DEFAULT_TIMEOUT;
+  const waitForFinishers = options.waitForFinishers !== false;
+  // A single function and an array are the same feature — normalize once
+  // so the drain path never re-inspects the shape.
+  const hooks: readonly ShutdownHook[] =
+    options.onShutdown === undefined
+      ? []
+      : typeof options.onShutdown === 'function'
+        ? [options.onShutdown]
+        : options.onShutdown;
   // Idle-socket reap cadence for the node path: fast enough that a
   // response finishing mid-drain doesn't wait the whole budget for its
   // keep-alive socket to be noticed, slow enough to be free in production.
@@ -109,6 +143,29 @@ export function lifecycle(
   const cleanup = (): void => {
     unregister();
     settleStopped();
+  };
+
+  // Fastify onClose semantics: one failing hook never blocks the rest.
+  // The first error keeps the single-hook contract — stop() rejects, a
+  // signal path logs it, stopped never rejects — every later error is
+  // console.error'd: swallowing it would be silent, and rejecting with it
+  // would race the first.
+  const runShutdownHooks = async (): Promise<void> => {
+    let first: { readonly error: unknown } | undefined;
+    for (const hook of hooks) {
+      try {
+        await hook();
+      } catch (error) {
+        if (first === undefined) {
+          first = { error };
+        } else {
+          console.error('[s200] onShutdown hook failed', error);
+        }
+      }
+    }
+    if (first !== undefined) {
+      throw first.error;
+    }
   };
 
   // Node path: stop accepting new connections, reap keep-alive sockets
@@ -221,7 +278,13 @@ export function lifecycle(
       // stop sending before connections drop.
       options.readiness?.close('draining');
       // Steps 2-3: stop accepting, wait out in-flight (never rejects).
-      drain = drainConnections().then(() => options.onShutdown?.());
+      // Step 4: in-flight onFinish callbacks settle BEFORE the hooks —
+      // hooks usually close what finishers write into, and the finishers
+      // themselves stay fire-and-forget; this is only the wait.
+      // Step 5: onShutdown hooks in registration order.
+      drain = drainConnections()
+        .then(() => (waitForFinishers ? finishersIdle() : undefined))
+        .then(runShutdownHooks);
       // Settlement wiring rides the same chain; the error branch keeps
       // the rejection from surfacing as an unhandledRejection — stop()
       // callers still receive it from the drain promise itself.

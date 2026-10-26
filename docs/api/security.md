@@ -51,6 +51,8 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 
 `basicAuth` / `bearerAuth` gates: the `verify` function decides; failures throw a 401 `HttpError` carrying the `WWW-Authenticate` challenge into the error boundary — the default mapping answers `401 {"error":"Unauthorized"}` + challenge, and a configured `onError` takes over. The chain below never runs. Credential comparison inside `verify` is yours — use a constant-time compare for secrets.
 
+`timingSafeEqual(a, b)` — exported from `s200/cookies` for exactly this — scans every byte of equal-length inputs and decides once at the end: a plain `===` leaks byte agreement through its runtime, letting an attacker forge a secret one character at a time. A length mismatch returns `false` immediately; a secret's length is public knowledge when the format is fixed (a digest, a signature), so it carries no secret bits.
+
 ```ts
 use(app, basicAuth(async (user, pass) => user === 'admin' && (await check(pass))));
 use(app, bearerAuth(async (token) => token === API_TOKEN));
@@ -65,7 +67,7 @@ use(app, bearerAuth(async (token) => token === API_TOKEN));
 
 ## JWT (`s200/jwt`)
 
-HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, zero dependencies.
+HS256/384/512, RS256/384/512, PS256/384/512, ES256/384/512, and EdDSA (Ed25519) over WebCrypto, zero dependencies.
 
 | Function | Meaning |
 | --- | --- |
@@ -77,7 +79,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 
 | Type | Meaning |
 | --- | --- |
-| `JwtAlgorithm` | `'HS256' \| … \| 'ES512'` |
+| `JwtAlgorithm` | `'HS256' \| … \| 'ES512' \| 'EdDSA'` |
 | `JwtKey` | `string \| Uint8Array \| CryptoKey \| JsonWebKey` |
 | `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId? }` — `alg` required when signing with a `CryptoKey`/JWK |
 | `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, keyStore? }` — `alg:none` is rejected unconditionally |
@@ -109,7 +111,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, and ES256/384/512 over WebCrypto, z
 | `verify` | — | Custom verification (another library, exotic tokens) — the returned value lands on `ctx.state.jwt` |
 | `keyStore` | — | Key-import store forwarded to `verifyJwt`; bypasses the default in-process cache (digest keys, process-local `CryptoKey` values) |
 
-Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key — the confusion attack is structurally closed). `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs?, store? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
+Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key, EdDSA an Ed25519 OKP key — a JWK with `kty:'OKP'` and `crv:'Ed25519'` — the confusion attack is structurally closed). EdDSA runs wherever WebCrypto implements Ed25519 (stable in Node ≥ 20, current browsers); a runtime without it gets a clear `JwtError` from a one-time capability probe instead of the platform's opaque `NotSupportedError`. `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs?, store? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
 
 Both module-wide caches are bounded LRUs — **100 imported keys** and **50 JWKS endpoints**. Crossing a bound drops the least recently used entry (an evicted key is re-imported, an evicted document refetched, on demand), so attacker-shaped key material or issuer URL sets cannot grow memory without bound. Multi-tenant deployments with more than 50 trusted issuers — or fleets that want one shared JWKS document cache — should inject their own stores. `createJwksResolver` and the `jwks` shorthand take a `JwksStore` over `{ exp, keys }` entries (TTL refresh still applies on read); those entries are plain JSON, so a Redis-backed `JwksStore` genuinely shares documents across processes. A `JwtKeyStore` is different: its values are `Promise<CryptoKey>` — process-local, non-extractable handles that cannot be serialized or shipped to Redis — so `verifyJwt`'s `keyStore` (and `jwtAuth`'s, which forwards it) customizes the in-process import cache instead (its bounds, its eviction policy, or an id→secret-material mapping the process imports itself). Cache keys are SHA-256 hex digests of the key material, never the raw secret, so a store that persists or logs its keys does not leak secrets. An injected store bypasses the in-process default entirely and owns its own bounds — back a `JwksStore` with Redis the same way as the rate-limit/session stores.
 
@@ -120,6 +122,39 @@ get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
 // Key rotation: use(app, jwtAuth({ jwks: 'https://idp.example/.well-known/jwks.json' }));
 // Shared/bounded externally: use(app, jwtAuth({ jwks: { url, store: redisJwksStore } }));
 ```
+
+## OAuth (`s200/oauth`)
+
+OAuth 2.0 Authorization Code flow with PKCE (S256) as pure functions — you own the transport and storage. Park `state` and the verifier between the redirect and the callback (signed cookies work, `s200/cookies`), compare the query `state` strictly before exchanging, and inject `fetch` to mock or proxy the network. The OIDC recipe (`recipes/oidc.ts`) composes these primitives end to end.
+
+```ts
+const pkce = await createPkcePair();                  // verifier + S256 challenge
+const state = randomState();                          // works as a nonce too
+redirect(ctx, buildAuthorizeUrl(
+  { authorizationEndpoint, clientId, redirectUri, scope: ['openid'] },
+  { state, nonce, codeChallenge: pkce.codeChallenge }
+));
+// … on the callback, after comparing state:
+const tokens = await exchangeCode(
+  { tokenEndpoint, clientId, clientSecret, redirectUri },
+  { code, codeVerifier: pkce.verifier }
+);
+```
+
+| Function | Meaning |
+| --- | --- |
+| `createPkcePair()` | `{ verifier, codeChallenge }` — 64 random bytes → 86-char base64url verifier (RFC 7636 §4.1), challenge = `base64url(SHA-256(verifier))` (§4.2) |
+| `randomState()` | 32 random bytes → 43 base64url characters (a state or a nonce) |
+| `buildAuthorizeUrl(options, flow)` | Pure URL construction: `response_type=code`, client/redirect/scope, `state`/`nonce?`, `code_challenge` + `code_challenge_method=S256` (always S256, never `plain`); existing endpoint query survives, `extraParams` appended last |
+| `exchangeCode(options, grant)` | POSTs the `authorization_code` grant with `code_verifier` (form-encoded); a `clientSecret` sends HTTP Basic, else `client_id` rides the body (public client); non-2xx or a payload without `access_token`/`token_type` throws a 502 `HttpError` |
+
+| Type | Meaning |
+| --- | --- |
+| `OAuthAuthorizeOptions` | `{ authorizationEndpoint, clientId, redirectUri, scope?, extraParams? }` — arrays join with spaces; the parameter is omitted when absent |
+| `OAuthAuthorizeFlow` | `{ state, codeChallenge, nonce? }` — the per-request values the redirect commits to |
+| `OAuthTokenOptions` | `{ tokenEndpoint, clientId, clientSecret?, redirectUri, fetch? }` — injectable `fetch` defaults to the global |
+| `OAuthTokens` | `{ accessToken, tokenType, expiresIn?, refreshToken?, scope?, idToken? }` — `idToken` rides for OIDC flows |
+| `PkcePair` | `{ verifier, codeChallenge }` |
 
 ## Secure headers (`s200/secure-headers`)
 
@@ -137,7 +172,7 @@ use(app, secureHeaders());  // nosniff, DENY framing, strict-origin-when-cross-o
 | `xFrameOptions` | `'DENY'` | `SAMEORIGIN` for embedding apps (or a CSP frame-ancestors policy) |
 | `referrerPolicy` | `'strict-origin-when-cross-origin'` | |
 | `strictTransportSecurity` | off | Opt-in — behind a TLS-terminating proxy a stray HSTS header can pin a domain to a broken setup |
-| `contentSecurityPolicy` | off | Opt-in — a raw header value or a directives object |
+| `contentSecurityPolicy` | off | Opt-in — a raw header value, a directives object, or the nonce-carrying shape (below) |
 | `permissionsPolicy` | off | Opt-in — same shapes as CSP |
 | `crossOriginOpenerPolicy` | `'same-origin'` | `false` drops it |
 | `crossOriginResourcePolicy` | `'same-origin'` | `false` drops it |
@@ -163,6 +198,20 @@ use(app, async (ctx, next) => {
 
 Embed the same nonce in the HTML (`<script nonce="…">`) so the policy and the markup agree.
 
+Or let `secureHeaders` wire the nonce itself — pass the object shape:
+
+```ts
+use(app, secureHeaders({
+  contentSecurityPolicy: {
+    nonce: true,   // per-request nonce, parked on ctx.state.cspNonce
+    policy: { 'default-src': ["'self'"], 'script-src': ["'nonce-{{nonce}}'"] },
+  },
+}));
+get(app, '/', (ctx) => html(ctx, `<script nonce="${ctx.state.cspNonce as string}">…</script>`));
+```
+
+On entry a fresh nonce (from `cspNonce()`) parks on `ctx.state.cspNonce` — a string, from any handler — and on the unwind every `{{nonce}}` placeholder in the policy is replaced with it before the header lands. `reportOnly: true` stamps `Content-Security-Policy-Report-Only` instead. The fill-only contract holds: a CSP the response already carries wins, with the handler building its own from the parked nonce. Raw-string policies take placeholders too (`"script-src 'nonce-{{nonce}}'"`); `NonceCsp` is `{ nonce: true, reportOnly?, policy: Directives | string }`.
+
 ## Rate limit (`s200/rate-limit`)
 
 True sliding-window gate per client key: every hit expires `windowMs` after it landed (no fixed boundary, so window edges can't burst). The over-limit request throws a 429 `HttpError` into the error boundary — the default mapping answers `429 {"error":"Too Many Requests"}` + `Retry-After`, and a configured `onError` takes over; the chain below never runs.
@@ -178,6 +227,7 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 | `windowMs` | `60_000` | Window length in ms |
 | `limit` | `60` | Requests per window per key |
 | `key` | first `x-forwarded-for` hop | Identity selector `(ctx) => string` — pass your own (and a `now` clock for tests) |
+| `skip` | — | `(ctx) => boolean` — `true` exempts the request entirely: no key computed, no store hit, nothing counted, never blocked — `next()` runs immediately (health checks, internal CIDRs) |
 | `now` | `Date.now` | Clock override |
 | `store` | in-process deque per key | Shared counters across instances: a `RateLimitStore` — `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` — must be atomic per key (the Redis INCR + PEXPIRE shape) |
 

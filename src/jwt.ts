@@ -1,14 +1,21 @@
 /**
  * JWT over WebCrypto — HS (HMAC), RS (RSASSA-PKCS1-v1_5), PS (RSA-PSS),
- * and ES (ECDSA) families, plus a JWKS resolver for key rotation. No
- * crypto dependency: key import, signing, and verification run through
- * `crypto.subtle`.
+ * ES (ECDSA), and EdDSA (Ed25519) families, plus a JWKS resolver for key
+ * rotation. No crypto dependency: key import, signing, and verification
+ * run through `crypto.subtle`.
  *
- * Algorithm/key pairing is enforced by family — the `alg` header picks the
- * family, and the supplied key must match it (HMAC requires a secret
- * string; RS/PS require an RSA key; ES requires an EC key). This closes
- * the HS/RSA algorithm-confusion attack without a caller-maintained
- * allowlist (an allowlist can still narrow the default "everything").
+ * Algorithm/key pairing is enforced by family — the `alg` header picks
+ * the family, and the supplied key must match it (HMAC requires a secret
+ * string; RS/PS require an RSA key; ES requires an EC key; EdDSA
+ * requires an Ed25519 OKP key — JWK `kty:'OKP'` with `crv:'Ed25519'`).
+ * This closes the HS/RSA algorithm-confusion attack without a
+ * caller-maintained allowlist (an allowlist can still narrow the
+ * default "everything").
+ *
+ * EdDSA runs wherever WebCrypto implements Ed25519 (stable in Node ≥ 20
+ * and current browsers); a runtime without it gets a clear `JwtError`
+ * from a one-time capability probe instead of the platform's opaque
+ * `NotSupportedError`.
  *
  * @module
  */
@@ -90,6 +97,11 @@ type AlgInfo =
       readonly kind: 'ec';
       readonly hash: 'SHA-256' | 'SHA-384' | 'SHA-512';
       readonly curve: 'P-256' | 'P-384' | 'P-521';
+    }
+  | {
+      /** RFC 8037 `EdDSA` — Ed25519 only: Ed448 is not in browser
+       * WebCrypto secure-curves support, so it stays out of the table. */
+      readonly kind: 'ed';
     };
 
 const ALG_INFO = {
@@ -105,6 +117,7 @@ const ALG_INFO = {
   ES256: { kind: 'ec', hash: 'SHA-256', curve: 'P-256' },
   ES384: { kind: 'ec', hash: 'SHA-384', curve: 'P-384' },
   ES512: { kind: 'ec', hash: 'SHA-512', curve: 'P-521' },
+  EdDSA: { kind: 'ed' },
 } as const satisfies Record<string, AlgInfo>;
 
 export type JwtAlgorithm = keyof typeof ALG_INFO;
@@ -246,6 +259,10 @@ async function importAsymKey(
         false,
         usages
       );
+    } else if (info.kind === 'ed') {
+      // The string identifier, not an algorithm object — some runtimes
+      // mishandle the object form for secure curves.
+      key = crypto.subtle.importKey('jwk', jwk, 'Ed25519', false, usages);
     } else {
       throw jwtError(`HMAC key material cannot be imported as a JWK (${alg})`);
     }
@@ -272,12 +289,45 @@ function keyMatches(key: CryptoKey, info: AlgInfo): boolean {
       return name === info.algName;
     case 'ec':
       return name === 'ECDSA';
+    case 'ed':
+      // X25519 keys share the OKP family but cannot sign — the name is
+      // the discriminator.
+      return name === 'Ed25519';
+  }
+}
+
+/** Ed25519 capability probe — undefined until first asked, then the
+ * cached verdict. Probing with a real (non-extractable, immediately
+ * dropped) keygen is the honest test: it exercises the same code path
+ * import/sign/verify would. */
+let ed25519Support: Promise<boolean> | undefined;
+
+/** Throws a clear `JwtError` when this runtime's WebCrypto lacks
+ * Ed25519 (pre-20 Node, some embedded runtimes) — one keygen, cached
+ * for the process lifetime, so the check costs nothing after the first
+ * EdDSA token. */
+async function assertEd25519(): Promise<void> {
+  if (ed25519Support === undefined) {
+    ed25519Support = crypto.subtle
+      .generateKey('Ed25519', false, ['sign'])
+      .then(
+        () => true,
+        () => false
+      );
+  }
+  if (!(await ed25519Support)) {
+    throw jwtError(
+      'EdDSA is not supported by this runtime\'s WebCrypto (Ed25519 is stable in Node >= 20)'
+    );
   }
 }
 
 /** Resolves signing key material for an algorithm, rejecting mismatches. */
 async function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
+  if (info.kind === 'ed') {
+    await assertEd25519();
+  }
   if (info.kind === 'hmac') {
     if (!isSecretKey(key)) {
       throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
@@ -291,9 +341,12 @@ async function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
     return key;
   }
   const jwk = key as JsonWebKey;
-  const expected = info.kind === 'rsa' ? 'RSA' : 'EC';
+  const expected = info.kind === 'rsa' ? 'RSA' : info.kind === 'ec' ? 'EC' : 'OKP';
   if (jwk.kty !== expected) {
     throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
+  }
+  if (info.kind === 'ed' && jwk.crv !== 'Ed25519') {
+    throw jwtError(`key crv '${String(jwk.crv)}' does not match algorithm ${alg} (Ed25519 only)`);
   }
   return importAsymKey(jwk, alg, ['sign'], defaultKeyStore);
 }
@@ -307,6 +360,9 @@ async function getVerifyKey(
   store: JwtKeyStore
 ): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
+  if (info.kind === 'ed') {
+    await assertEd25519();
+  }
   if (info.kind === 'hmac') {
     if (!isSecretKey(key)) {
       throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
@@ -322,9 +378,12 @@ async function getVerifyKey(
     return key;
   }
   const jwk = key as JsonWebKey;
-  const expected = info.kind === 'rsa' ? 'RSA' : 'EC';
+  const expected = info.kind === 'rsa' ? 'RSA' : info.kind === 'ec' ? 'EC' : 'OKP';
   if (jwk.kty !== expected) {
     throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
+  }
+  if (info.kind === 'ed' && jwk.crv !== 'Ed25519') {
+    throw jwtError(`key crv '${String(jwk.crv)}' does not match algorithm ${alg} (Ed25519 only)`);
   }
   return importAsymKey(jwk, alg, ['verify'], store);
 }
@@ -401,11 +460,13 @@ export async function signJwt(
   const params: AlgorithmIdentifier | string =
     info.kind === 'hmac'
       ? 'HMAC'
-      : info.kind === 'rsa'
-        ? info.algName === 'RSA-PSS'
-          ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
-          : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
-        : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
+      : info.kind === 'ed'
+        ? 'Ed25519'
+        : info.kind === 'rsa'
+          ? info.algName === 'RSA-PSS'
+            ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
+            : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
+          : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
   const sig = new Uint8Array(
     await crypto.subtle.sign(params, signingKey, data)
   );
@@ -499,11 +560,13 @@ export async function verifyJwt<T = Record<string, unknown>>(
     }
   } else {
     const params: AlgorithmIdentifier | string =
-      info.kind === 'rsa'
-        ? info.algName === 'RSA-PSS'
-          ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
-          : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
-        : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
+      info.kind === 'ed'
+        ? 'Ed25519'
+        : info.kind === 'rsa'
+          ? info.algName === 'RSA-PSS'
+            ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
+            : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
+          : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
     const ok = await crypto.subtle.verify(
       params,
       verifyingKey,
