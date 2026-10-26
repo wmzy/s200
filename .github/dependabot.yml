@@ -1,0 +1,23 @@
+version: 2
+
+updates:
+  # Root workspace package: npm dependencies (all devDependencies here).
+  # Everything lands as ONE grouped PR per week so bumps are validated by a
+  # single CI run instead of fragmenting the (locked) toolchain.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-dependencies:
+        patterns:
+          - '*'
+  # Workflow actions (checkout, setup-node, codecov, …) — one grouped PR.
+  - package-ecosystem: github-actions
+    directory: .github/workflows
+    schedule:
+      interval: weekly
+    groups:
+      workflow-actions:
+        patterns:
+          - '*'

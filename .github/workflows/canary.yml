@@ -1,0 +1,49 @@
+name: Canary
+
+# Continuous preview releases: every PR (and manual dispatch) publishes the
+# built root package to pkg.pr.new — an npm-compatible URL that never touches
+# the real registry, e.g.
+#   npm i https://pkg.pr.new/wmzy/s200/s200@<commit-sha>
+# so reviewers and users can try the change before it is released.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions: {}
+
+# Same policy as CI: a new push to the PR cancels the stale canary run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      # pkg-pr-new is a CLI, not a reusable action (there is no
+      # pkg-pr-new/publish action repo — upstream docs run the CLI from the
+      # lockfile). It is installed transiently like the cloudflare job does
+      # for miniflare, and the manifests it mutates are restored afterwards.
+      # Run exactly once per workflow with the package root ./ — that is how
+      # pkg.pr.new avoids duplicate PR comments.
+      - run: pnpm add -Dw pkg-pr-new@0.0.92
+
+      - run: pnpm exec pkg-pr-new publish ./
+
+      - name: Restore manifests mutated by the transient pkg-pr-new install
+        if: always()
+        run: git checkout -- package.json pnpm-lock.yaml

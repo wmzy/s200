@@ -99,6 +99,26 @@
         "default": "./dist/rate-limit.cjs"
       }
     },
+    "./load-shed": {
+      "import": {
+        "types": "./dist/types/load-shed.d.mts",
+        "default": "./dist/load-shed.mjs"
+      },
+      "require": {
+        "types": "./dist/types/load-shed.d.ts",
+        "default": "./dist/load-shed.cjs"
+      }
+    },
+    "./circuit-breaker": {
+      "import": {
+        "types": "./dist/types/circuit-breaker.d.mts",
+        "default": "./dist/circuit-breaker.mjs"
+      },
+      "require": {
+        "types": "./dist/types/circuit-breaker.d.ts",
+        "default": "./dist/circuit-breaker.cjs"
+      }
+    },
     "./compress": {
       "import": {
         "types": "./dist/types/compress.d.mts",
@@ -717,6 +737,21 @@
       "limit": "1.55 KB"
     },
     {
+      "name": "load-shed battery (min+gz)",
+      "path": "dist/load-shed.mjs",
+      "ignore": [
+        "node:*"
+      ],
+      "gzip": true,
+      "limit": "1 KB"
+    },
+    {
+      "name": "circuit-breaker battery (min+gz)",
+      "path": "dist/circuit-breaker.mjs",
+      "gzip": true,
+      "limit": "1.25 KB"
+    },
+    {
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
@@ -852,6 +887,8 @@
     "@arethetypeswrong/cli": "^0.18.5",
     "@elysiajs/node": "^1.4.5",
     "@hono/node-server": "^2.1.1",
+    "@semantic-release/changelog": "^7.0.0",
+    "@semantic-release/git": "^11.0.1",
     "@size-limit/esbuild": "^13.0.3",
     "@size-limit/file": "^13.0.3",
     "@types/node": "^26.5.1",
@@ -867,6 +904,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.5.0",
     "publint": "^0.3.24",
+    "semantic-release": "^25.0.9",
     "size-limit": "^13.0.3",
     "tools-config": "^0.5.0",
     "typescript": "~6.0.3",

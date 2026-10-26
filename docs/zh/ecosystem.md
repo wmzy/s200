@@ -30,6 +30,8 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | `s200/secure-headers` | `secureHeaders` —— OWASP 头集合                                |
 | `s200/cache`          | `cache` —— 带新鲜度校验器的响应缓存                            |
 | `s200/rate-limit`     | `rateLimit` —— 滑动窗口限流器，存储可注入                      |
+| `s200/load-shed`      | `loadShed` —— ELU/RSS/in-flight 传感器的 503 压力门            |
+| `s200/circuit-breaker` | `createCircuitBreaker`、`breakerCall` —— CLOSED/OPEN/HALF_OPEN 熔断，包裹任意上游调用 |
 | `s200/trust-proxy`    | `trustProxy` —— 代理之后如实还原客户端 IP                      |
 | `s200/version`        | `apiVersion` —— header/Accept API 版本门，`ctx.state.version`  |
 | `s200/als`            | `als`、`currentCtx` —— 经 `node:async_hooks` 的环境 `ctx`（node/bun；非 edge） |
@@ -40,7 +42,7 @@ battery 是 s200 的中间件复用单元：一个藏在自己专属包入口后
 | --------------- | ---------------------------------------------------------------- |
 | `s200/auth`     | `basicAuth`、`bearerAuth` —— 带质询的门                          |
 | `s200/jwt`      | `signJwt`、`verifyJwt`、`jwtAuth` —— 基于 WebCrypto 的 JWS       |
-| `s200/oauth`    | `createPkcePair`、`buildAuthorizeUrl`、`exchangeCode` —— OAuth2 授权码 + PKCE 原语 |
+| `s200/oauth`    | `createPkcePair`、`buildAuthorizeUrl`、`exchangeCode`、`refreshToken`、`clientCredentials` —— OAuth2 授权码 + PKCE + 令牌授权原语 |
 | `s200/csrf`     | `createCsrf` —— 双提交令牌                                       |
 | `s200/session`  | `createSession` —— cookie 会话，存储可注入                       |
 | `s200/cookies`  | `getCookie`、`setCookie`、`getSignedCookie`、`setSignedCookie`   |

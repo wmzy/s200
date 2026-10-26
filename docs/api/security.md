@@ -125,7 +125,7 @@ get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
 
 ## OAuth (`s200/oauth`)
 
-OAuth 2.0 Authorization Code flow with PKCE (S256) as pure functions — you own the transport and storage. Park `state` and the verifier between the redirect and the callback (signed cookies work, `s200/cookies`), compare the query `state` strictly before exchanging, and inject `fetch` to mock or proxy the network. The OIDC recipe (`recipes/oidc.ts`) composes these primitives end to end.
+OAuth 2.0 Authorization Code flow with PKCE (S256) as pure functions — you own the transport and storage. Park `state` and the verifier between the redirect and the callback (signed cookies work, `s200/cookies`), compare the query `state` strictly before exchanging, and inject `fetch` to mock or proxy the network. `refreshToken` (RFC 6749 §6) and `clientCredentials` (§4.4) run the other two token grants over the same client authentication — a `clientSecret` sends HTTP Basic, else `client_id` rides the body — and the same 502 `HttpError` contract. The OIDC recipe (`recipes/oidc.ts`) composes these primitives end to end.
 
 ```ts
 const pkce = await createPkcePair();                  // verifier + S256 challenge
@@ -139,6 +139,16 @@ const tokens = await exchangeCode(
   { tokenEndpoint, clientId, clientSecret, redirectUri },
   { code, codeVerifier: pkce.verifier }
 );
+// Later, with the refresh token (scope must not exceed the original grant):
+const fresh = await refreshToken(
+  { tokenEndpoint, clientId, clientSecret },
+  { refreshToken: tokens.refreshToken!, scope: 'openid' }
+);
+// Machine-to-machine: confidential clients only (clientSecret required)
+const machine = await clientCredentials(
+  { tokenEndpoint, clientId, clientSecret },
+  { scope: 'orders:read' }
+);
 ```
 
 | Function | Meaning |
@@ -147,11 +157,14 @@ const tokens = await exchangeCode(
 | `randomState()` | 32 random bytes → 43 base64url characters (a state or a nonce) |
 | `buildAuthorizeUrl(options, flow)` | Pure URL construction: `response_type=code`, client/redirect/scope, `state`/`nonce?`, `code_challenge` + `code_challenge_method=S256` (always S256, never `plain`); existing endpoint query survives, `extraParams` appended last |
 | `exchangeCode(options, grant)` | POSTs the `authorization_code` grant with `code_verifier` (form-encoded); a `clientSecret` sends HTTP Basic, else `client_id` rides the body (public client); non-2xx or a payload without `access_token`/`token_type` throws a 502 `HttpError` |
+| `refreshToken(options, grant)` | POSTs the `refresh_token` grant (RFC 6749 §6) form-encoded; the optional `scope` (string or space-joined array) must not exceed the original grant — omit it to keep the original scope; same Basic/body client authentication and 502 contract as `exchangeCode`; a rotated token rides `tokens.refreshToken` |
+| `clientCredentials(options, grant)` | POSTs the `client_credentials` grant (RFC 6749 §4.4) form-encoded — confidential clients only, `clientSecret` required (HTTP Basic); optional `scope`; no refresh token is issued (§4.4.3); same 502 contract |
 
 | Type | Meaning |
 | --- | --- |
 | `OAuthAuthorizeOptions` | `{ authorizationEndpoint, clientId, redirectUri, scope?, extraParams? }` — arrays join with spaces; the parameter is omitted when absent |
 | `OAuthAuthorizeFlow` | `{ state, codeChallenge, nonce? }` — the per-request values the redirect commits to |
+| `OAuthGrantOptions` | `{ tokenEndpoint, clientId, clientSecret?, fetch? }` — the knobs `refreshToken`/`clientCredentials` take; `OAuthTokenOptions` adds `redirectUri` |
 | `OAuthTokenOptions` | `{ tokenEndpoint, clientId, clientSecret?, redirectUri, fetch? }` — injectable `fetch` defaults to the global |
 | `OAuthTokens` | `{ accessToken, tokenType, expiresIn?, refreshToken?, scope?, idToken? }` — `idToken` rides for OIDC flows |
 | `PkcePair` | `{ verifier, codeChallenge }` |

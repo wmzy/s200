@@ -60,3 +60,27 @@ A `fetch` that rejects maps to `httpError` through the standard error boundary (
 | Any other network failure — connection refused, DNS, TLS | `502 Bad Gateway` |
 
 The transport detail (errno, TLS reason) stays internal — the client learns the mapping, not the topology.
+
+## Circuit breaking
+
+Wrap the forward in the `s200/circuit-breaker` battery so a dying upstream stops receiving traffic instead of stacking hopeless requests:
+
+```ts
+import { breakerCall, createCircuitBreaker, skipClientErrors } from 's200/circuit-breaker';
+import { proxyRequest } from 's200/proxy';
+
+const upstream = createCircuitBreaker({
+  failureThreshold: 5,
+  windowMs: 10_000,
+  cooldownMs: 30_000,
+  errorFilter: skipClientErrors,
+});
+
+get(app, '/api/*', (ctx) =>
+  breakerCall(upstream, () =>
+    proxyRequest(ctx, 'http://127.0.0.1:8080' + ctx.url.pathname + ctx.url.search)
+  )
+);
+```
+
+While the breaker is `open`, admission throws a 503 `HttpError` (`Retry-After` carries the cooldown left) into the error boundary — the upstream, its connection pool, and the client's timeouts are all spared. `skipClientErrors` lines up exactly with this module's failure mapping: a proxied 4xx/5xx page is a returned `Response` and never reaches the filter; only transport failures throw — a 502 (network failure) counts toward the threshold, a 499 (the client's own disconnect) does not, because the upstream never got the chance to answer.

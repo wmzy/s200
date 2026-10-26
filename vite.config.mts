@@ -25,6 +25,8 @@ export default defineConfig({
         cookies: resolve(dirname, 'src/cookies.ts'),
         validate: resolve(dirname, 'src/validate.ts'),
         'rate-limit': resolve(dirname, 'src/rate-limit.ts'),
+        'load-shed': resolve(dirname, 'src/load-shed.ts'),
+        'circuit-breaker': resolve(dirname, 'src/circuit-breaker.ts'),
         compress: resolve(dirname, 'src/compress.ts'),
         streaming: resolve(dirname, 'src/streaming.ts'),
         'request-id': resolve(dirname, 'src/request-id.ts'),

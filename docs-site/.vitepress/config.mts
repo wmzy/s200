@@ -114,6 +114,8 @@ export default defineConfig({
               { text: 'MCP', link: '/zh/api/mcp' },
               { text: '生命周期 · 健康 · 热重载', link: '/zh/api/lifecycle' },
               { text: '分片与执行', link: '/zh/api/sharding' },
+              { text: '负载脱落', link: '/zh/api/load-shed' },
+              { text: '熔断器', link: '/zh/api/circuit-breaker' },
               { text: '代理', link: '/zh/api/proxy' },
             ],
           },
@@ -139,6 +141,18 @@ export default defineConfig({
               {
                 text: 'unwind 税：中间件的真实成本',
                 link: '/zh/blog/middleware-unwind-cost',
+              },
+              {
+                text: '你的路由表已经是一个 MCP server',
+                link: '/zh/blog/route-table-to-mcp',
+              },
+              {
+                text: '别发布说谎的响应：运行时契约检查',
+                link: '/zh/blog/response-contracts',
+              },
+              {
+                text: '一张路由表，四件产物',
+                link: '/zh/blog/one-table-four-artifacts',
               },
             ],
           },
@@ -254,6 +268,8 @@ export default defineConfig({
           { text: 'MCP', link: '/api/mcp' },
           { text: 'Lifecycle · Health · Hot Reload', link: '/api/lifecycle' },
           { text: 'Sharding & Execution', link: '/api/sharding' },
+          { text: 'Load Shedding', link: '/api/load-shed' },
+          { text: 'Circuit Breaker', link: '/api/circuit-breaker' },
           { text: 'Proxy', link: '/api/proxy' },
         ],
       },
@@ -279,6 +295,18 @@ export default defineConfig({
           {
             text: 'The unwind tax: what middleware actually costs',
             link: '/blog/middleware-unwind-cost',
+          },
+          {
+            text: 'Your route table is already an MCP server',
+            link: '/blog/route-table-to-mcp',
+          },
+          {
+            text: "Don't ship a response that lies: runtime contract checking",
+            link: '/blog/response-contracts',
+          },
+          {
+            text: 'One route table, four artifacts',
+            link: '/blog/one-table-four-artifacts',
           },
         ],
       },

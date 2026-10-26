@@ -85,3 +85,86 @@ Discovery（`{issuer}/.well-known/openid-configuration`）每个 issuer 只取�
 - **单一 redirectUri。** 登录与交换都只用配置的那一个；没有按请求覆盖。
 - **Discovery 没有 TTL。** 文档每 issuer 每进程只取一次；端点变更需要重启或注入带自有缓存策略的 `fetch`。
 - **登出依赖 provider 支持。** `end_session_endpoint` 在 discovery 中是可选项；没有它 `logoutUrl()` 解析为 `undefined`，指南里的登出路由退化为只销毁本地会话。
+
+## 刷新令牌
+
+access token 天生短命；它过期时，登录时 provider 签发的 refresh token 无需浏览器绕行即可换一个新的——[`s200/oauth`](/zh/api/security) 的 `refreshToken`（RFC 6749 §6）就是这个 grant。配方把 `tokens.refreshToken` 原样交给 `onLogin`，所以会话是停放它的天然位置：
+
+```ts
+import { refreshToken } from 's200/oauth';
+
+// The token endpoint — from the same discovery document the recipe caches
+// internally ({issuer}/.well-known/openid-configuration).
+const { token_endpoint: tokenEndpoint } = (await fetch(
+  'https://idp.example/.well-known/openid-configuration'
+).then((res) => res.json())) as { token_endpoint: string };
+
+const oidc = createOidc({
+  // …as in Setup…
+  onLogin: (ctx, tokens, claims) => {
+    const session = ctx.state.session as Session;
+    session.set('user', claims.sub);
+    session.set('idToken', tokens.idToken); // for the logout id_token_hint
+    session.set('accessToken', tokens.accessToken);
+    session.set('refreshToken', tokens.refreshToken); // present when the provider issues one
+    if (tokens.expiresIn !== undefined) {
+      session.set('accessTokenExpiresAt', Date.now() + tokens.expiresIn * 1000);
+    }
+  },
+});
+```
+
+然后是一个返回可用 access token 的助手——只在存的那枚已过期时刷新（预留 30 秒余量），并且当服务器轮换 refresh token 时总是持久化新的那枚：
+
+```ts
+import { get, json } from 's200';
+import { refreshToken } from 's200/oauth';
+
+async function freshAccessToken(session: Session): Promise<string | undefined> {
+  const expiresAt = session.get('accessTokenExpiresAt');
+  if (typeof expiresAt === 'number' && expiresAt > Date.now() + 30_000) {
+    return session.get('accessToken') as string | undefined; // still live
+  }
+  const current = session.get('refreshToken');
+  if (typeof current !== 'string') return session.get('accessToken') as string | undefined;
+  const tokens = await refreshToken(
+    { tokenEndpoint, clientId: 'web-app', clientSecret: process.env.OIDC_SECRET },
+    { refreshToken: current }
+  );
+  session.set('accessToken', tokens.accessToken);
+  if (tokens.expiresIn !== undefined) {
+    session.set('accessTokenExpiresAt', Date.now() + tokens.expiresIn * 1000);
+  }
+  if (tokens.refreshToken !== undefined) {
+    session.set('refreshToken', tokens.refreshToken); // rotation — the old token is dead
+  }
+  return tokens.accessToken;
+}
+
+get(app, '/api/profile', async (ctx) => {
+  const session = ctx.state.session as Session;
+  let accessToken: string | undefined;
+  try {
+    accessToken = await freshAccessToken(session);
+  } catch {
+    // The grant failed — an expired or revoked refresh token comes back
+    // invalid_grant, which refreshToken reports as a 502 HttpError.
+    // The session cannot be refreshed: destroy it and re-login.
+    await session.destroy();
+    return new Response(null, { status: 302, headers: { location: '/login' } });
+  }
+  if (accessToken === undefined) {
+    return new Response(null, { status: 302, headers: { location: '/login' } });
+  }
+  // …call the provider's API with the access token…
+  return json(ctx, { ok: true });
+});
+```
+
+发布前值得知道的 grant 规则：
+
+- **scope 绝不变宽。**可选的 `scope` 参数不得超过原授权授予的范围——服务器会拒绝更宽的；省略它（如上）即保持原 scope。
+- **客户端认证与 `exchangeCode` 一致。**有 `clientSecret` 走 HTTP Basic；没有则 `client_id` 走请求体——公共客户端刷新自己的 token，与它当初兑换 code 的方式相同。
+- **失败即抛出。**非 2xx 应答，或缺 `access_token`/`token_type` 的载荷，抛出 502 `HttpError`——上游失败是服务器的问题，所以上面的路由把这个抛出当作"重新登录"，而不是给用户一个 500。
+- **持久化轮换。**许多 provider 每次使用都轮换 refresh token；轮换出的新 token 随 `tokens.refreshToken` 返回。只要出现就持久化它——示例里那个无条件写入做的正是这件事——否则下次刷新送出的是一枚死 token。
+- **`idToken` 不随之刷新。**返回的只有 access token（可能还有 refresh token）；id_token 的 claims 停留在最初登录那一次。需要新 claims 就再走一遍 `/login`。

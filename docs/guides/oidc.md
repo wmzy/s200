@@ -85,3 +85,86 @@ Discovery (`{issuer}/.well-known/openid-configuration`) is fetched once per issu
 - **One redirect URI.** Exactly the configured one, for login and the exchange alike; no per-request overrides.
 - **Discovery has no TTL.** The document is fetched once per issuer per process; endpoint changes need a restart or an injected `fetch` with your own caching policy.
 - **Logout needs provider support.** `end_session_endpoint` is optional in discovery; without it `logoutUrl()` resolves `undefined` and the guide's logout route falls back to destroying the local session.
+
+## Refreshing tokens
+
+Access tokens are short-lived by design; when one expires, the refresh token the provider issued at login buys a new one without a browser detour — `refreshToken` from [`s200/oauth`](/api/security) (RFC 6749 §6) is that grant. The recipe hands `tokens.refreshToken` to `onLogin` untouched, so the session is the natural place to park it:
+
+```ts
+import { refreshToken } from 's200/oauth';
+
+// The token endpoint — from the same discovery document the recipe caches
+// internally ({issuer}/.well-known/openid-configuration).
+const { token_endpoint: tokenEndpoint } = (await fetch(
+  'https://idp.example/.well-known/openid-configuration'
+).then((res) => res.json())) as { token_endpoint: string };
+
+const oidc = createOidc({
+  // …as in Setup…
+  onLogin: (ctx, tokens, claims) => {
+    const session = ctx.state.session as Session;
+    session.set('user', claims.sub);
+    session.set('idToken', tokens.idToken); // for the logout id_token_hint
+    session.set('accessToken', tokens.accessToken);
+    session.set('refreshToken', tokens.refreshToken); // present when the provider issues one
+    if (tokens.expiresIn !== undefined) {
+      session.set('accessTokenExpiresAt', Date.now() + tokens.expiresIn * 1000);
+    }
+  },
+});
+```
+
+Then a helper that returns a live access token — refreshing only when the stored one has expired (a 30-second margin), and always persisting a rotated refresh token when the server sends one:
+
+```ts
+import { get, json } from 's200';
+import { refreshToken } from 's200/oauth';
+
+async function freshAccessToken(session: Session): Promise<string | undefined> {
+  const expiresAt = session.get('accessTokenExpiresAt');
+  if (typeof expiresAt === 'number' && expiresAt > Date.now() + 30_000) {
+    return session.get('accessToken') as string | undefined; // still live
+  }
+  const current = session.get('refreshToken');
+  if (typeof current !== 'string') return session.get('accessToken') as string | undefined;
+  const tokens = await refreshToken(
+    { tokenEndpoint, clientId: 'web-app', clientSecret: process.env.OIDC_SECRET },
+    { refreshToken: current }
+  );
+  session.set('accessToken', tokens.accessToken);
+  if (tokens.expiresIn !== undefined) {
+    session.set('accessTokenExpiresAt', Date.now() + tokens.expiresIn * 1000);
+  }
+  if (tokens.refreshToken !== undefined) {
+    session.set('refreshToken', tokens.refreshToken); // rotation — the old token is dead
+  }
+  return tokens.accessToken;
+}
+
+get(app, '/api/profile', async (ctx) => {
+  const session = ctx.state.session as Session;
+  let accessToken: string | undefined;
+  try {
+    accessToken = await freshAccessToken(session);
+  } catch {
+    // The grant failed — an expired or revoked refresh token comes back
+    // invalid_grant, which refreshToken reports as a 502 HttpError.
+    // The session cannot be refreshed: destroy it and re-login.
+    await session.destroy();
+    return new Response(null, { status: 302, headers: { location: '/login' } });
+  }
+  if (accessToken === undefined) {
+    return new Response(null, { status: 302, headers: { location: '/login' } });
+  }
+  // …call the provider's API with the access token…
+  return json(ctx, { ok: true });
+});
+```
+
+The grant's rules, worth knowing before you ship it:
+
+- **Scope never widens.** The optional `scope` argument must not exceed what the original authorization granted — the server rejects anything wider; omit it (as above) to keep the original scope.
+- **Client authentication matches `exchangeCode`.** A `clientSecret` sends HTTP Basic; without one, `client_id` rides the body — a public client refreshes its own token the same way it redeemed the code.
+- **Failures throw.** A non-2xx answer, or a payload without `access_token`/`token_type`, throws a 502 `HttpError` — upstream failures are the server's problem, which is why the route above treats the throw as "re-login", not as a 500 to the user.
+- **Persist rotation.** Many providers rotate the refresh token on every use; a rotated token rides `tokens.refreshToken`. Persist it whenever it is present — the example's unconditional write does exactly that — or the next refresh presents a dead token.
+- **`idToken` does not refresh.** Only the access token (and possibly the refresh token) comes back; the id_token's claims stay those of the original login. If you need fresh claims, redirect through `/login` again.

@@ -54,6 +54,8 @@ import { nginxConf, gatewayRoutes, albRules } from 's200/gateway';
 import { createDispatcher } from 's200/shard-dev';
 import { runShards } from 's200/executor';
 import { createUnitMetrics, unitMetricsEndpoint } from 's200/unit-metrics';
+import { loadShed } from 's200/load-shed';
+import { createCircuitBreaker, breakerCall } from 's200/circuit-breaker';
 ```
 
 ## CORS
@@ -249,11 +251,13 @@ use(app, bearerAuth(async (token) => API_TOKEN));
 
 ## OAuth
 
-授权码 + PKCE（S256）原语，纯函数：`createPkcePair()` 铸造 verifier 与其 S256 challenge，`randomState()` 铸造不可猜测的 state（或 nonce），`buildAuthorizeUrl` 渲染重定向（恒为 `code_challenge_method=S256`），`exchangeCode` 兑换 code —— 给了 `clientSecret` 走 HTTP Basic，否则 `client_id` 进请求体；非 2xx 应答抛 502。存储由你掌控 —— 在重定向与回调之间把 state 和 verifier 存进签名 cookie。`fetch` 可注入；OIDC recipe（`recipes/oidc.ts`）端到端组合了它们：
+授权码 + PKCE（S256）原语，纯函数：`createPkcePair()` 铸造 verifier 与其 S256 challenge，`randomState()` 铸造不可猜测的 state（或 nonce），`buildAuthorizeUrl` 渲染重定向（恒为 `code_challenge_method=S256`），`exchangeCode` 兑换 code —— 给了 `clientSecret` 走 HTTP Basic，否则 `client_id` 进请求体；非 2xx 应答抛 502。`refreshToken`（RFC 6749 §6，可选 scope 不得超出原始授权范围）与 `clientCredentials`（§4.4，仅机密客户端）复用同一套客户端认证与 502 契约。存储由你掌控 —— 在重定向与回调之间把 state 和 verifier 存进签名 cookie。`fetch` 可注入；OIDC recipe（`recipes/oidc.ts`）端到端组合了它们：
 
 ```ts
 const pkce = await createPkcePair();
 redirect(ctx, buildAuthorizeUrl(opts, { state, codeChallenge: pkce.codeChallenge }));
+// 之后：refreshToken({ tokenEndpoint, clientId, clientSecret }, { refreshToken: rt });
+// 机器对机器：clientCredentials({ tokenEndpoint, clientId, clientSecret }, { scope: 'orders:read' });
 ```
 
 ## CSRF
@@ -329,6 +333,31 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 默认键读取 `x-forwarded-for` —— 只有在会覆写它的代理之后才有意义；其他身份传 `key: (ctx) => …`（测试可传 `now` 时钟）。计数器默认在进程内 —— 每实例限额。跨实例共享限额请注入 `store`（原子的 `hit(key, now, limit, windowMs) → { count, retryAt }` —— Redis INCR 形状）。
 
 `skip: (ctx) => boolean` 完全豁免一个请求 —— 不算密钥、不碰 store、不计数、永不拦截（健康检查、内部网段）。
+
+## Load shedding
+
+进入链路时的压力门:每个配置了阈值的维度 —— `maxEventLoopUtilization`(0..1)、`maxRssBytes`、`maxInFlight` —— 对照各自的传感器检查,第一个严格越限的维度触发脱落:向错误边界抛出带 `Retry-After` 的 `503` `HttpError`,handler 不再执行:
+
+```ts
+use(app, loadShed({
+  maxEventLoopUtilization: 0.95,
+  maxInFlight: 200,
+  bypass: (ctx) => ctx.url.pathname === '/healthz',
+}));
+```
+
+未配置的维度连传感器都不会读。in-flight 计数是账本(进入时 +1,`finally` 里 -1)而非采样。`bypass` 让请求既不计数也不检查 —— 永远不要脱落存活探针。全部传感器可注入以便测试;与 `health` 的 `createGate` 组合实现协同排空。完整契约见[负载脱落](/zh/api/load-shed)。
+
+## Circuit breaker
+
+CLOSED → OPEN:`windowMs` 内 admitted 失败达到 `failureThreshold` 次;OPEN → HALF_OPEN:经过 `cooldownMs`;半开状态放行 `probeConcurrency` 个探测,连续 `successesNeeded` 次成功则闭合。`breakerCall` 包裹任意 async 调用 —— proxy 的 `proxyRequest` 也在内 —— open 期间以 `503` + `Retry-After` 拒绝:
+
+```ts
+const upstream = createCircuitBreaker({ failureThreshold: 5, windowMs: 10_000, cooldownMs: 30_000 });
+get(app, '/search', async (ctx) => json(ctx, await breakerCall(upstream, () => proxyRequest(ctx, target))));
+```
+
+什么算失败由 `errorFilter` 决定 —— 内置 `skipClientErrors` 只计 5xx 与裸抛错,不计 4xx。时钟可注入(`now`),`circuitStatus` 输出阶段快照,`canPass`/`recordSuccess`/`recordFailure` 是自定义放行的免抛错面。完整契约见[熔断器](/zh/api/circuit-breaker)。
 
 ## Serialize
 

@@ -2,6 +2,13 @@ name: CI
 
 on: [push, pull_request]
 
+# New pushes cancel a stale run of the same workflow on the same ref, but
+# only for PRs (cancel-in-progress stays false on main pushes so a green
+# run of record is never killed mid-flight).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -126,3 +133,28 @@ jobs:
       - name: Restore manifests mutated by the transient miniflare install
         if: always()
         run: git checkout -- package.json pnpm-lock.yaml
+
+  # Coverage: same suite as `test`, instrumented, with the LCOV report
+  # uploaded to Codecov. The repo is public, so uploads are tokenless
+  # (v5 handles public-repo tokenless mode); upload failures must never
+  # fail CI (fail_ci_if_error: false) — coverage is telemetry, not a gate.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm coverage
+
+      - uses: codecov/codecov-action@v5.5.5
+        with:
+          files: coverage/lcov.info
+          fail_ci_if_error: false

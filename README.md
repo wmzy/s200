@@ -1,5 +1,7 @@
 # s200
 
+[![codecov](https://codecov.io/gh/wmzy/s200/branch/main/graph/badge.svg)](https://codecov.io/gh/wmzy/s200)
+
 A data + functions server framework for the Web Standard. Koa-style onion middleware, hono-style multi-runtime portability, and a fully tree-shakable, replaceable module surface. Zero dependencies at the core — every battery too, except `s200/events`, which builds on [`@for-fun/event-emitter`](https://www.npmjs.com/package/@for-fun/event-emitter).
 
 ```ts

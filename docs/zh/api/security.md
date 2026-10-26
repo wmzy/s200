@@ -125,7 +125,7 @@ get(app, '/me', (ctx) => json(ctx, ctx.state.jwt));
 
 ## OAuth（`s200/oauth`）
 
-OAuth 2.0 授权码流程 + PKCE（S256）的纯函数 —— 传输与存储由你掌控。在重定向与回调之间把 `state` 和 verifier 存起来（签名 cookie 即可，`s200/cookies`），交换前严格比对查询串的 `state`，注入 `fetch` 即可 mock 或代理网络。OIDC recipe（`recipes/oidc.ts`）端到端组合了这些原语。
+OAuth 2.0 授权码流程 + PKCE（S256）的纯函数 —— 传输与存储由你掌控。在重定向与回调之间把 `state` 和 verifier 存起来（签名 cookie 即可，`s200/cookies`），交换前严格比对查询串的 `state`，注入 `fetch` 即可 mock 或代理网络。`refreshToken`（RFC 6749 §6）与 `clientCredentials`（§4.4）在同样的客户端认证下执行另外两种令牌授权 —— 有 `clientSecret` 走 HTTP Basic，否则 `client_id` 进请求体 —— 并沿用同一份 502 `HttpError` 契约。OIDC recipe（`recipes/oidc.ts`）端到端组合了这些原语。
 
 ```ts
 const pkce = await createPkcePair();                  // verifier + S256 challenge
@@ -139,6 +139,16 @@ const tokens = await exchangeCode(
   { tokenEndpoint, clientId, clientSecret, redirectUri },
   { code, codeVerifier: pkce.verifier }
 );
+// Later, with the refresh token (scope must not exceed the original grant):
+const fresh = await refreshToken(
+  { tokenEndpoint, clientId, clientSecret },
+  { refreshToken: tokens.refreshToken!, scope: 'openid' }
+);
+// Machine-to-machine: confidential clients only (clientSecret required)
+const machine = await clientCredentials(
+  { tokenEndpoint, clientId, clientSecret },
+  { scope: 'orders:read' }
+);
 ```
 
 | 函数 | 含义 |
@@ -147,11 +157,14 @@ const tokens = await exchangeCode(
 | `randomState()` | 32 个随机字节 → 43 个 base64url 字符（state 或 nonce 皆可） |
 | `buildAuthorizeUrl(options, flow)` | 纯 URL 构造：`response_type=code`、client/redirect/scope、`state`/`nonce?`、`code_challenge` + `code_challenge_method=S256`（恒为 S256，绝不用 `plain`）；端点已有查询保留，`extraParams` 最后追加 |
 | `exchangeCode(options, grant)` | 以表单编码 POST `authorization_code` 授权 + `code_verifier`；有 `clientSecret` 走 HTTP Basic，否则 `client_id` 进请求体（公共客户端）；非 2xx 或载荷缺 `access_token`/`token_type` 抛 502 `HttpError` |
+| `refreshToken(options, grant)` | 以表单编码 POST `refresh_token` 授权（RFC 6749 §6）；可选 `scope`（字符串或空格连接的数组）不得超出原始授权范围 —— 省略即保持原 scope；Basic/请求体客户端认证与 502 契约同 `exchangeCode`；轮换出的新令牌随 `tokens.refreshToken` 返回 |
+| `clientCredentials(options, grant)` | 以表单编码 POST `client_credentials` 授权（RFC 6749 §4.4）—— 仅机密客户端，`clientSecret` 必填（HTTP Basic）；可选 `scope`；该授权不签发刷新令牌（§4.4.3）；同样抛 502 |
 
 | 类型 | 含义 |
 | --- | --- |
 | `OAuthAuthorizeOptions` | `{ authorizationEndpoint, clientId, redirectUri, scope?, extraParams? }` —— 数组以空格连接；缺省时整个参数省略 |
 | `OAuthAuthorizeFlow` | `{ state, codeChallenge, nonce? }` —— 重定向所承诺的逐请求值 |
+| `OAuthGrantOptions` | `{ tokenEndpoint, clientId, clientSecret?, fetch? }` —— `refreshToken`/`clientCredentials` 所取的旋钮；`OAuthTokenOptions` 再加 `redirectUri` |
 | `OAuthTokenOptions` | `{ tokenEndpoint, clientId, clientSecret?, redirectUri, fetch? }` —— 可注入的 `fetch`，默认全局 |
 | `OAuthTokens` | `{ accessToken, tokenType, expiresIn?, refreshToken?, scope?, idToken? }` —— `idToken` 为 OIDC 流程随行 |
 | `PkcePair` | `{ verifier, codeChallenge }` |

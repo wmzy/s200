@@ -3,7 +3,9 @@
  * `createPkcePair` mints the verifier and its SHA-256 challenge,
  * `randomState` mints an unguessable state (or nonce), `buildAuthorizeUrl`
  * renders the redirect, and `exchangeCode` redeems the code at the token
- * endpoint. The caller owns transport and storage — park the state and
+ * endpoint. `refreshToken` (RFC 6749 §6) and `clientCredentials` (§4.4)
+ * run the other two token grants over the same client authentication
+ * and transport. The caller owns transport and storage — park the state and
  * verifier between the redirect and the callback (signed cookies work,
  * `s200/cookies`), and compare the query `state` strictly before
  * exchanging. All randomness and hashing run through the platform
@@ -111,16 +113,22 @@ export function buildAuthorizeUrl(
   return authorize.toString();
 }
 
-/** The token-endpoint knobs — endpoint, client credentials, transport. */
-export type OAuthTokenOptions = {
+/** The token-endpoint knobs every grant shares — endpoint, client
+ * credentials, transport. */
+export type OAuthGrantOptions = {
   readonly tokenEndpoint: string;
   readonly clientId: string;
   /** Present → HTTP Basic client authentication; absent → `client_id`
    * travels in the body (a public client, which is what PKCE is for). */
   readonly clientSecret?: string;
-  readonly redirectUri: string;
   /** Injectable fetch — defaults to the global (mocks, proxies, tests). */
   readonly fetch?: typeof fetch;
+};
+
+/** The code grant's token-endpoint knobs: the shared set plus the
+ * `redirect_uri` that re-identifies the client at redemption. */
+export type OAuthTokenOptions = OAuthGrantOptions & {
+  readonly redirectUri: string;
 };
 
 /** The token endpoint's standard payload (RFC 6749 §5.1); `idToken`
@@ -134,27 +142,13 @@ export type OAuthTokens = {
   readonly idToken?: string;
 };
 
-/**
- * Exchanges an authorization code: POSTs the `authorization_code` grant
- * with the PKCE verifier (form-encoded). A `clientSecret` sends HTTP
- * Basic client authentication; without one the `client_id` rides the
- * body. A non-2xx answer, or a payload without `access_token` and
- * `token_type`, throws a 502 `HttpError` — upstream failures are the
- * server's problem, not the user's.
- */
-export async function exchangeCode(
-  options: OAuthTokenOptions,
-  grant: {
-    readonly code: string;
-    readonly codeVerifier: string;
-  }
+/** Shared token-endpoint POST: adds client authentication to the
+ * form-encoded grant body, sends it, and validates the payload — the
+ * 502 `HttpError` contract every grant exchange throws. */
+async function postTokenGrant(
+  options: OAuthGrantOptions,
+  body: URLSearchParams
 ): Promise<OAuthTokens> {
-  const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    code: grant.code,
-    redirect_uri: options.redirectUri,
-    code_verifier: grant.codeVerifier,
-  });
   const headers: Record<string, string> = {
     'content-type': 'application/x-www-form-urlencoded',
   };
@@ -191,4 +185,88 @@ export async function exchangeCode(
     scope: raw.scope,
     idToken: raw.id_token,
   };
+}
+
+/**
+ * Exchanges an authorization code: POSTs the `authorization_code` grant
+ * with the PKCE verifier (form-encoded). A `clientSecret` sends HTTP
+ * Basic client authentication; without one the `client_id` rides the
+ * body. A non-2xx answer, or a payload without `access_token` and
+ * `token_type`, throws a 502 `HttpError` — upstream failures are the
+ * server's problem, not the user's.
+ */
+export async function exchangeCode(
+  options: OAuthTokenOptions,
+  grant: {
+    readonly code: string;
+    readonly codeVerifier: string;
+  }
+): Promise<OAuthTokens> {
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code: grant.code,
+    redirect_uri: options.redirectUri,
+    code_verifier: grant.codeVerifier,
+  });
+  return postTokenGrant(options, body);
+}
+
+/**
+ * Refreshes an access token (RFC 6749 §6): POSTs the `refresh_token`
+ * grant form-encoded. The optional `scope` (a string or an array,
+ * joined with spaces) MUST NOT exceed the scope originally granted —
+ * the authorization server rejects anything wider; omit it to keep the
+ * original scope. Client authentication follows `exchangeCode`: a
+ * `clientSecret` sends HTTP Basic, without one the `client_id` rides
+ * the body (a public client refreshing its own token). A non-2xx
+ * answer — an expired or revoked refresh token comes back
+ * `invalid_grant` — or a payload without `access_token`/`token_type`
+ * throws a 502 `HttpError`; a rotated refresh token, when the server
+ * sends one, rides `tokens.refreshToken`.
+ */
+export async function refreshToken(
+  options: OAuthGrantOptions,
+  grant: {
+    readonly refreshToken: string;
+    readonly scope?: string | readonly string[];
+  }
+): Promise<OAuthTokens> {
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: grant.refreshToken,
+  });
+  if (grant.scope !== undefined) {
+    body.set(
+      'scope',
+      typeof grant.scope === 'string' ? grant.scope : grant.scope.join(' ')
+    );
+  }
+  return postTokenGrant(options, body);
+}
+
+/**
+ * Fetches a token with the client's own credentials (RFC 6749 §4.4):
+ * POSTs the `client_credentials` grant form-encoded with HTTP Basic
+ * client authentication — confidential clients only, the `clientSecret`
+ * is required; a public client has no credentials of its own, so the
+ * grant does not apply to it (PKCE-protected code flows are its path).
+ * The optional `scope` (a string or an array, joined with spaces)
+ * requests part of the client's registered scope. No refresh token is
+ * issued for this grant (RFC 6749 §4.4.3), so `tokens.refreshToken` is
+ * absent. The 502 `HttpError` contract matches `exchangeCode`.
+ */
+export async function clientCredentials(
+  options: OAuthGrantOptions & { readonly clientSecret: string },
+  grant: {
+    readonly scope?: string | readonly string[];
+  }
+): Promise<OAuthTokens> {
+  const body = new URLSearchParams({ grant_type: 'client_credentials' });
+  if (grant.scope !== undefined) {
+    body.set(
+      'scope',
+      typeof grant.scope === 'string' ? grant.scope : grant.scope.join(' ')
+    );
+  }
+  return postTokenGrant(options, body);
 }

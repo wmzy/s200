@@ -60,3 +60,27 @@ use(app, '/api', createProxy({
 | 其他任何网络故障 —— 连接拒绝、DNS、TLS | `502 Bad Gateway` |
 
 传输层细节（errno、TLS 原因）留在内部 —— 客户端得知的是映射结果，不是拓扑。
+
+## 熔断 {#circuit-breaking}
+
+把转发包进 `s200/circuit-breaker` 电池，让濒死的上游不再接收流量，而不是堆起一排注定失败的请求：
+
+```ts
+import { breakerCall, createCircuitBreaker, skipClientErrors } from 's200/circuit-breaker';
+import { proxyRequest } from 's200/proxy';
+
+const upstream = createCircuitBreaker({
+  failureThreshold: 5,
+  windowMs: 10_000,
+  cooldownMs: 30_000,
+  errorFilter: skipClientErrors,
+});
+
+get(app, '/api/*', (ctx) =>
+  breakerCall(upstream, () =>
+    proxyRequest(ctx, 'http://127.0.0.1:8080' + ctx.url.pathname + ctx.url.search)
+  )
+);
+```
+
+熔断器处于 `open` 时，准入向错误边界抛出 503 `HttpError`（`Retry-After` 携带剩余冷却秒数）—— 上游、它的连接池、以及客户端的超时预算都得到喘息。`skipClientErrors` 与本模块的失败映射恰好对齐：被代理的 4xx/5xx 页面是返回的 `Response`，根本到不了过滤器；只有传输层失败才会抛出 —— 502（网络故障）计入阈值，499（客户端自己断开）不计，因为上游根本没得到回答的机会。

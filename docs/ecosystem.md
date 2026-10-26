@@ -31,6 +31,8 @@ budgets (`pnpm size`).
 | `s200/secure-headers` | `secureHeaders` — the OWASP header set                        |
 | `s200/cache`          | `cache` — response caching with freshness validators          |
 | `s200/rate-limit`     | `rateLimit` — sliding-window limiter with an injectable store |
+| `s200/load-shed`      | `loadShed` — 503 pressure gate over ELU/RSS/in-flight sensors |
+| `s200/circuit-breaker` | `createCircuitBreaker`, `breakerCall` — CLOSED/OPEN/HALF_OPEN trips over any upstream call |
 | `s200/trust-proxy`    | `trustProxy` — honest client IPs behind a proxy               |
 | `s200/version`        | `apiVersion` — header/Accept API versioning gate, `ctx.state.version` |
 | `s200/als`            | `als`, `currentCtx` — ambient `ctx` over `node:async_hooks` (node/bun; not edge) |
@@ -41,7 +43,7 @@ budgets (`pnpm size`).
 | --------------- | --------------------------------------------------------------- |
 | `s200/auth`     | `basicAuth`, `bearerAuth` — challenge-carrying gates            |
 | `s200/jwt`      | `signJwt`, `verifyJwt`, `jwtAuth` — JWS over WebCrypto           |
-| `s200/oauth`    | `createPkcePair`, `buildAuthorizeUrl`, `exchangeCode` — OAuth2 code + PKCE primitives |
+| `s200/oauth`    | `createPkcePair`, `buildAuthorizeUrl`, `exchangeCode`, `refreshToken`, `clientCredentials` — OAuth2 code + PKCE + token grants |
 | `s200/csrf`     | `createCsrf` — double-submit tokens                              |
 | `s200/session`  | `createSession` — cookie sessions with an injectable store       |
 | `s200/cookies`  | `getCookie`, `setCookie`, `getSignedCookie`, `setSignedCookie`   |

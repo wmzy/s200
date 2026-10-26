@@ -54,6 +54,8 @@ import { nginxConf, gatewayRoutes, albRules } from 's200/gateway';
 import { createDispatcher } from 's200/shard-dev';
 import { runShards } from 's200/executor';
 import { createUnitMetrics, unitMetricsEndpoint } from 's200/unit-metrics';
+import { loadShed } from 's200/load-shed';
+import { createCircuitBreaker, breakerCall } from 's200/circuit-breaker';
 ```
 
 ## CORS
@@ -249,11 +251,13 @@ Credential comparison inside `verify` is yours — `timingSafeEqual(a, b)` from 
 
 ## OAuth
 
-Authorization Code + PKCE (S256) primitives as pure functions: `createPkcePair()` mints the verifier and its S256 challenge, `randomState()` the unguessable state (or nonce), `buildAuthorizeUrl` renders the redirect (always `code_challenge_method=S256`), and `exchangeCode` redeems the code — HTTP Basic when a `clientSecret` is given, `client_id` in the body otherwise; non-2xx answers throw a 502. You own the storage — park state and verifier in signed cookies between redirect and callback. `fetch` is injectable; the OIDC recipe (`recipes/oidc.ts`) composes these end to end:
+Authorization Code + PKCE (S256) primitives as pure functions: `createPkcePair()` mints the verifier and its S256 challenge, `randomState()` the unguessable state (or nonce), `buildAuthorizeUrl` renders the redirect (always `code_challenge_method=S256`), and `exchangeCode` redeems the code — HTTP Basic when a `clientSecret` is given, `client_id` in the body otherwise; non-2xx answers throw a 502. `refreshToken` (RFC 6749 §6, the optional scope must not exceed the original grant) and `clientCredentials` (§4.4, confidential clients only) reuse the same client authentication and 502 contract. You own the storage — park state and verifier in signed cookies between redirect and callback. `fetch` is injectable; the OIDC recipe (`recipes/oidc.ts`) composes these end to end:
 
 ```ts
 const pkce = await createPkcePair();
 redirect(ctx, buildAuthorizeUrl(opts, { state, codeChallenge: pkce.codeChallenge }));
+// later: refreshToken({ tokenEndpoint, clientId, clientSecret }, { refreshToken: rt });
+// machine-to-machine: clientCredentials({ tokenEndpoint, clientId, clientSecret }, { scope: 'orders:read' });
 ```
 
 ## CSRF
@@ -329,6 +333,31 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 The default key reads `x-forwarded-for` — only meaningful behind a proxy that overwrites it; pass `key: (ctx) => …` for any other identity (and a `now` clock for tests). The counters live in-process by default — per-instance limits. For shared limits across instances, inject a `store` (atomic `hit(key, now, limit, windowMs) → { count, retryAt }` — the Redis INCR shape).
 
 `skip: (ctx) => boolean` exempts a request entirely — no key computed, no store hit, nothing counted, never blocked (health checks, internal CIDRs).
+
+## Load shedding
+
+Pressure gate on the way in: each configured threshold — `maxEventLoopUtilization` (0..1), `maxRssBytes`, `maxInFlight` — is checked against its sensor, and the first strictly-over dimension sheds: a `503` `HttpError` with `Retry-After` into the error boundary, the handler never runs:
+
+```ts
+use(app, loadShed({
+  maxEventLoopUtilization: 0.95,
+  maxInFlight: 200,
+  bypass: (ctx) => ctx.url.pathname === '/healthz',
+}));
+```
+
+Unconfigured dimensions are never read. The in-flight count is a ledger (incremented on entry, decremented in a `finally`), not a sample. `bypass` exempts a request from both counting and checking — never shed your liveness probes. Every sensor is injectable for tests; compose with `health`'s `createGate` for a coordinated drain. Full contract: [Load shedding](/api/load-shed).
+
+## Circuit breaker
+
+CLOSED → OPEN after `failureThreshold` admitted failures inside `windowMs`; OPEN → HALF_OPEN after `cooldownMs`; half-open admits `probeConcurrency` probes and `successesNeeded` consecutive successes close it. `breakerCall` wraps any async call — the proxy's `proxyRequest` included — and rejects with `503` + `Retry-After` while open:
+
+```ts
+const upstream = createCircuitBreaker({ failureThreshold: 5, windowMs: 10_000, cooldownMs: 30_000 });
+get(app, '/search', async (ctx) => json(ctx, await breakerCall(upstream, () => proxyRequest(ctx, target))));
+```
+
+What counts as a failure is `errorFilter`'s call — the shipped `skipClientErrors` admits 5xx and raw throws, not 4xx. The clock is injectable (`now`), `circuitStatus` snapshots the phase, and `canPass`/`recordSuccess`/`recordFailure` are the no-throw face for custom admission. Full contract: [Circuit breaker](/api/circuit-breaker).
 
 ## Serialize
 

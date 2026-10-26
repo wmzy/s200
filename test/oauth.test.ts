@@ -2,9 +2,12 @@ import { describe, it } from 'vitest';
 
 import {
   buildAuthorizeUrl,
+  clientCredentials,
   createPkcePair,
   exchangeCode,
   randomState,
+  refreshToken,
+  type OAuthGrantOptions,
   type OAuthTokenOptions,
 } from '../src/oauth';
 
@@ -49,6 +52,20 @@ const CLIENT: Omit<OAuthTokenOptions, 'fetch'> = {
   clientId: 'web-app',
   clientSecret: 'top-secret',
   redirectUri: 'http://s200.test/callback',
+};
+
+// Distinct token endpoints per grant family — nothing is cached module-wide
+// today, and distinct URLs keep it that way if that ever changes.
+const REFRESH: Omit<OAuthGrantOptions, 'fetch'> = {
+  tokenEndpoint: 'https://refresh.example/token',
+  clientId: 'web-app',
+  clientSecret: 'top-secret',
+};
+
+const MACHINE: Omit<OAuthGrantOptions, 'fetch'> & { clientSecret: string } = {
+  tokenEndpoint: 'https://machine.example/token',
+  clientId: 'worker',
+  clientSecret: 'machine-secret',
 };
 
 describe('createPkcePair', function () {
@@ -211,6 +228,147 @@ describe('exchangeCode', function () {
     const { fetchFn } = tokenFetch(200, JSON.stringify({ scope: 'openid' }));
     const error = (await rejectionOf(
       exchangeCode({ ...CLIENT, fetch: fetchFn }, { code: 'x', codeVerifier: 'v' })
+    )) as { status: number; message: string };
+    error.status.should.equal(502);
+    error.message.should.match(/lacks a token/);
+  });
+});
+
+describe('refreshToken', function () {
+  it('posts the refresh grant with Basic client auth and scope passthrough', async function () {
+    const { fetchFn, calls } = tokenFetch(
+      200,
+      JSON.stringify({
+        access_token: 'at-r1',
+        token_type: 'Bearer',
+        expires_in: 1800,
+        scope: 'openid profile',
+      })
+    );
+    const tokens = await refreshToken(
+      { ...REFRESH, fetch: fetchFn },
+      { refreshToken: 'rt-1', scope: ['openid', 'profile'] }
+    );
+    tokens.accessToken.should.equal('at-r1');
+    tokens.tokenType.should.equal('Bearer');
+    tokens.expiresIn?.should.equal(1800);
+    tokens.scope?.should.equal('openid profile');
+    (tokens.idToken === undefined).should.be.true;
+
+    calls.length.should.equal(1);
+    const call = calls[0]!;
+    call.url.should.equal('https://refresh.example/token');
+    (call.init.method ?? '').should.equal('POST');
+    const headers = new Headers(call.init.headers);
+    headers.get('content-type')?.should.equal('application/x-www-form-urlencoded');
+    headers.get('authorization')?.should.equal(`Basic ${btoa('web-app:top-secret')}`);
+    const body = new URLSearchParams(String(call.init.body));
+    body.get('grant_type')?.should.equal('refresh_token');
+    body.get('refresh_token')?.should.equal('rt-1');
+    body.get('scope')?.should.equal('openid profile');
+    body.has('client_id').should.be.false;
+    body.has('redirect_uri').should.be.false;
+    body.has('code_verifier').should.be.false;
+  });
+
+  it('sends client_id in the body for public clients and omits scope when absent', async function () {
+    const { fetchFn, calls } = tokenFetch(
+      200,
+      JSON.stringify({ access_token: 'at-r2', token_type: 'Bearer', refresh_token: 'rt-2' })
+    );
+    const tokens = await refreshToken(
+      {
+        tokenEndpoint: 'https://refresh.example/token',
+        clientId: 'spa-app',
+        fetch: fetchFn,
+      },
+      { refreshToken: 'rt-old' }
+    );
+    tokens.accessToken.should.equal('at-r2');
+    tokens.refreshToken?.should.equal('rt-2');
+
+    const call = calls[0]!;
+    const headers = new Headers(call.init.headers);
+    (headers.get('authorization') === null).should.be.true;
+    const body = new URLSearchParams(String(call.init.body));
+    body.get('client_id')?.should.equal('spa-app');
+    body.has('scope').should.be.false;
+  });
+
+  it('throws a 502 HttpError for a non-2xx token endpoint', async function () {
+    const { fetchFn } = tokenFetch(400, JSON.stringify({ error: 'invalid_grant' }));
+    const error = (await rejectionOf(
+      refreshToken({ ...REFRESH, fetch: fetchFn }, { refreshToken: 'revoked' })
+    )) as { status: number; message: string };
+    error.status.should.equal(502);
+    error.message.should.match(/token exchange failed: HTTP 400/);
+  });
+
+  it('throws a 502 when the payload lacks a usable token', async function () {
+    const { fetchFn } = tokenFetch(200, JSON.stringify({ scope: 'openid' }));
+    const error = (await rejectionOf(
+      refreshToken({ ...REFRESH, fetch: fetchFn }, { refreshToken: 'x' })
+    )) as { status: number; message: string };
+    error.status.should.equal(502);
+    error.message.should.match(/lacks a token/);
+  });
+});
+
+describe('clientCredentials', function () {
+  it('posts the client_credentials grant with Basic auth and a scope string', async function () {
+    const { fetchFn, calls } = tokenFetch(
+      200,
+      JSON.stringify({ access_token: 'at-cc1', token_type: 'Bearer', expires_in: 300 })
+    );
+    const tokens = await clientCredentials(
+      { ...MACHINE, fetch: fetchFn },
+      { scope: 'orders:read orders:write' }
+    );
+    tokens.accessToken.should.equal('at-cc1');
+    tokens.tokenType.should.equal('Bearer');
+    tokens.expiresIn?.should.equal(300);
+    (tokens.refreshToken === undefined).should.be.true;
+    (tokens.idToken === undefined).should.be.true;
+
+    calls.length.should.equal(1);
+    const call = calls[0]!;
+    call.url.should.equal('https://machine.example/token');
+    (call.init.method ?? '').should.equal('POST');
+    const headers = new Headers(call.init.headers);
+    headers.get('content-type')?.should.equal('application/x-www-form-urlencoded');
+    headers.get('authorization')?.should.equal(`Basic ${btoa('worker:machine-secret')}`);
+    const body = new URLSearchParams(String(call.init.body));
+    body.get('grant_type')?.should.equal('client_credentials');
+    body.get('scope')?.should.equal('orders:read orders:write');
+    body.has('client_id').should.be.false;
+    body.has('redirect_uri').should.be.false;
+  });
+
+  it('omits scope when absent', async function () {
+    const { fetchFn, calls } = tokenFetch(
+      200,
+      JSON.stringify({ access_token: 'at-cc2', token_type: 'Bearer' })
+    );
+    const tokens = await clientCredentials({ ...MACHINE, fetch: fetchFn }, {});
+    tokens.accessToken.should.equal('at-cc2');
+    const body = new URLSearchParams(String(calls[0]!.init.body));
+    body.get('grant_type')?.should.equal('client_credentials');
+    body.has('scope').should.be.false;
+  });
+
+  it('throws a 502 HttpError for a non-2xx token endpoint', async function () {
+    const { fetchFn } = tokenFetch(401, JSON.stringify({ error: 'invalid_client' }));
+    const error = (await rejectionOf(
+      clientCredentials({ ...MACHINE, fetch: fetchFn }, {})
+    )) as { status: number; message: string };
+    error.status.should.equal(502);
+    error.message.should.match(/token exchange failed: HTTP 401/);
+  });
+
+  it('throws a 502 when the payload lacks a usable token', async function () {
+    const { fetchFn } = tokenFetch(200, JSON.stringify({ scope: 'orders:read' }));
+    const error = (await rejectionOf(
+      clientCredentials({ ...MACHINE, fetch: fetchFn }, {})
     )) as { status: number; message: string };
     error.status.should.equal(502);
     error.message.should.match(/lacks a token/);

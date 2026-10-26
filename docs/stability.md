@@ -201,7 +201,7 @@ s200/openapi  s200/trust-proxy  s200/otel  s200/codegen  s200/multipart
 s200/session  s200/swagger  s200/upload  s200/lifecycle  s200/health
 s200/config  s200/schedule  s200/version  s200/events  s200/als
 s200/response-check  s200/aws-lambda  s200/vercel  s200/mcp
-s200/timing  s200/proxy
+s200/timing  s200/proxy  s200/load-shed  s200/circuit-breaker
 s200/websocket/cloudflare
 s200/shard*  s200/gateway*  s200/shard-dev*  s200/executor*  s200/unit-metrics*
 ```

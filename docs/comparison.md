@@ -25,7 +25,7 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | Route table as data | ✅ JSON-exportable + OpenAPI | ❌ | ❌ | ✅ | ❌ | ❌ |
 | HTTPS / HTTP/2 in adapter | ✅ | ✅ | ✅ | ✅ | 3rd-party | via runtime (Bun.serve) |
 | WebSocket | ✅ zero-dep RFC 6455 node + bun (subprotocols, permessage-deflate, heartbeat) | ✅ | 3rd-party | 3rd-party | 3rd-party | ✅ built-in `.ws()` (Bun API; crossws on node) |
-| Batteries | 38 opt-in (cors, cookies, csrf, jwt, oauth, cache, etag, compress, rate-limit, session, upload, response-check, mcp, …) | ~20 (incl. csrf/jwt/cache) | ecosystem | plugin ecosystem | ecosystem | ~15 official plugins (openapi, jwt, cors, rate-limit, …) |
+| Batteries | 40 opt-in (cors, cookies, csrf, jwt, oauth, cache, etag, compress, rate-limit, load-shed, circuit-breaker, session, upload, response-check, mcp, …) | ~20 (incl. csrf/jwt/cache) | ecosystem | plugin ecosystem | ecosystem | ~15 official plugins (openapi, jwt, cors, rate-limit, …) |
 | Throughput class (see benchmarks) | Web Standard object class; opt-in light mode ~1.3–1.4× | same (patched: 1.5×) | ~0.6× | patched class | below | patched class; top of it on Bun |
 | Core size (min+gz) | size-limit-gated: ~4 kB minimal core / ~8 kB full barrel | ~10 kB+ | — | — | tiny, no batteries | 1.1 MB unpacked; 141 kB min hello-world (v2 rc) |
 | Validation integration | generic gate over any parser + response contract checking (`s200/response-check`) | zod/valibot/typebox built-in (v5 roadmap: response validation) | ecosystem | JSON Schema native (v6 milestone: Ajv response validation) | ecosystem | TypeBox built-in (`t`) + standard schema |
@@ -33,12 +33,12 @@ calls, zero dependencies, every module tree-shakable and replaceable.
 | JSX / SSG / dev server | ❌ (route-table hot reload via `s200/dev`) | ✅ | ❌ | ❌ | ❌ | ❌ (html plugin) |
 | Ecosystem size | young | large | huge | large | large | fast-growing (9th most used, SoJS 2025) |
 
-Counting rule for the batteries row: the package exposes 56 entries — the
-root barrel plus 55 subpaths. Five subpaths are runtime adapters (`node`,
+Counting rule for the batteries row: the package exposes 58 entries — the
+root barrel plus 57 subpaths. Five subpaths are runtime adapters (`node`,
 `bun`, `cloudflare`, `aws-lambda`, `vercel`) and nine are
 tooling/meta entries (`client`, `codegen`, `dev`, `meta`, `openapi`,
-`route-table`, `swagger`, `test`, `version`); the remaining 41 feature
-subpaths are 38 distinct opt-in batteries once `websocket/node`,
+`route-table`, `swagger`, `test`, `version`); the remaining 43 feature
+subpaths are 40 distinct opt-in batteries once `websocket/node`,
 `websocket/bun` and `websocket/cloudflare` fold into the `websocket`
 battery.
 
@@ -176,7 +176,7 @@ trackers.
   rebuilt on srvx + crossws — the same foundation as h3 — and the
   lifecycle API kept the 1.x `on` prefix, so existing plugins carry into
   v2 without a rewrite. The rewrite cost was paid by the maintainers, not
-  the users; s200's offer is never paying it — `sideEffects: false`, 55
+  the users; s200's offer is never paying it — `sideEffects: false`, 57
   tree-shaken package entries, and size-limit budgets gating every release
   have been the package's shape since day one.
 - **Fastify v6 — slipped** ([v6
