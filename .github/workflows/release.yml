@@ -60,7 +60,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # npm 发布时经 OIDC 附加 provenance（npm 侧信任已配置）。
+          # 防回归：semantic-release 故意不进 devDependencies —— npx 解析 latest
+          # （26.x 的 @semantic-release/npm 才有可用的 OIDC 发布路径；
+          # 本地钉 25 实测 npm publish ENEEDAUTH，见 0.4.0 首次发布失败）。
           NPM_CONFIG_PROVENANCE: true
           # @semantic-release/git 的 prepare 会 git commit CHANGELOG.md；
           # Actions runner 没有全局 git 身份，不注入这四个变量 commit 会挂。

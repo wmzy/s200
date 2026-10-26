@@ -12,6 +12,11 @@ updates:
       dev-dependencies:
         patterns:
           - '*'
+    ignore:
+      # typescript-eslint 不支持 TS 7（CI lint:ci 挂），major 升级等到支持后再放开。
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
   # Workflow actions (checkout, setup-node, codecov, …) — one grouped PR.
   - package-ecosystem: github-actions
     directory: .github/workflows
