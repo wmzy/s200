@@ -33,6 +33,7 @@ import {
 } from './dev';
 import { serve } from './node';
 import { generateClient } from './codegen';
+import { parseEnv } from './config';
 import { createRouteTable, formatRouteTable } from './route-table';
 
 const USAGE = `usage: s200 <command> [args]
@@ -380,43 +381,16 @@ function assertTypeScriptEntrySupported(entry: string): void {
 }
 
 /**
- * Parses one dotenv-style file body into key/value pairs: `KEY=VALUE`
- * lines with surrounding whitespace trimmed, `#` comments and blank lines
- * skipped, matching single- or double-quoted values unquoted. Lines
- * without a `=` (or with an empty key) are skipped, dotenv-style.
- */
-function parseEnvSource(source: string): readonly (readonly [string, string])[] {
-  const pairs: [string, string][] = [];
-  for (const rawLine of source.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line === '' || line.startsWith('#')) {
-      continue;
-    }
-    const eq = line.indexOf('=');
-    if (eq <= 0) {
-      continue;
-    }
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if (
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      value = value.slice(1, -1);
-    }
-    pairs.push([key, value]);
-  }
-  return pairs;
-}
-
-/**
  * Loads `--env-file` files into `process.env` BEFORE the entry module
  * graph is imported — callers place it ahead of the first `load()`. A
- * missing/unreadable file is a hard error naming the path. Variables
- * already present in `process.env` WIN over the file — the same
- * precedence as `node --env-file` (`--env-file-if-exists` aside): the
- * ambient environment is never overwritten by a dotenv file.
+ * missing/unreadable file is a hard error naming the path. Parsing is
+ * {@link parseEnv} in lenient mode — dotenv files are user-authored, so a
+ * malformed line (no `=`, bad key, unterminated quote) skips itself
+ * instead of killing the dev server, while the strict syntax (export
+ * prefixes, escapes, trailing comments) still applies. Variables already
+ * present in `process.env` WIN over the file — the same precedence as
+ * `node --env-file` (`--env-file-if-exists` aside): the ambient
+ * environment is never overwritten by a dotenv file.
  */
 function loadEnvFiles(paths: readonly string[]): void {
   for (const file of paths) {
@@ -426,7 +400,10 @@ function loadEnvFiles(paths: readonly string[]): void {
     } catch {
       throw new Error(`s200 dev: --env-file: cannot read "${file}"\n${USAGE}`);
     }
-    for (const [key, value] of parseEnvSource(source)) {
+    // parseEnv resolves duplicate keys within one file last-wins; across
+    // files the first file still wins (the `hasOwn` guard below) — the
+    // ambient environment above both.
+    for (const [key, value] of Object.entries(parseEnv(source, { lenient: true }))) {
       // Prototype-safe: `Object.hasOwn`, not a truthiness/`in` check.
       if (!Object.hasOwn(process.env, key)) {
         process.env[key] = value;

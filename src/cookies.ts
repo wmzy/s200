@@ -13,6 +13,7 @@
 import type { Ctx } from './types';
 
 import { b64urlEncode, equalBytes } from './crypto-util';
+import { evictOldest } from './map-limit';
 
 /** RFC 6265 token — cookie names live in a stricter alphabet than values. */
 const NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -111,11 +112,10 @@ const keyCache = new Map<string, Promise<CryptoKey>>();
 function hmacKey(secret: string): Promise<CryptoKey> {
   let key = keyCache.get(secret);
   if (key === undefined) {
+    // Evict BEFORE insert (FIFO — reads never re-insert), so the cap is
+    // never exceeded even transiently.
     if (keyCache.size >= KEY_CACHE_LIMIT) {
-      const oldest = keyCache.keys().next().value;
-      if (oldest !== undefined) {
-        keyCache.delete(oldest);
-      }
+      evictOldest(keyCache);
     }
     key = crypto.subtle.importKey(
       'raw',

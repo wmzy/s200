@@ -1,8 +1,9 @@
 /**
- * Shared crypto primitives for the batteries — one base64url codec and
- * one constant-time byte comparison, instead of a hand-rolled copy per
- * module (cookies/csrf/jwt/oauth each grew their own). Internal module:
- * not part of any package export entry.
+ * Shared crypto primitives for the batteries — the base64 codecs (both
+ * alphabets), hex rendering, and one constant-time byte comparison,
+ * instead of a hand-rolled copy per module (cookies/csrf/jwt/oauth/etag
+ * each grew their own). Internal module: not part of any package
+ * export entry.
  *
  * @internal
  */
@@ -16,15 +17,42 @@ for (let i = 0; i < B64_ALPHABET.length; i += 1) {
   B64_DECODE[B64_ALPHABET.charCodeAt(i)] = i;
 }
 
-/** Base64url encode, no padding: `btoa` packs the bytes, then `+` `/`
- * translate to the url-safe alphabet and trailing `=` strips. `btoa` is
- * global on Node ≥ 16, Bun, browsers, and workers. */
-export function b64urlEncode(bytes: Uint8Array): string {
+/** Builds the Latin-1 binary string `btoa` consumes — one pass, one
+ * string per encode, nothing else allocated. Both base64 alphabets
+ * start here; only the post-processing differs. */
+function toBinaryString(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
   }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return binary;
+}
+
+/** Base64url encode, no padding: `btoa` packs the bytes, then `+` `/`
+ * translate to the url-safe alphabet and trailing `=` strips. `btoa` is
+ * global on Node ≥ 16, Bun, browsers, and workers. */
+export function b64urlEncode(bytes: Uint8Array): string {
+  return btoa(toBinaryString(bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/** Standard-alphabet base64 (RFC 4648 §4, padded) — the Basic-auth
+ * (RFC 7617) and binary-XML convention; the url-safe variant stays
+ * {@link b64urlEncode}. */
+export function b64Encode(bytes: Uint8Array): string {
+  return btoa(toBinaryString(bytes));
+}
+
+/** Lowercase hex, two chars per byte — the digest rendering SHA etags
+ * and key-material cache keys use. */
+export function toHex(bytes: Uint8Array): string {
+  let out = '';
+  for (const byte of bytes) {
+    out += byte.toString(16).padStart(2, '0');
+  }
+  return out;
 }
 
 /** Base64url decode, strict unpadded: `null` on '=' padding (out of the

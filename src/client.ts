@@ -26,6 +26,8 @@ import type {
 
 import type { ParamsOf } from './router';
 
+import { appendQuery, fillSegments } from './pattern-fill';
+
 /** `RequestInit` plus s200's query-string sugar. */
 export type ClientInit = RequestInit & {
   /**
@@ -413,10 +415,11 @@ function isJsonBody(value: unknown): value is object {
 }
 
 /**
- * Builds one path-filling call for a route: static segments verbatim,
- * `:param` values percent-encoded, `*wildcard` values kept slash-joined
- * (each piece encoded, `/` preserved). Params are checked at call time —
- * a missing one is a programmer error on the caller's side.
+ * Builds one path-filling call for a route: the shared pattern fill
+ * (`pattern-fill` — static segments verbatim, `:param` values encoded
+ * whole, `*wildcard` values piecewise so `/` stays a separator) plus this
+ * client's error contract. Params are checked at call time — a missing or
+ * non-string one is a programmer error on the caller's side.
  */
 function buildPathFn(
   base: string,
@@ -426,52 +429,38 @@ function buildPathFn(
   send: (path: string, init: RequestInit) => Promise<Response>,
   resolveSignal: (init: AbortSignal | null | undefined) => AbortSignal | undefined
 ): PathFn {
+  // Optional captures are a fact of the pattern, not of the call — valueOf
+  // consults this set to tell 'absent optional' (drops out) from 'absent
+  // required' (throws) without re-scanning segments per call.
+  const optional = new Set(
+    segments.flatMap((segment) =>
+      segment._tag === 'param' && segment.optional ? [segment.name] : []
+    )
+  );
   return (args, init) => {
-    const pieces: string[] = [];
-    for (const segment of segments) {
-      if (segment._tag === 'static') {
-        pieces.push(segment.value);
-        continue;
-      }
-      const value = args?.[segment.name];
+    const filled = fillSegments(segments, (name) => {
+      const value = args?.[name];
       if (value === undefined) {
-        // An absent optional segment drops out entirely (no empty piece —
-        // '/users/:id?' with no id builds '/users', not '/users/').
-        if (segment._tag === 'param' && segment.optional) {
-          continue;
+        if (optional.has(name)) {
+          return undefined;
         }
-        throw new Error(`Missing param '${segment.name}' for route '${pattern}'`);
+        throw new Error(`Missing param '${name}' for route '${pattern}'`);
       }
       if (typeof value !== 'string') {
-        throw new Error(`Param '${segment.name}' for route '${pattern}' must be a string`);
+        throw new Error(`Param '${name}' for route '${pattern}' must be a string`);
       }
-      if (segment._tag === 'wildcard') {
-        pieces.push(
-          value
-            .split('/')
-            .map((piece) => encodeURIComponent(piece))
-            .join('/')
-        );
-      } else {
-        pieces.push(encodeURIComponent(value));
-      }
-    }
-    let path = base + pieces.map((piece) => `/${piece}`).join('');
+      return value;
+    });
+    // valueOf throws for a required capture instead of returning
+    // undefined, so the fill always lands as a string here — the cast
+    // records an invariant the fill's return type cannot see.
+    let path = base + (filled as string);
     const { query, ...rest } = init ?? {};
     if (query !== undefined) {
       const search = new URLSearchParams();
-      for (const [name, value] of Object.entries(query)) {
-        if (value === undefined) {
-          continue;
-        }
-        if (Array.isArray(value)) {
-          for (const item of value) {
-            search.append(name, String(item));
-          }
-        } else {
-          search.append(name, String(value));
-        }
-      }
+      // No skipNull: the loose query sugar keeps its long-standing
+      // `String(null)` → 'null' spelling (only `undefined` skips).
+      appendQuery(search, Object.entries(query), { skipNull: false });
       const qs = search.toString();
       if (qs !== '') {
         path += `?${qs}`;

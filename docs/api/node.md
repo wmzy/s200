@@ -76,7 +76,7 @@ Three more fields are applied outside the constructor — node's constructors do
 
 ## Host header hardening
 
-The adapter builds each request URL from the `Host` header (`:authority` on HTTP/2). A Host outside the authority grammar — anything but alphanumerics, `.`, `-`, `:` (port), and `[`/`]` (IPv6 literals), including `/ \ ? # @`, whitespace, percent-escapes, and the empty value — falls back to `localhost` instead of flowing into the URL: a crafted `Host: evil.com/a` can neither pollute the parsed pathname nor make the URL unparseable. Legal hosts pass through unchanged — `example.com`, `example.com:8080`, `[::1]:3000`.
+The adapter builds each request URL from the `Host` header (`:authority` on HTTP/2). A Host outside the authority grammar — anything but alphanumerics, `.`, `-`, `:` (port), and `[`/`]` (IPv6 literals), including `/ \ ? # @`, whitespace, percent-escapes, and the empty value — or one the URL parser rejects (`[`, a port above 65535, leading-zero IPv4 labels) falls back to `localhost` instead of flowing into the URL: a crafted `Host: evil.com/a` can neither pollute the parsed pathname nor make the URL unparseable. Legal hosts pass through unchanged — `example.com`, `example.com:8080`, `[::1]:3000`.
 
 ## `onFinish(ctx, fn)` / `finishersIdle()` (core barrel) {#onfinish}
 

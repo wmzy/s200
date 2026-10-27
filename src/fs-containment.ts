@@ -1,13 +1,28 @@
 /**
  * Internal symlink-escape containment shared by the filesystem adapters'
  * `createRealPathGuard`s (node's async `realpath`, Bun's sync
- * `realpathSync`). NOT a public entry — the barrel does not re-export this
- * module; import it relatively from within src.
+ * `realpathSync`), plus the miss-vs-failure error policy their file
+ * readers share (`MISSING_FILE_CODES`). NOT a public entry — the barrel
+ * does not re-export this module; import it relatively from within src.
  *
  * @internal
  */
 
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+/** fs error codes that mean "the path does not point at a readable file"
+ * (missing entry, a non-directory segment, a directory itself) — the only
+ * failures the adapters' file readers may translate into a miss (`null`).
+ * Everything else (EACCES, EMFILE, …) still rejects so a real IO failure
+ * is not masked as a 404.
+ *
+ * @internal
+ */
+export const MISSING_FILE_CODES: readonly string[] = [
+  'ENOENT',
+  'ENOTDIR',
+  'EISDIR',
+];
 
 /** Lexical containment: is `absolute` `root` itself or below it? */
 function isUnderRoot(root: string, absolute: string): boolean {

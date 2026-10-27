@@ -9,7 +9,14 @@
 
 import type { Ctx } from './types';
 
-type Range = {
+/**
+ * One parsed Accept-family entry: the lowercased value plus its
+ * quality. Exported only because {@link parseRanges} mentions it in its
+ * signature (declaration emit); it is not battery surface.
+ *
+ * @internal
+ */
+export type Range = {
   readonly value: string;
   readonly q: number;
 };
@@ -17,9 +24,14 @@ type Range = {
 /**
  * Parses an Accept-family header into `{ value, q }` ranges in header
  * order (order matters: at equal specificity, the earlier range wins).
- * q is clamped to [0, 1]; q=0 ranges stay — they ban candidates.
+ * q is clamped to [0, 1]; q=0 ranges stay — they ban candidates; an
+ * unparseable q parameter is ignored (q stays 1). Shared by every
+ * Accept-header consumer (compress's pickEncoding rides it too), so the
+ * grammar is defined exactly once.
+ *
+ * @internal
  */
-function parseRanges(header: string | null): Range[] {
+export function parseRanges(header: string | null): Range[] {
   if (header === null) return [];
   const ranges: Range[] = [];
   for (const part of header.split(',')) {

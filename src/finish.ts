@@ -11,7 +11,11 @@
  * @module
  */
 
+import type { App } from './app';
 import type { Ctx } from './types';
+
+import { handle } from './app';
+import { signalInit } from './signal';
 
 /** What {@link onFinish} hands its callback: `aborted` is `true` when the
  * response did not finish — the client disconnected (or the response body
@@ -268,4 +272,25 @@ export function trackFinish(
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+/**
+ * The fetch-handler composition every edge adapter shares (Cloudflare
+ * Workers, Vercel, Bun's non-websocket tail): `handle` under the runtime's
+ * request signal — feature-detected by `signalInit`, since not every
+ * runtime aborts request.signal on client disconnect — with `onFinish`
+ * riding the response body when callbacks exist. Those runtimes expose no
+ * write-completion event, so `trackFinish` wraps the body and its cancel
+ * (client gone) or completion runs the callbacks exactly once. Importing
+ * `handle` here is cycle-free: nothing in app.ts's import graph pulls
+ * finish back in.
+ *
+ * @internal
+ */
+export function edgeFetch(app: App, request: Request): Promise<Response> {
+  return handle(app, request, signalInit(request)).then((response) =>
+    hasFinishers(request)
+      ? trackFinish(request, response, app.logError)
+      : response
+  );
 }

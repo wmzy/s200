@@ -63,6 +63,13 @@ describe('client (typed fetch)', () => {
 
     await client.get('/list', { query: { page: 2, tag: ['a', 'b'], skip: undefined, on: true } });
     calls[0]?.url.should.equal('/list?page=2&tag=a&tag=b&on=true');
+    // null rides the loose sugar's plain String() spelling ('null') —
+    // only undefined skips; that is the client-side half of appendQuery's
+    // skipNull policy (mcp skips null too, the client never has). The
+    // declared query type has no null, so reach it through a cast.
+    const withNull = { n: null } as unknown as { n: string };
+    await client.get('/list', { query: withNull });
+    calls[1]?.url.should.equal('/list?n=null');
   });
 
   it('sends the right method per group and offers ALL routes on every method', async () => {

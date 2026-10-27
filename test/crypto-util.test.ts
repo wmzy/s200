@@ -1,6 +1,6 @@
 import { describe, it } from 'vitest';
 
-import { b64urlDecode, b64urlEncode, equalBytes } from '../src/crypto-util';
+import { b64Encode, b64urlDecode, b64urlEncode, equalBytes, toHex } from '../src/crypto-util';
 
 describe('crypto-util', function () {
   it('encodes known vectors: partial and full 3-byte groups', function () {
@@ -59,5 +59,22 @@ describe('crypto-util', function () {
     equalBytes(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 4])).should.be.false;
     equalBytes(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2])).should.be.false;
     equalBytes(new Uint8Array([1, 2]), new Uint8Array([1, 2, 3])).should.be.false;
+  });
+
+  it('encodes standard base64: +// alphabet, padded (RFC 4648 §4)', function () {
+    // The same RFC 7636 vectors as the url-safe block above, but partial
+    // groups keep their '=' tail — the Basic-auth (RFC 7617) shape.
+    b64Encode(new Uint8Array(0)).should.equal('');
+    b64Encode(new Uint8Array([102])).should.equal('Zg==');
+    b64Encode(new Uint8Array([102, 111])).should.equal('Zm8=');
+    b64Encode(new Uint8Array([102, 111, 111])).should.equal('Zm9v');
+    // All-0xff drives the encoder into the high alphabet chars — here they
+    // must stay '+', '/', unlike b64urlEncode's '-'/'_' translation.
+    b64Encode(new Uint8Array(32).fill(255)).should.match(/^[A-Za-z0-9+/]{43}=$/);
+  });
+
+  it('renders lowercase hex, two chars per byte (toHex)', function () {
+    toHex(new Uint8Array(0)).should.equal('');
+    toHex(new Uint8Array([0x00, 0x0f, 0xa5, 0xff])).should.equal('000fa5ff');
   });
 });

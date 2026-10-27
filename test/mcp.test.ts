@@ -285,6 +285,32 @@ describe('createMcpHandler (JSON-RPC surface)', () => {
     body.error.code.should.equal(-32602);
   });
 
+  it('fills wildcard captures piecewise — slashes stay segment separators', async () => {
+    const app = createApp();
+    get(app, '/files/*path', (ctx) =>
+      json(ctx, { pathname: ctx.url.pathname, path: ctx.params.path })
+    );
+    describeRoute(app, 'GET', '/files/*path', { summary: 'Fetch by path' });
+    const handler = createMcpHandler(app);
+    const res = await call(handler, {
+      jsonrpc: '2.0',
+      id: 10,
+      method: 'tools/call',
+      params: { name: 'get_files__path', arguments: { path: 'a/b c' } },
+    });
+    const body = (await res.json()) as { result: { content: { text: string }[]; isError: boolean } };
+    body.result.isError.should.equal(false);
+    // The canonical URL shape is '/files/a/b%20c' (each piece encoded,
+    // '/' a separator — s200/client's policy, now shared through
+    // pattern-fill) instead of the packed '/files/a%2Fb%20c' the old
+    // whole-value encode produced. The router decodes both spellings to
+    // the same capture; the pathname echo pins the encoding itself.
+    JSON.parse(body.result.content[0]?.text ?? '{}').should.deep.equal({
+      pathname: '/files/a/b%20c',
+      path: 'a/b c',
+    });
+  });
+
   it('answers an unknown method with -32601', async () => {
     const handler = createMcpHandler(mcpApp());
     const res = await call(handler, { jsonrpc: '2.0', id: 8, method: 'resources/list' });

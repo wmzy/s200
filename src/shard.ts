@@ -18,6 +18,8 @@ import type { App } from './app';
 import type { RouteTableEntry } from './route-table';
 import type { Route, State } from './types';
 
+import { routeEntryOf } from './router';
+
 /**
  * Scheduling hints one route carries into its shard's views. Every field is
  * optional and advisory — core dispatch in `handle` ignores them; consumers
@@ -130,21 +132,20 @@ function normalizeGroup(group: ShardGroup): ShardGroup {
   return prefix === group.prefix ? group : { ...group, prefix };
 }
 
-/** The route-table entry view of one route: params and middleware counts
- * ride along, functions never do (same shape `createRouteTable` emits). */
-function entryOf(route: Route): RouteTableEntry {
-  const params: string[] = [];
-  for (const segment of route.segments) {
-    if (segment._tag !== 'static') {
-      params.push(segment.name);
+/** First value `pick` returns non-`undefined` from `sources`, in order —
+ * the first-route-wins override discipline: an earlier source shadows, a
+ * later one only fills a still-undefined key. */
+function firstDefined<T>(
+  sources: readonly (RoutePolicy | undefined)[],
+  pick: (policy: RoutePolicy) => T | undefined
+): T | undefined {
+  for (const source of sources) {
+    const value = source === undefined ? undefined : pick(source);
+    if (value !== undefined) {
+      return value;
     }
   }
-  return {
-    method: route.method,
-    pattern: route.pattern,
-    params,
-    middlewareCount: route.middlewares.length,
-  };
+  return undefined;
 }
 
 /**
@@ -156,40 +157,24 @@ function entryOf(route: Route): RouteTableEntry {
  * `shard: id` — which shard owns this policy is data, not a guess.
  */
 function mergePolicies(group: ShardGroup, routes: readonly Route[]): RoutePolicy {
-  let timeoutMs: number | undefined;
-  let memoryMb: number | undefined;
-  let streaming: boolean | undefined;
+  // Policy sources in priority order: route policies by registration
+  // order, then the group base as the lowest-priority fallback per key —
+  // one sequence both the first-wins picks and the max walk read.
+  const sources: readonly (RoutePolicy | undefined)[] = [
+    ...routes.map(getPolicy),
+    group.policy,
+  ];
+  const timeoutMs = firstDefined(sources, (p) => p.timeoutMs);
+  const memoryMb = firstDefined(sources, (p) => p.memoryMb);
+  const streaming = firstDefined(sources, (p) => p.streaming);
+  // maxConcurrency alone widens, never undercuts: the max across group
+  // and routes, because a shard's cap may exceed any single route's ask.
   let maxConcurrency: number | undefined;
-  for (const route of routes) {
-    const p = getPolicy(route);
-    if (p === undefined) {
-      continue;
+  for (const source of sources) {
+    const cap = source?.maxConcurrency;
+    if (cap !== undefined && (maxConcurrency === undefined || cap > maxConcurrency)) {
+      maxConcurrency = cap;
     }
-    if (timeoutMs === undefined) {
-      timeoutMs = p.timeoutMs;
-    }
-    if (memoryMb === undefined) {
-      memoryMb = p.memoryMb;
-    }
-    if (streaming === undefined) {
-      streaming = p.streaming;
-    }
-    if (p.maxConcurrency !== undefined && (maxConcurrency === undefined || p.maxConcurrency > maxConcurrency)) {
-      maxConcurrency = p.maxConcurrency;
-    }
-  }
-  const base = group.policy;
-  if (timeoutMs === undefined) {
-    timeoutMs = base?.timeoutMs;
-  }
-  if (memoryMb === undefined) {
-    memoryMb = base?.memoryMb;
-  }
-  if (streaming === undefined) {
-    streaming = base?.streaming;
-  }
-  if (base?.maxConcurrency !== undefined && (maxConcurrency === undefined || base.maxConcurrency > maxConcurrency)) {
-    maxConcurrency = base.maxConcurrency;
   }
   const merged: {
     timeoutMs?: number;
@@ -307,7 +292,9 @@ export function shardSpecs(app: App, groups: readonly ShardGroup[]): readonly Sh
     specs.push({
       id: group.id,
       prefix: group.prefix,
-      routes: Object.freeze(routes.map(entryOf)),
+      // The shared `routeEntryOf` (s200/router): specs and
+      // `createRouteTable` emit the same entry shape by construction.
+      routes: Object.freeze(routes.map(routeEntryOf)),
       policy: mergePolicies(group, routes),
       ...(group.entry !== undefined ? { entry: group.entry } : {}),
     });

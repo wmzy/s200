@@ -215,6 +215,34 @@ describe('exchangeCode', function () {
     new URLSearchParams(String(call.init.body)).get('client_id')?.should.equal('web-app');
   });
 
+  it('sends Basic credentials in standard padded base64 (RFC 7617)', async function () {
+    // This pair's standard base64 (`YT9iPWM6ZC9lK2Y=`) carries '+', '/'
+    // AND '=' — the url-safe codec would flip the first two to '-'/'_' and
+    // strip the tail, so the roundtrip below pins the RFC 4648 §4
+    // alphabet, not just a byte-equality accident.
+    const clientId = 'a?b=c';
+    const clientSecret = 'd/e+f';
+    const { fetchFn, calls } = tokenFetch(
+      200,
+      JSON.stringify({ access_token: 'at-b64', token_type: 'Bearer' })
+    );
+    const tokens = await exchangeCode(
+      {
+        tokenEndpoint: 'https://idp.example/token',
+        clientId,
+        clientSecret,
+        redirectUri: 'http://s200.test/callback',
+        fetch: fetchFn,
+      },
+      { code: 'c3', codeVerifier: 'v3' }
+    );
+    tokens.accessToken.should.equal('at-b64');
+
+    const header = new Headers(calls[0]!.init.headers).get('authorization') ?? '';
+    header.should.equal(`Basic ${btoa(`${clientId}:${clientSecret}`)}`);
+    atob(header.slice('Basic '.length)).should.equal(`${clientId}:${clientSecret}`);
+  });
+
   it('throws a 502 HttpError for a non-2xx token endpoint', async function () {
     const { fetchFn } = tokenFetch(400, JSON.stringify({ error: 'invalid_grant' }));
     const error = (await rejectionOf(

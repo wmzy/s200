@@ -148,6 +148,19 @@ describe('node adapter (real http)', () => {
       }
     });
 
+    it('falls back to localhost for a Host the URL parser rejects (regex-legal but unparseable)', async () => {
+      // `[` (unbalanced IPv6 bracket) and an out-of-range port pass the
+      // character allowlist but fail URL parsing — without the canParse
+      // gate in isSafeHost the adapter would build a URL string that
+      // new URL() throws on (socket reset); with it the request is served
+      // from the localhost fallback.
+      for (const candidate of ['[', 'x.example:99999']) {
+        const echoed = await echo(candidate);
+        echoed.host.should.equal('localhost');
+        echoed.pathname.should.equal('/host-echo');
+      }
+    });
+
     it('falls back to localhost for an empty Host (raw socket)', async () => {
       // http.request replaces an empty Host with its own computed (legal)
       // one — only a raw socket reaches the adapter with `Host:` empty. (A
@@ -387,9 +400,9 @@ describe('node adapter TLS', () => {
   it('keeps a legal :authority on HTTP/2 (polluted ones die at the protocol level)', async () => {
     // nghttp2 validates host/:authority values as authorities — a polluted
     // one (e.g. with '/') is answered NGHTTP2_PROTOCOL_ERROR before the
-    // adapter ever sees it, so the h2 half of the SAFE_HOST gate is
-    // defense in depth; what is reachable and contractual is the legal
-    // passthrough.
+    // adapter ever sees it, so the h2 half of the isSafeHost gate
+    // (safe-host.ts) is defense in depth; what is reachable and
+    // contractual is the legal passthrough.
     const app = createApp();
     get(app, '/host-echo', (ctx) =>
       json(ctx, { host: ctx.url.host, pathname: ctx.url.pathname })

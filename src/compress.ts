@@ -10,6 +10,8 @@
 
 import type { Ctx, Middleware } from './types';
 
+import { parseRanges } from './accepts';
+import { collectStream } from './bytes';
 import { LightResponse } from './light';
 import { newResponse } from './respond';
 
@@ -41,8 +43,10 @@ const DEFAULT_MIN_BYTES = 1024;
  * coding even when `*` is acceptable. Ties break by server preference
  * br > gzip > deflate (brotli is the densest). `*` alone means br when a
  * brotli encoder is injected, else gzip. Returns undefined when nothing
- * acceptable is offered. q is clamped to [0, 1]; an unparseable q
- * parameter is ignored (q stays 1), matching `accepts` negotiation.
+ * acceptable is offered. The q grammar is shared with the accepts
+ * family (`parseRanges`): q is clamped to [0, 1] and an unparseable q
+ * parameter is ignored (q stays 1). Later occurrences of a name win —
+ * pickEncoding's own rule, a plain per-name assignment.
  */
 function pickEncoding(
   header: string,
@@ -52,25 +56,17 @@ function pickEncoding(
   let deflate: number | undefined;
   let br: number | undefined;
   let star: number | undefined;
-  for (const part of header.split(',')) {
-    const trimmed = part.trim();
-    if (trimmed === '') continue;
-    const [rawName, ...params] = trimmed.split(';');
-    const name = (rawName ?? '').trim().toLowerCase();
-    if (name === '') continue;
-    let q = 1;
-    for (const param of params) {
-      const kv = param.trim();
-      if (!kv.toLowerCase().startsWith('q=')) continue;
-      const parsed = Number(kv.slice(2));
-      q = Number.isNaN(parsed) ? 1 : Math.min(1, Math.max(0, parsed));
-    }
-    // Later occurrences win, matching the accepts-family parser.
-    if (name === 'gzip') gzip = q;
-    else if (name === 'deflate') deflate = q;
-    else if (name === 'br') br = q;
-    else if (name === '*') star = q;
+  for (const { value, q } of parseRanges(header)) {
+    // Later occurrences win — ranges arrive in header order, so a plain
+    // per-name assignment implements the rule (`gzip;q=0.5, gzip;q=0.8`
+    // leaves gzip at 0.8). Names outside the supported set (identity,
+    // x-gzip, …) fall through: never candidates here.
+    if (value === 'gzip') gzip = q;
+    else if (value === 'deflate') deflate = q;
+    else if (value === 'br') br = q;
+    else if (value === '*') star = q;
   }
+
   // Effective q: an explicit listing overrides the `*` catch-all, so a
   // q=0 ban holds even when `*` is acceptable.
   const effBr = brotli ? br ?? star : undefined;
@@ -89,39 +85,27 @@ function pickEncoding(
   return best;
 }
 
-/** Appends a value to the Vary header without duplicating it. */
-function withVary(headers: Headers, value: string): void {
+/**
+ * Appends `value` to the Vary header without duplicating it. The
+ * comparison lowercases both sides — the entry already in Vary may be
+ * any case (`Vary: X-Api-Version` vs the appended `x-api-version`), and
+ * a cache-varying header listed twice is still just one key. Shared by
+ * compress (`accept-encoding`) and the version gate's negotiated header.
+ *
+ * @internal
+ */
+export function withVary(headers: Headers, value: string): void {
   const vary = headers.get('vary');
   if (vary === null) {
     headers.set('vary', value);
     return;
   }
-  if (!vary.split(',').some((entry) => entry.trim().toLowerCase() === value)) {
+  const lowered = value.toLowerCase();
+  if (
+    !vary.split(',').some((entry) => entry.trim().toLowerCase() === lowered)
+  ) {
     headers.set('vary', `${vary}, ${value}`);
   }
-}
-
-/** Collects a stream into one buffer — a single chunk (the common small
- * response) is returned without a copy. */
-async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    size += value.byteLength;
-  }
-  const single = chunks.length === 1 ? chunks[0] : undefined;
-  if (single !== undefined) return single;
-  const out = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
 }
 
 /** One-shot compression of buffered bytes through the platform
@@ -135,7 +119,9 @@ async function deflateBytes(
 ): Promise<Uint8Array> {
   const through = new CompressionStream(encoding);
   const writer = through.writable.getWriter();
-  const collected = readAll(through.readable);
+  // A single chunk (the common small response) comes back without a
+  // copy — collectStream's copySingle:false fast path.
+  const collected = collectStream(through.readable, { copySingle: false });
   // ArrayBuffer-backed by construction (bytesSync / arrayBuffer paths) —
   // the bare `Uint8Array` alias carries ArrayBufferLike, which TS 6's
   // BufferSource no longer accepts.

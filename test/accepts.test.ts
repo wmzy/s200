@@ -78,6 +78,15 @@ describe('accepts', () => {
     (await pick('*', ['br'], 'encoding'))!.should.equal('br');
   });
 
+  it('skips empty segments in the header list', async () => {
+    const picked = await pick(
+      'text/html, , application/json;q=0.5',
+      ['application/json', 'text/html'],
+      'type'
+    );
+    picked!.should.equal('text/html');
+  });
+
   it('negotiates languages with subtag prefix matching', async () => {
     (await pick('zh-CN, zh;q=0.9, en;q=0.8', ['en', 'zh-CN'], 'language'))!.should.equal('zh-CN');
     (await pick('en-US', ['en'], 'language') === undefined).should.be.true;

@@ -28,7 +28,9 @@ import {
   b64urlDecode as decodeB64url,
   b64urlEncode,
   equalBytes,
+  toHex,
 } from './crypto-util';
+import { evictOldest } from './map-limit';
 
 /** Decoding that keeps this module's throw-site contract: any invalid
  * input (padding, out-of-alphabet char, impossible length) surfaces as
@@ -139,10 +141,7 @@ function lruGet<K, V>(cache: Map<K, V>, key: K): V | undefined {
 function lruSet<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
   cache.set(key, value);
   if (cache.size > limit) {
-    const oldest = cache.keys().next();
-    if (!oldest.done) {
-      cache.delete(oldest.value);
-    }
+    evictOldest(cache);
   }
 }
 
@@ -158,11 +157,7 @@ async function materialDigest(material: string): Promise<string> {
   const digest = new Uint8Array(
     await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material))
   );
-  let hex = '';
-  for (const byte of digest) {
-    hex += byte.toString(16).padStart(2, '0');
-  }
-  return hex;
+  return toHex(digest);
 }
 
 /** One imported HMAC key per (secret digest, hash, usage) — importing per

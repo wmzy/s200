@@ -30,7 +30,7 @@ import type { ParamsOf } from './router';
 
 import { isHttpError } from './errors';
 import { compose } from './compose';
-import { mapError } from './error-map';
+import { mapError, runOnError } from './error-map';
 import { cachedUrl, isLightRequest, isLightResponse, setCachedUrl } from './light';
 import { neverSignal } from './signal';
 import { adoptResponse, drainPendingHeaders, jsonFallback, newResponse } from './respond';
@@ -148,6 +148,26 @@ function groupCtx<S extends State>(ctx: Ctx<Params, S>): GroupCtx {
   return ctx as unknown as GroupCtx;
 }
 
+/** The prefix form's state widening, shared by `use` and its
+ * `RoutesBuilder.use` mirror: `''`/`'/'` prefixes ARE the global form (the
+ * brands widen the app `S`, the scoped log stays untouched); any other
+ * prefix contributes nothing to `S` — its brands park in the scoped log
+ * ({@link PrefixedScoped}) for the registrars to filter per pattern. */
+type PrefixedState<
+  S extends State,
+  Prefix extends string,
+  Ms extends readonly unknown[]
+> = S & (Prefix extends '' | '/' ? StateOf<Ms> : unknown);
+
+/** The prefix form's scoped-log update, shared by the same two surfaces:
+ * nothing for `''`/`'/'` (global form), else the brands pushed under the
+ * prefix. */
+type PrefixedScoped<
+  G extends readonly ScopedState[],
+  Prefix extends string,
+  Ms extends readonly unknown[]
+> = Prefix extends '' | '/' ? G : ScopedPush<G, Prefix, StateOf<Ms>>;
+
 /**
  * Prefix-scoped middlewares: the group runs only for requests whose
  * pathname falls under `prefix` (`/admin` matches `/admin`, `/admin/…`; a
@@ -205,11 +225,7 @@ export function use<
   app: App<S, R, G>,
   prefix: Prefix,
   ...middlewares: Ms
-): App<
-  S & (Prefix extends '' | '/' ? StateOf<Ms> : unknown),
-  R,
-  Prefix extends '' | '/' ? G : ScopedPush<G, Prefix, StateOf<Ms>>
->;
+): App<PrefixedState<S, Prefix, Ms>, R, PrefixedScoped<G, Prefix, Ms>>;
 export function use<
   S extends State = State,
   R extends readonly RouteDef[] = readonly RouteDef[],
@@ -231,10 +247,13 @@ export function use<S extends State = State>(
         `use(app, prefix, ...middlewares): at least one middleware is required for prefix '${prefix}'`
       );
     }
-    // '' and '/' scope everything — equivalent to the global form.
+    // '' and '/' scope everything — equivalent to the global form, so
+    // delegate to it rather than duplicating the tail's append (one append
+    // site for the global idiom). `first` is a middleware by the length
+    // check above; the cast only sheds the index-access undefined.
     if (prefix === '' || prefix === '/') {
-      app.middlewares = Object.freeze([...app.middlewares, ...middlewares]);
-      return app;
+      const [first, ...rest] = middlewares;
+      return use(app, first as Middleware<S>, ...rest);
     }
     if (!prefix.startsWith('/')) {
       throw new Error(
@@ -424,17 +443,13 @@ export function mount<
           try {
             await next();
           } catch (error) {
-            // A crashing error handler propagates out of this boundary —
-            // the parent maps it, the same degradation mapError applies
-            // when an onError crashes.
-            await subOnError(ctx, error);
-            if (ctx.res === undefined) {
-              // The sub's policy declined — the parent's applies.
+            // A declining sub policy rethrows — the parent's applies. A
+            // crashing handler propagates out of this boundary too: the
+            // parent maps it, the same degradation mapError applies when
+            // an onError crashes.
+            if ((await runOnError(subOnError, ctx, error)) === 'declined') {
               throw error;
             }
-            // The adopted response bypassed newResponse — headers
-            // deferred onto this ctx still ride it (mapError parity).
-            drainPendingHeaders(ctx, ctx.res);
           }
         };
   const added: Route[] = [];
@@ -517,6 +532,45 @@ type RouteDefEntry<
   readonly branches: BranchesOf<O>;
 };
 
+/** The literal-overload constraint (and default) for a registrar chain's
+ * middleware tuple: the chain's middlewares run inside every scope guard
+ * matching the pattern, so they type against the app `S` plus those
+ * scoped brands. Written out by `Registrar`, `AddRoute`, and
+ * `BuilderMethod`. */
+type ScopedMs<
+  S extends State,
+  G extends readonly ScopedState[],
+  P extends string
+> = Middleware<S & ScopedOf<G, P>>[];
+
+/**
+ * A literal-pattern registrar's `[...middlewares, handler]` rest tuple:
+ * the terminal handler's params come from the pattern (`ParamsOf<P>`) and
+ * its `ctx.state` is the app `S`, the prefix-scoped brands matching `P`,
+ * and the chain's own brands (`StateOf<Ms>`). This is an inference
+ * position — `Ms` infers from the spread — so the alias must expand to
+ * exactly the tuple the overloads used to spell out; the generic
+ * parameter lists on the public signatures stay put.
+ */
+type LiteralChainTail<
+  P extends string,
+  S extends State,
+  G extends readonly ScopedState[],
+  Ms extends readonly unknown[],
+  O
+> = [...Ms, Handler<ParamsOf<P>, S & ScopedOf<G, P> & StateOf<Ms>, O>];
+
+/**
+ * A dynamic-pattern registrar's rest tuple: a plain `string` pattern
+ * cannot be prefix-matched at compile time, so the handler's params fall
+ * back to the loose `Params` and its `ctx.state` sees the app `S` plus
+ * the chain's brands only. Shared by the same three registrar surfaces.
+ */
+type DynChainTail<S extends State, Ms extends readonly unknown[], O> = [
+  ...Ms,
+  Handler<Params, S & StateOf<Ms>, O>
+];
+
 /**
  * The signature every method registrar shares (`get`, `post`, …): two
  * overloads — a literal pattern gives the terminal handler
@@ -542,11 +596,11 @@ export type Registrar<M extends string> = {
   ,
     G extends readonly ScopedState[] = readonly [],
     O = unknown,
-    Ms extends Middleware<S & ScopedOf<G, P>>[] = Middleware<S & ScopedOf<G, P>>[]
+    Ms extends ScopedMs<S, G, P> = ScopedMs<S, G, P>
   >(
     app: App<S, R, G>,
     pattern: P,
-    ...chain: [...Ms, Handler<ParamsOf<P>, S & ScopedOf<G, P> & StateOf<Ms>, O>]
+    ...chain: LiteralChainTail<P, S, G, Ms, O>
   ): App<S, [...R, RouteDefEntry<M, P, Ms, O>]>;
   <
     S extends State = State,
@@ -558,7 +612,7 @@ export type Registrar<M extends string> = {
   >(
     app: App<S, R, G>,
     pattern: string,
-    ...chain: [...Ms, Handler<Params, S & StateOf<Ms>, O>]
+    ...chain: DynChainTail<S, Ms, O>
   ): App<S, [...R, RouteDefEntry<M, string, Ms, O>]>;
 };
 
@@ -600,12 +654,12 @@ export type AddRoute = {
   ,
     G extends readonly ScopedState[] = readonly [],
     O = unknown,
-    Ms extends Middleware<S & ScopedOf<G, P>>[] = Middleware<S & ScopedOf<G, P>>[]
+    Ms extends ScopedMs<S, G, P> = ScopedMs<S, G, P>
   >(
     app: App<S, R, G>,
     method: M,
     pattern: P,
-    ...chain: [...Ms, Handler<ParamsOf<P>, S & ScopedOf<G, P> & StateOf<Ms>, O>]
+    ...chain: LiteralChainTail<P, S, G, Ms, O>
   ): App<S, [...R, RouteDefEntry<Uppercase<M>, P, Ms, O>]>;
   <
     S extends State = State,
@@ -619,7 +673,7 @@ export type AddRoute = {
     app: App<S, R, G>,
     method: M,
     pattern: string,
-    ...chain: [...Ms, Handler<Params, S & StateOf<Ms>, O>]
+    ...chain: DynChainTail<S, Ms, O>
   ): App<S, [...R, RouteDefEntry<Uppercase<M>, string, Ms, O>]>;
 };
 
@@ -645,14 +699,14 @@ type BuilderMethod<
   <
     P extends string,
     O = unknown,
-    Ms extends Middleware<S & ScopedOf<G, P>>[] = Middleware<S & ScopedOf<G, P>>[]
+    Ms extends ScopedMs<S, G, P> = ScopedMs<S, G, P>
   >(
     pattern: P,
-    ...chain: [...Ms, Handler<ParamsOf<P>, S & ScopedOf<G, P> & StateOf<Ms>, O>]
+    ...chain: LiteralChainTail<P, S, G, Ms, O>
   ): RoutesBuilder<S, [...R, RouteDefEntry<M, P, Ms, O>], G>;
   <O = unknown, Ms extends Middleware<S>[] = Middleware<S>[]>(
     pattern: string,
-    ...chain: [...Ms, Handler<Params, S & StateOf<Ms>, O>]
+    ...chain: DynChainTail<S, Ms, O>
   ): RoutesBuilder<S, [...R, RouteDefEntry<M, string, Ms, O>], G>;
 };
 
@@ -686,11 +740,7 @@ export type RoutesBuilder<
     <Prefix extends string, Ms extends Middleware<S>[]>(
       prefix: Prefix,
       ...middlewares: Ms
-    ): RoutesBuilder<
-      S & (Prefix extends '' | '/' ? StateOf<Ms> : unknown),
-      R,
-      Prefix extends '' | '/' ? G : ScopedPush<G, Prefix, StateOf<Ms>>
-    >;
+    ): RoutesBuilder<PrefixedState<S, Prefix, Ms>, R, PrefixedScoped<G, Prefix, Ms>>;
     (prefixOrMiddleware: string | Middleware<S>, ...middlewares: Middleware<S>[]): RoutesBuilder<
       S,
       R,

@@ -20,6 +20,8 @@
  * @internal
  */
 
+import { collectStream } from './bytes';
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -67,23 +69,12 @@ function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
   });
 }
 
+/** Collects a stream into a fresh buffer — always copies
+ * (`copySingle: true`), because a materialized light body must never
+ * alias its source chunk: the bytes are cached and replayed, so mutation
+ * through one reference must not corrupt another. */
 async function collect(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    size += value.byteLength;
-  }
-  const out = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
+  return collectStream(stream, { copySingle: true });
 }
 
 /**

@@ -36,6 +36,7 @@ import {
   type RouteMeta,
 } from './meta';
 import { toJsonSchema, type SerializeSchema } from './serialize';
+import { appendQuery, fillSegments } from './pattern-fill';
 
 /**
  * Protocol revisions this handler negotiates. `2025-06-18` is the newest
@@ -250,44 +251,40 @@ function bodyOf(
 
 /**
  * Builds the HTTP request one tool call stands for, or `undefined` when
- * a required path argument is missing (`-32602`). Path values are
- * percent-encoded per segment; declared query names are collected into
- * the query string (arrays repeat the key, `null`/absent skip); the body
- * annotation's keys ride as JSON whenever the method may carry one —
- * GET/HEAD never do, and `ALL` routes are invoked as GET.
+ * a required path argument is missing (`-32602`). The shared pattern
+ * fill (`pattern-fill`) encodes each capture per segment — wildcards
+ * piecewise, so a multi-segment capture like `'a/b'` builds
+ * `/files/a/b`, the canonical browser-shaped URL (the router decodes
+ * both that and the old packed `/files/a%2Fb` to the same capture).
+ * Declared query names are collected into the query string (arrays
+ * repeat the key, `null`/absent skip); the body annotation's keys ride
+ * as JSON whenever the method may carry one — GET/HEAD never do, and
+ * `ALL` routes are invoked as GET.
  */
 function invocationRequest(
   route: Route,
   meta: RouteMeta | undefined,
   args: Record<string, unknown>
 ): Request | undefined {
-  const parts: string[] = [];
-  for (const segment of route.segments) {
-    if (segment._tag === 'static') {
-      parts.push(segment.value);
-      continue;
-    }
-    const value = args[segment.name];
-    if (value === undefined || value === null) {
-      if (segment._tag === 'param' && segment.optional) continue;
-      return undefined;
-    }
-    parts.push(encodeURIComponent(String(value)));
+  const filled = fillSegments(route.segments, (name) => {
+    const value = args[name];
+    return value === undefined || value === null ? undefined : String(value);
+  });
+  if (filled === undefined) {
+    return undefined;
   }
   const search = new URLSearchParams();
   if (meta?.query !== undefined) {
-    for (const name of Object.keys(meta.query)) {
-      const value = args[name];
-      if (value === undefined || value === null) continue;
-      if (Array.isArray(value)) {
-        for (const item of value) search.append(name, String(item));
-      } else {
-        search.append(name, String(value));
-      }
-    }
+    appendQuery(
+      search,
+      Object.keys(meta.query).map((name) => [name, args[name]] as const),
+      { skipNull: true }
+    );
   }
   const method = route.method === 'ALL' ? 'GET' : route.method;
-  const path = `/${parts.join('/')}`;
+  // The root pattern (`[]`) fills to '' — its request still names the
+  // root path.
+  const path = filled === '' ? '/' : filled;
   const qs = search.toString();
   const url = qs === '' ? `http://localhost${path}` : `http://localhost${path}?${qs}`;
   const headers = new Headers();

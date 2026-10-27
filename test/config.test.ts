@@ -154,6 +154,33 @@ describe('parseEnv', function () {
   it('reports the line of the fault, not line 1', function () {
     envError('A=1\nB=2\nnope here').message.should.contain('line 3');
   });
+
+  it('lenient mode skips every malformed line shape instead of throwing', function () {
+    const badLines = [
+      'JUST_A_KEY',
+      '=value',
+      'FOO BAR=1',
+      'export',
+      'KEY="unterminated',
+      "KEY='unterminated",
+    ];
+    for (const bad of badLines) {
+      // Same bodies the strict tests above reject: lenient drops only the
+      // bad line — the surrounding well-formed lines still parse.
+      parseEnv(`A=1\n${bad}\nB=2`, { lenient: true }).should.deep.equal({
+        A: '1',
+        B: '2',
+      });
+    }
+  });
+
+  it('lenient mode applies the full strict syntax to the lines it keeps', function () {
+    parseEnv('nope\nexport A=1\nB=v # note\nC="x\\ty"', { lenient: true }).should.deep.equal({
+      A: '1',
+      B: 'v',
+      C: 'x\ty',
+    });
+  });
 });
 
 // ---- createConfig ----

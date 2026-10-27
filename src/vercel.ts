@@ -13,9 +13,7 @@
 
 import type { App } from './app';
 
-import { handle } from './app';
-import { hasFinishers, trackFinish } from './finish';
-import { signalInit } from './signal';
+import { edgeFetch } from './finish';
 
 /** The web-handler shape Vercel invokes — `export default` it from a file
  * under `api/`. */
@@ -23,15 +21,12 @@ export type VercelHandler = (request: Request) => Promise<Response>;
 
 /** Builds the web handler for an app. */
 export function createVercelHandler(app: App): VercelHandler {
-  return (request) =>
-    // The runtime's request signal (client disconnect on the Edge Runtime)
-    // threads into ctx.signal — feature-detected, absent signals fall back
-    // to the shared never-aborted default. No write-completion event
-    // exists, so onFinish rides the response body when callbacks exist,
-    // as on Cloudflare Workers: cancel → aborted, completion → finished.
-    handle(app, request, signalInit(request)).then((response) =>
-      hasFinishers(request)
-        ? trackFinish(request, response, app.logError)
-        : response
-    );
+  // The runtime's request signal (client disconnect on the Edge Runtime)
+  // threads into ctx.signal — feature-detected inside edgeFetch, absent
+  // signals fall back to the shared never-aborted default. No
+  // write-completion event exists, so onFinish rides the response body
+  // when callbacks exist, as on Cloudflare Workers: cancel → aborted,
+  // completion → finished. The composition is finish.ts's shared
+  // edgeFetch.
+  return (request) => edgeFetch(app, request);
 }

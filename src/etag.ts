@@ -18,22 +18,19 @@ import type { Ctx, Middleware } from './types';
 
 import { LightResponse } from './light';
 import { newResponse } from './respond';
+import { toHex } from './crypto-util';
 
 export type EtagOptions = {
   /** Emit a strong entity tag instead of the default weak one. */
   readonly strong?: boolean;
 };
 
-function hex(bytes: Uint8Array): string {
-  let out = '';
-  for (const byte of bytes) {
-    out += byte.toString(16).padStart(2, '0');
-  }
-  return out;
-}
-
-/** Weak comparison per RFC 9110 §8.8.3: the `W/` prefix is insignificant. */
-function tagMatches(ifNoneMatch: string, tag: string): boolean {
+/** Weak comparison per RFC 9110 §8.8.3: the `W/` prefix is insignificant.
+ * Shared with `s200/static`'s `If-None-Match` handling so the two
+ * validator implementations cannot drift.
+ *
+ * @internal */
+export function etagMatches(ifNoneMatch: string, tag: string): boolean {
   const expected = tag.startsWith('W/') ? tag.slice(2) : tag;
   return ifNoneMatch.split(',').some((candidate) => {
     const value = candidate.trim();
@@ -67,11 +64,11 @@ export function etag(options: EtagOptions = {}): Middleware {
         : null;
     const bytes = source ?? new Uint8Array(await res.arrayBuffer());
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', bytes));
-    const tag = `${prefix}"${hex(digest)}"`;
+    const tag = `${prefix}"${toHex(digest)}"`;
     const headers = new Headers(res.headers);
     headers.set('etag', tag);
     const ifNoneMatch = ctx.req.headers.get('if-none-match');
-    if (ifNoneMatch !== null && tagMatches(ifNoneMatch, tag)) {
+    if (ifNoneMatch !== null && etagMatches(ifNoneMatch, tag)) {
       // RFC 9110 §15.4.5: the 304 omits content-length — the copied header
       // carries the would-be size, and s200's contract is omission.
       headers.delete('content-length');

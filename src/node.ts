@@ -22,8 +22,10 @@ import { Readable, type Duplex } from 'node:stream';
 import { LightHeaders, LightRequest, LightResponse, setCachedUrl } from './light';
 
 import { handle } from './app';
-import { createRealPathGuardWith } from './fs-containment';
+import { createRealPathGuardWith, MISSING_FILE_CODES } from './fs-containment';
 import { runFinish } from './finish';
+import { rawHeaderPairs } from './raw-headers';
+import { isSafeHost } from './safe-host';
 
 
 /** Any server the adapter can return: HTTP/1.1, HTTPS, or HTTP/2-over-TLS. */
@@ -194,10 +196,6 @@ type ResponseLike = {
   readonly writableEnded: boolean;
   destroy(): unknown;
 };
-
-// "Path does not point at a readable file". Anything else (EACCES, EMFILE,
-// ...) still rejects so real failures are not masked as 404s.
-const MISSING_FILE_CODES = ['ENOENT', 'ENOTDIR', 'EISDIR'];
 
 export async function serve(
   app: App,
@@ -431,13 +429,10 @@ async function dispatch(
   }
 }
 
-/** Host(-like) header characters that are legal inside an `http://`
- * authority: alphanumerics, `.`, `-`, `:` (port), `[`/`]` (IPv6 literals).
- * A crafted Host — `evil.com/a`, `a b`, `u@h`, `x#y`, percent-escapes, or
- * an empty value — must not flow into the request URL: it could pollute
- * the parsed pathname or make the URL unparseable. Anything outside the
- * set falls back to `localhost`. */
-const SAFE_HOST = /^[A-Za-z0-9.[\]:-]+$/;
+/** Host(-like) header validation is shared with the Lambda adapter in
+ * `safe-host.ts`: the character allowlist plus the URL-parse gate (a
+ * regex-legal but unparseable host — `[`, a port above 65535 — falls back
+ * to `localhost` instead of poisoning the request URL). */
 
 function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Request {
   // http2 compat requests expose `:authority` where http1 exposes `host`.
@@ -446,8 +441,7 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
   ];
   const candidate =
     req.headers.host ?? (typeof authority === 'string' ? authority : undefined);
-  const host =
-    candidate !== undefined && SAFE_HOST.test(candidate) ? candidate : 'localhost';
+  const host = isSafeHost(candidate) ? candidate : 'localhost';
   const url = `http://${host}${req.url ?? '/'}`;
   const method = req.method ?? 'GET';
   if (light) {
@@ -470,20 +464,10 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
     setCachedUrl(request as unknown as Request, new URL(url));
     return request as unknown as Request;
   }
-  // rawHeaders keeps the wire order, so duplicated headers survive as pairs
-  // instead of being pre-merged by node's parsed view. http2 compat
-  // requests surface ':method'/':path'/... pseudo-headers here too — the
-  // Request constructor rejects them as header names, so they are dropped.
-  const headerPairs: [string, string][] = [];
-  const raw = req.rawHeaders;
-  for (let i = 0; i + 1 < raw.length; i += 2) {
-    const name = raw[i];
-    const value = raw[i + 1];
-    if (name === undefined || value === undefined || name.startsWith(':')) {
-      continue;
-    }
-    headerPairs.push([name, value]);
-  }
+  // rawHeaders in wire order with pseudo-headers dropped — the shared
+  // mapping in raw-headers.ts (duplicates survive as pairs; the Request
+  // constructor rejects the ':' names http2 compat requests surface).
+  const headerPairs = rawHeaderPairs(req.rawHeaders);
   const init: RequestInit & { duplex?: 'half' } = {
     method,
     headers: headerPairs,
@@ -544,7 +528,9 @@ async function writeResponse(
   }
   if (response instanceof LightResponse) {
     // Light fast path: byte-backed bodies skip the reader loop entirely —
-    // write the bytes straight to the socket.
+    // write the bytes straight to the socket. A null body (204/304, a HEAD
+    // rebuild, an empty light response) falls through to the shared
+    // empty-body branch below.
     const bytes = response.bytesSync();
     if (bytes !== null) {
       res.writeHead(response.status, response.statusText, headers);
@@ -558,12 +544,9 @@ async function writeResponse(
       res.end();
       return;
     }
-    if (response.body === null) {
-      res.writeHead(response.status, response.statusText, headers);
-      res.end();
-      return;
-    }
   }
+  // Null body on either path (light or plain): the header write alone
+  // completes the response.
   if (response.body === null) {
     res.writeHead(response.status, response.statusText, headers);
     res.end();
@@ -633,6 +616,17 @@ export async function brotliCompress(bytes: Uint8Array): Promise<Uint8Array> {
  */
 const STREAM_THRESHOLD = 16 * 1024 * 1024;
 
+// "Miss or throw": only the shared missing-file codes (fs-containment's
+// MISSING_FILE_CODES) read as a miss — anything else (EACCES, EMFILE, …)
+// rethrows so a real IO failure is not masked as a 404.
+const missOrNull = (error: unknown): null => {
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+    return null;
+  }
+  throw error;
+};
+
 /**
  * Whole-file reader with safe defaults. Containment first: the resolved
  * real path must stay under `root` (the adapter's own
@@ -681,11 +675,7 @@ export function createFileReader(
       if (info.isDirectory()) return null;
       size = info.size;
     } catch (error) {
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-        return null;
-      }
-      throw error;
+      return missOrNull(error);
     }
     if (size > streamThreshold) {
       return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
@@ -693,11 +683,7 @@ export function createFileReader(
     try {
       return await readFile(file);
     } catch (error) {
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-        return null;
-      }
-      throw error;
+      return missOrNull(error);
     }
   };
 }
@@ -724,11 +710,7 @@ export function createFileStat(
       }
       return { size: info.size, mtimeMs: info.mtimeMs };
     } catch (error) {
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-        return null;
-      }
-      throw error;
+      return missOrNull(error);
     }
   };
 }
@@ -759,11 +741,7 @@ export function createFileRangeReader(
     try {
       if ((await stat(file)).isDirectory()) return null;
     } catch (error) {
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-        return null;
-      }
-      throw error;
+      return missOrNull(error);
     }
     return Readable.toWeb(
       createReadStream(file, { start, end })

@@ -1,5 +1,6 @@
 import type { Ctx } from './types';
 
+import { concatBytes } from './bytes';
 import { httpError } from './errors';
 import { neverSignal } from './signal';
 
@@ -124,13 +125,10 @@ async function readLimited(
     }
     chunks.push(value);
   }
-  const out = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out.buffer;
+  // Concatenation is the shared helper; the loop above stays local
+  // because the 413 check and the abort race are this function's own
+  // contract.
+  return concatBytes(chunks, size).buffer;
 }
 
 function cacheFor(ctx: Ctx, limit: number | undefined): BufferedCache {

@@ -132,7 +132,7 @@ s200 dev ./app.ts --port 3000 --overlay
 | `--port N` | 监听端口（默认 `$PORT` 或 `3000`；`0` 选一个空闲端口） |
 | `--host H` | 监听主机，转发给 `serve`（默认：所有网络接口） |
 | `--watch DIR` | 额外监听的重载目录 —— 可重复；入口所在目录始终被监听，`--watch` 目录追加在 `RunDevOptions.watchDirs` 之后 |
-| `--env-file FILE` | dotenv 风格文件（`KEY=VALUE` 行，两侧空白修剪，跳过 `#` 注释与空行，成对的单/双引号值去引号），在**入口模块图被导入之前**载入 `process.env` —— 可重复；文件缺失是点名该路径的硬错误。`process.env` 中已有的变量**优先**于文件，与 `node --env-file` 语义一致（环境变量不会被文件覆盖） |
+| `--env-file FILE` | dotenv 风格文件，由 `parseEnv` 宽松模式解析（`s200/config`：`KEY=VALUE` 行、`export` 前缀、带转义的引号值、行尾 `#` 注释；畸形行跳过而非致命），在**入口模块图被导入之前**载入 `process.env` —— 可重复；文件缺失是点名该路径的硬错误。`process.env` 中已有的变量**优先**于文件，与 `node --env-file` 语义一致（环境变量不会被文件覆盖） |
 | `--no-hints` | 关闭 404 路由提示中间件（默认开启） |
 | `--overlay` | 开启浏览器错误 overlay（默认关闭） |
 

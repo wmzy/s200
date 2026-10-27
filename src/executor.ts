@@ -317,16 +317,25 @@ const onWorkerMessage = (unit: Unit, worker: Worker, message: WorkerOut): void =
   }
 };
 
+/** One failed-exit path for both unit kinds: bump the restart counter,
+ * flip to 'failed', keep the FIRST error of the incident (a later exit
+ * during recovery must not overwrite the original cause), double the
+ * backoff, then arm the restart — last, so the timer reads the new
+ * backoff. */
+const markFailed = (unit: Unit, message: string): void => {
+  unit.restarts += 1;
+  unit.state = 'failed';
+  unit.lastError ??= message;
+  unit.backoffMs = nextBackoff(unit.backoffMs);
+  scheduleRestart(unit);
+};
+
 const onWorkerExit = (unit: Unit, code: number): void => {
   unit.worker = undefined;
   unit.relayPort = undefined;
   if (unit.stopping) {
     return;
   }
-  unit.restarts += 1;
-  unit.state = 'failed';
-  unit.lastError ??= 'worker exited unexpectedly (code ' + code + ')';
-  unit.backoffMs = nextBackoff(unit.backoffMs);
   // Sockets still parked here were never adopted (the worker died before
   // or without a hand-off) — destroy them so their clients fail fast
   // instead of hanging on a socket nobody will ever read. Relayed sockets
@@ -336,10 +345,12 @@ const onWorkerExit = (unit: Unit, code: number): void => {
   }
   if (unit.server === undefined) {
     // The dead worker owned the public port (transfer mode); re-bind it
-    // immediately so the port answers during the backoff window.
+    // immediately so the port answers during the backoff window. The
+    // listener's async 'listening' callback runs after markFailed below,
+    // so it still sees (and overwrites) the 'failed' state.
     void bindThreadListener(unit);
   }
-  scheduleRestart(unit);
+  markFailed(unit, 'worker exited unexpectedly (code ' + code + ')');
 };
 
 const scheduleRestart = (unit: Unit): void => {
@@ -404,14 +415,19 @@ const spawnProcessUnit = (unit: Unit, onSettled?: () => void): void => {
     if (unit.stopping) {
       return;
     }
-    unit.restarts += 1;
-    unit.state = 'failed';
-    unit.lastError ??=
-      'process exited unexpectedly (code ' + String(code) + ' signal ' + String(signal) + ')' +
-      (stderrTail !== '' ? ': ' + stderrTail : '');
-    unit.backoffMs = nextBackoff(unit.backoffMs);
+    // Release start()'s settle gate first — its continuation runs as a
+    // microtask after this handler, so it already observes the 'failed'
+    // state markFailed sets synchronously below.
     settle();
-    scheduleRestart(unit);
+    markFailed(
+      unit,
+      'process exited unexpectedly (code ' +
+        String(code) +
+        ' signal ' +
+        String(signal) +
+        ')' +
+        (stderrTail !== '' ? ': ' + stderrTail : '')
+    );
   });
 };
 

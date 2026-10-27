@@ -54,7 +54,7 @@ The JSON-RPC surface:
 | --- | --- |
 | `initialize` | Echoes the client's `protocolVersion` when it is one of the supported revisions, otherwise answers with the latest; `capabilities: { tools: {} }` and `serverInfo` ride along |
 | `tools/list` | The manifest's `tools`, no pagination |
-| `tools/call` | Resolves `params.name` against the manifest, rebuilds the route's request — path filled from arguments (percent-encoded per segment), declared query names collected into the query string (arrays repeat the key), the body annotation's keys picked back out of the flattened arguments and sent as JSON — then runs it through `handle`. The reply is `{ content: [{ type: 'text', text }], isError: status >= 400 }` |
+| `tools/call` | Resolves `params.name` against the manifest, rebuilds the route's request — path filled from arguments (percent-encoded per segment; wildcard values encode piecewise, so `/` stays a separator — s200/client's policy), declared query names collected into the query string (arrays repeat the key), the body annotation's keys picked back out of the flattened arguments and sent as JSON — then runs it through `handle`. The reply is `{ content: [{ type: 'text', text }], isError: status >= 400 }` |
 | notifications (no `id`) | `202 Accepted`, empty body |
 | anything else | `-32601` Method not found |
 

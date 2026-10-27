@@ -8,7 +8,7 @@
  */
 
 import type { App } from './app';
-import type { Ctx, Params, State } from './types';
+import type { Ctx, ErrorHandler, Params, State } from './types';
 
 import { isHttpError, toErrorResponse } from './errors';
 import { adoptResponse, drainPendingHeaders } from './respond';
@@ -35,6 +35,33 @@ function defaultLogError(error: unknown, ctx: Ctx): void {
     error,
     ...(cause !== undefined ? [cause] : [])
   );
+}
+
+/**
+ * Runs one `onError` policy — the step every error boundary shares (the
+ * app-level mapping below and `mount`'s route-scoped boundary). Resolves
+ * `'wrote'` when the handler adopted a response (pending deferred headers
+ * drained onto it — the adoption bypassed `newResponse`), `'declined'`
+ * when it wrote nothing. A crashing handler rejects; each caller decides
+ * its own degradation (the app-level mapping falls back to the default
+ * mapping, a mounted boundary lets the parent's policy answer).
+ *
+ * @internal
+ */
+export async function runOnError<S extends State = State>(
+  onError: ErrorHandler<S>,
+  ctx: Ctx<Params, S>,
+  error: unknown
+): Promise<'wrote' | 'declined'> {
+  await onError(ctx, error);
+  if (ctx.res === undefined) {
+    return 'declined';
+  }
+  // The handler wrote its response raw — headers deferred onto this ctx
+  // still ride it. Idempotent if the write already went through a respond
+  // helper: draining clears the pending map.
+  drainPendingHeaders(ctx, ctx.res);
+  return 'wrote';
 }
 
 /**
@@ -69,16 +96,15 @@ export async function mapError<S extends State = State>(
     adoptResponse(ctx, toErrorResponse(error));
   } else {
     try {
-      await app.onError(ctx, error);
+      await runOnError(app.onError, ctx, error);
     } catch (handlerError) {
       // A crashing error handler is itself a failure — default mapping.
       adoptResponse(ctx, toErrorResponse(handlerError));
     }
   }
-  // An onError that wrote its response raw bypassed newResponse — headers
-  // deferred onto this ctx still ride it; the default-mapping adoptions
-  // above already drained.
-  if (ctx.res !== undefined) {
-    drainPendingHeaders(ctx, ctx.res);
-  }
+  // No trailing drain here: every path above already drained — the
+  // default-mapping and crash-fallback adoptions drain inside
+  // `adoptResponse`, and a successful `runOnError` drains the response it
+  // adopted. The old belt-and-braces re-drain was fully redundant
+  // (`drainPendingHeaders` clears the pending map, so it is idempotent).
 }

@@ -38,6 +38,8 @@ import { STATUS_CODES } from 'node:http';
 import { createHash } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
+import { rawHeaderPairs } from './raw-headers';
+
 import {
   createWsSession,
   createWsSocket,
@@ -178,15 +180,11 @@ function acceptUpgrade(
 
   // Request-shaped context source: params/query/url as an HTTP handler
   // would see them. rawHeaders keeps duplicate headers instead of node's
-  // merged view.
-  const headers = new Headers();
-  for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
-    const name = req.rawHeaders[i];
-    const value = req.rawHeaders[i + 1];
-    if (name !== undefined && value !== undefined) {
-      headers.append(name, value);
-    }
-  }
+  // merged view (raw-headers.ts's shared mapping). The pseudo-header drop
+  // inside it is a no-op on this path — HTTP/1.1 upgrades carry no
+  // ':'-prefixed names — but keeps the adapters building headers through
+  // the same helper.
+  const headers = new Headers(rawHeaderPairs(req.rawHeaders));
   const request = new Request(url, { method: req.method ?? 'GET', headers });
 
   // The middleware chain (app's own, then the route's) decides BEFORE the

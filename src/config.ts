@@ -37,15 +37,18 @@ const DOUBLE_ESCAPES: Readonly<Record<string, string>> = {
  * Reads a quoted value starting at `text[0]` (the opening quote) and
  * returns its content; whatever follows the closing quote on that line is
  * ignored. Double quotes honor {@link DOUBLE_ESCAPES}; single quotes are
- * fully literal (a backslash is just a backslash). A quote that never
- * closes on its own line throws — multi-line values are unsupported.
+ * literal (a backslash is just a backslash). A quote that never closes on
+ * its own line is malformed — multi-line values are unsupported: strict
+ * mode (the default) throws, lenient mode returns `undefined` so the
+ * caller skips the line.
  */
 function readQuoted(
   text: string,
   quote: '"' | "'",
   lineNo: number,
-  rawLine: string
-): string {
+  rawLine: string,
+  lenient: boolean
+): string | undefined {
   let value = '';
   for (let i = 1; i < text.length; i++) {
     const ch = text.charAt(i);
@@ -67,6 +70,9 @@ function readQuoted(
       continue;
     }
     value += ch;
+  }
+  if (lenient) {
+    return undefined; // caller drops the line, dotenv-style
   }
   throw new Error(
     `unterminated ${quote === '"' ? 'double' : 'single'} quote on .env line ${String(lineNo + 1)}: ${rawLine}`
@@ -103,12 +109,20 @@ function commentIndex(text: string): number {
  * and the whole of anything after a closing quote on the same line is
  * ignored (`K="v" # note` is just `v`).
  *
- * Malformed input is a programmer error, so it throws one `Error` (with a
- * 1-based line number and the offending line) instead of silently
- * skipping: a line without `=`, an empty key, whitespace inside a key, or
- * an unterminated quote.
+ * Malformed input is a programmer error, so by default it throws one
+ * `Error` (with a 1-based line number and the offending line) instead of
+ * silently skipping: a line without `=`, an empty key, whitespace inside
+ * a key, or an unterminated quote. Pass `{ lenient: true }` to skip those
+ * lines instead — dotenv leniency for files the program didn't author
+ * (the mode `s200 dev --env-file` reads user dotenv files in): the
+ * malformed line is dropped and every well-formed line around it still
+ * parses.
  */
-export function parseEnv(text: string): Record<string, string> {
+export function parseEnv(
+  text: string,
+  options?: { readonly lenient?: boolean }
+): Record<string, string> {
+  const lenient = options?.lenient === true;
   const out: Record<string, string> = {};
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
@@ -126,16 +140,27 @@ export function parseEnv(text: string): Record<string, string> {
     const eq = body.indexOf('=');
     if (eq < 1) {
       // -1: no separator at all; 0: nothing before it.
+      if (lenient) {
+        continue; // dotenv-style: skip the malformed line, keep the rest
+      }
       throw new Error(`invalid .env line ${String(i + 1)}: ${rawLine}`);
     }
     const key = body.slice(0, eq).trim();
     if (key === '' || /\s/.test(key)) {
+      if (lenient) {
+        continue;
+      }
       throw new Error(`invalid .env line ${String(i + 1)}: ${rawLine}`);
     }
     const value = body.slice(eq + 1).trimStart();
     const quote = value.charAt(0);
     if (quote === '"' || quote === "'") {
-      out[key] = readQuoted(value, quote, i, rawLine);
+      const quoted = readQuoted(value, quote, i, rawLine, lenient);
+      // `undefined` only in lenient mode (unterminated quote): the line
+      // is skipped rather than stored with a half-read value.
+      if (quoted !== undefined) {
+        out[key] = quoted;
+      }
       continue;
     }
     const hash = commentIndex(value);

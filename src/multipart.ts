@@ -31,6 +31,7 @@
 import type { Ctx } from './types';
 
 import { readStream } from './body';
+import { concatBytes } from './bytes';
 import { httpError } from './errors';
 
 /** One parsed form field: name plus (for file parts) client metadata and
@@ -96,19 +97,6 @@ function indexOfBytes(
     if (k === needle.length) return i;
   }
   return -1;
-}
-
-function concatParts(
-  chunks: readonly Uint8Array[],
-  length: number
-): Uint8Array {
-  const out = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
 }
 
 /** Splits a parameter list on `;` while honoring quoted strings (a `;`
@@ -395,7 +383,7 @@ async function scanForm(
             name,
             ...(filename !== undefined ? { filename } : {}),
             ...(contentType !== undefined ? { contentType } : {}),
-            data: concatParts(partChunks, partLen),
+            data: concatBytes(partChunks, partLen),
           };
           await onPart(part);
           carry = carry.subarray(follow.next);

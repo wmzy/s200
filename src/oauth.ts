@@ -17,7 +17,7 @@
  */
 
 import { httpError } from './errors';
-import { b64urlEncode } from './crypto-util';
+import { b64Encode, b64urlEncode } from './crypto-util';
 
 /** RFC 7636 §4.2 S256: base64url(SHA-256(verifier)). */
 async function s256(text: string): Promise<string> {
@@ -145,8 +145,11 @@ async function postTokenGrant(
     'content-type': 'application/x-www-form-urlencoded',
   };
   if (options.clientSecret !== undefined) {
+    // RFC 7617 §2: Basic's credentials are standard RFC 4648 §4 base64
+    // (`+` `/`, padded) — NOT the url-safe alphabet, whose `-`/`_` and
+    // stripped `=` would corrupt credentials at strict IdPs.
     const encoded = new TextEncoder().encode(`${options.clientId}:${options.clientSecret}`);
-    headers.authorization = `Basic ${b64urlEncode(encoded)}`;
+    headers.authorization = `Basic ${b64Encode(encoded)}`;
   } else {
     body.set('client_id', options.clientId);
   }

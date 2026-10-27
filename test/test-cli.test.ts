@@ -199,6 +199,8 @@ describe('runDev', () => {
       'S200_ENV_TEST_B',
       'S200_ENV_TEST_C',
       'S200_ENV_TEST_D',
+      'S200_ENV_TEST_E',
+      'S200_ENV_TEST_F',
     ];
     try {
       await writeFile(
@@ -211,6 +213,11 @@ describe('runDev', () => {
           "S200_ENV_TEST_C='single quoted'",
           '  S200_ENV_TEST_D = spaced  ',
           'no-equals-line',
+          // The shared parser (config's parseEnv, lenient) reads these
+          // where the old cli-only one ignored them.
+          'export S200_ENV_TEST_E=exported',
+          'S200_ENV_TEST_F=kept # trailing comment',
+          'S200_ENV_TEST_G="unterminated',
         ].join('\n')
       );
       process.env.S200_ENV_TEST_A = 'preexisting'; // node --env-file parity: the environment wins
@@ -227,6 +234,10 @@ describe('runDev', () => {
       seen.S200_ENV_TEST_B!.should.equal('double quoted');
       seen.S200_ENV_TEST_C!.should.equal('single quoted');
       seen.S200_ENV_TEST_D!.should.equal('spaced');
+      seen.S200_ENV_TEST_E!.should.equal('exported');
+      seen.S200_ENV_TEST_F!.should.equal('kept');
+      // Lenient parse: the unterminated-quote line is dropped, not fatal.
+      (seen.S200_ENV_TEST_G === undefined).should.equal(true);
       await dev.close();
     } finally {
       for (const key of keys) {

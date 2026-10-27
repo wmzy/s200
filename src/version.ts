@@ -18,6 +18,7 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
+import { withVary } from './compress';
 import { httpError } from './errors';
 
 export type ApiVersionOptions = {
@@ -42,20 +43,6 @@ export type ApiVersionOptions = {
    */
   readonly default?: string;
 };
-
-/** Appends `value` to Vary without duplicating it (compress's shape). */
-function withVary(headers: Headers, value: string): void {
-  const vary = headers.get('vary');
-  if (vary === null) {
-    headers.set('vary', value);
-    return;
-  }
-  if (
-    !vary.split(',').some((entry) => entry.trim().toLowerCase() === value.toLowerCase())
-  ) {
-    headers.set('vary', `${vary}, ${value}`);
-  }
-}
 
 /** The version a dedicated request header carries, blank values ignored. */
 function headerVersion(ctx: Ctx, header: string): string | undefined {

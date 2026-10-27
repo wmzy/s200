@@ -174,6 +174,35 @@ describe('compress', function () {
     // An unparseable q parameter is ignored — q stays 1.
     badQ.headers.get('content-encoding')!.should.equal('gzip');
   });
+
+  it('lets a later duplicate name override an earlier q', async function () {
+    const app = createApp();
+    use(app, compress());
+    get(app, '/', () => new Response('x'.repeat(4096)));
+    const up = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('gzip;q=0.5, gzip;q=0.8, deflate;q=0.6') }),
+    );
+    // The later gzip occurrence wins (0.8), outranking deflate's 0.6.
+    up.headers.get('content-encoding')!.should.equal('gzip');
+    const down = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept('gzip;q=0.8, gzip;q=0.5, deflate;q=0.6') }),
+    );
+    // Same rule, other direction: the later 0.5 demotes gzip below deflate.
+    down.headers.get('content-encoding')!.should.equal('deflate');
+  });
+
+  it('skips empty segments in the accept-encoding list', async function () {
+    const app = createApp();
+    use(app, compress());
+    get(app, '/', () => new Response('x'.repeat(4096)));
+    const res = await handle(
+      app,
+      new Request('http://localhost/', { headers: accept(' , gzip, , ') }),
+    );
+    res.headers.get('content-encoding')!.should.equal('gzip');
+  });
 });
 
 describe('compress brotli', () => {

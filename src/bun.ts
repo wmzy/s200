@@ -4,10 +4,8 @@ import type { StaticFileInfo } from './static';
 import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { handle } from './app';
-import { createRealPathGuardWith } from './fs-containment';
-import { hasFinishers, trackFinish } from './finish';
-import { signalInit } from './signal';
+import { createRealPathGuardWith, MISSING_FILE_CODES } from './fs-containment';
+import { edgeFetch } from './finish';
 
 // Module-scoped ambient surface of the global Bun runtime — exactly the
 // members used, so tsc needs no @types/bun dependency (the real Bun global
@@ -106,15 +104,14 @@ export function serve(app: App, options: BunServeOptions = {}): BunServer {
           return decided;
         }
       }
-      // Bun.serve does not reliably abort request.signal on client
-      // disconnect, so the adapter leans on the body stream instead: with
-      // onFinish callbacks registered, trackFinish wraps the response body
-      // — its cancel (client gone) or completion runs them exactly once.
-      // The request's own signal, when this Bun version provides one,
-      // still threads into ctx.signal.
-      return handle(app, request, signalInit(request)).then((response) =>
-        hasFinishers(request) ? trackFinish(request, response, app.logError) : response
-      );
+      // The shared edge composition (finish.ts's edgeFetch). Bun.serve
+      // does not reliably abort request.signal on client disconnect, so
+      // the adapter leans on the body stream instead: with onFinish
+      // callbacks registered, trackFinish wraps the response body — its
+      // cancel (client gone) or completion runs them exactly once. The
+      // request's own signal, when this Bun version provides one, still
+      // threads into ctx.signal.
+      return edgeFetch(app, request);
     },
     websocket: bridge?.websocket,
   });
@@ -167,8 +164,15 @@ export function createFileReader(
       // mid-stream — read it as a miss, like the node adapter.
       if (info.isDirectory()) return null;
       size = info.size;
-    } catch {
-      return null;
+    } catch (error) {
+      // Only a genuine miss (fs-containment's MISSING_FILE_CODES) reads as
+      // null — EACCES, EMFILE, … rethrow so a real IO failure is not
+      // masked as a 404 (the node adapter's shared policy).
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+        return null;
+      }
+      throw error;
     }
     const file = Bun.file(filePath);
     if (options.stream === true || size > streamThreshold) return file.stream();
@@ -193,8 +197,13 @@ export function createFileStat(
       const info = statSync(join(root, path));
       if (info.isDirectory()) return null;
       return { size: info.size, mtimeMs: info.mtimeMs };
-    } catch {
-      return null;
+    } catch (error) {
+      // Only a genuine miss reads as null — see createFileReader's catch.
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+        return null;
+      }
+      throw error;
     }
   };
 }
@@ -225,8 +234,13 @@ export function createFileRangeReader(
       // A directory (or a symlink to one) would start the 206 and then
       // reset the connection when the slice stream fails — miss instead.
       if (statSync(filePath).isDirectory()) return null;
-    } catch {
-      return null;
+    } catch (error) {
+      // Only a genuine miss reads as null — see createFileReader's catch.
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
+        return null;
+      }
+      throw error;
     }
     return Bun.file(filePath).slice(start, end + 1).stream();
   };

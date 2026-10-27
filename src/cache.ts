@@ -16,6 +16,7 @@
 import type { Ctx, Middleware } from './types';
 
 import { newResponse } from './respond';
+import { evictOldest } from './map-limit';
 
 export type CacheOptions = {
   /** Entry lifetime in seconds; default 60. */
@@ -69,12 +70,9 @@ function createMemoryStore(max: number) {
     },
     set(key: string, entry: CacheEntry): void {
       map.set(key, entry);
+      // evictOldest no-ops on an empty Map, so a max of 0 still terminates.
       while (map.size > max) {
-        const oldest = map.keys().next().value;
-        if (oldest === undefined) {
-          break;
-        }
-        map.delete(oldest);
+        evictOldest(map);
       }
     },
     delete(key: string): void {

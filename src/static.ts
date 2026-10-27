@@ -2,6 +2,7 @@ import type { Ctx, Middleware } from './types';
 
 import { redirect, send } from './respond';
 import { contentTypeFor } from './mime';
+import { etagMatches } from './etag';
 
 /** File metadata the static layer needs for conditional requests/ranges. */
 export type StaticFileInfo = {
@@ -212,11 +213,6 @@ function etagFor(info: StaticFileInfo): string {
   return `W/"${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}"`;
 }
 
-/** Weak-compares entity tags: the `W/` prefix is insignificant (RFC 9110). */
-function stripWeakPrefix(tag: string): string {
-  return tag.startsWith('W/') ? tag.slice(2) : tag;
-}
-
 /**
  * RFC 9110 §13.1.5: `If-Range` gates whether a `Range` header may be
  * honored. Only a strong entity-tag matching the current validator exactly,
@@ -251,11 +247,9 @@ function ifRangeAllows(
 function isNotModified(req: Request, info: StaticFileInfo): boolean {
   const inm = req.headers.get('if-none-match');
   if (inm !== null) {
-    const expected = stripWeakPrefix(etagFor(info));
-    return inm.split(',').some((candidate) => {
-      const value = candidate.trim();
-      return value === '*' || stripWeakPrefix(value) === expected;
-    });
+    // The weak compare lives in s200/etag — one RFC 9110 §8.8.3
+    // implementation shared by both validator surfaces.
+    return etagMatches(inm, etagFor(info));
   }
   const ims = req.headers.get('if-modified-since');
   if (ims !== null) {

@@ -54,7 +54,7 @@ JSON-RPC 面：
 | --- | --- |
 | `initialize` | 客户端的 `protocolVersion` 属于受支持版本时原样回显，否则回最新的受支持版本；附带 `capabilities: { tools: {} }` 与 `serverInfo` |
 | `tools/list` | 清单的 `tools`，不分页 |
-| `tools/call` | 用 `params.name` 反查清单，重建该路由的请求 —— 路径由参数填充（逐段 percent 编码）、声明的 query 名收进 query 串（数组重复键）、body 标注的键从扁平参数中取回并作为 JSON 发送 —— 再经 `handle` 运行。应答为 `{ content: [{ type: 'text', text }], isError: status >= 400 }` |
+| `tools/call` | 用 `params.name` 反查清单，重建该路由的请求 —— 路径由参数填充（逐段 percent 编码；通配值逐片编码，`/` 保持段分隔符 —— 与 s200/client 同一策略）、声明的 query 名收进 query 串（数组重复键）、body 标注的键从扁平参数中取回并作为 JSON 发送 —— 再经 `handle` 运行。应答为 `{ content: [{ type: 'text', text }], isError: status >= 400 }` |
 | 通知（无 `id`） | `202 Accepted`，空 body |
 | 其他 | `-32601` Method not found |
 

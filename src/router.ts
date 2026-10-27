@@ -13,6 +13,7 @@
  * @module
  */
 
+import type { RouteTableEntry } from './route-table';
 import type {
   Handler,
   MatchFn,
@@ -235,6 +236,54 @@ function hasOptional(segments: readonly Segment[]): boolean {
   return false;
 }
 
+/** The wildcard segment variant — the only one carrying a tail capture. */
+type WildcardSegment = Extract<Segment, { _tag: 'wildcard' }>;
+
+/**
+ * Captures a wildcard tail: everything from `parts[from]` on, decoded as
+ * one joined string (`''` when nothing remains — only a wildcard makes an
+ * empty tail legal). Shared by both matchers; `params` stays lazy — the
+ * bag is allocated here on first capture and handed back for the return.
+ */
+function takeWildcard(
+  segment: WildcardSegment,
+  parts: readonly string[],
+  from: number,
+  params: Params | undefined
+): Params {
+  const captured = params ?? {};
+  captured[segment.name] = decodePart(parts.slice(from).join('/'));
+  return captured;
+}
+
+/**
+ * One required segment (static or param) against one raw pathname part —
+ * the step both matchers share. Returns `false` on mismatch: the part is
+ * missing or empty (a trailing `/` or `//`, which strict matching rejects)
+ * or a static segment that disagrees. On a match returns the `params` bag
+ * to carry forward — passed straight through when the segment was static,
+ * allocated-and-filled when it was the first capture — so the callers keep
+ * the lazy-params property: no bag until something is captured, and no
+ * per-segment object churn on the non-optional path. Wildcards and
+ * optional params stay with the callers; their control flow differs (a
+ * tail return vs backtracking).
+ */
+function takeSegment(
+  segment: Exclude<Segment, WildcardSegment>,
+  part: string | undefined,
+  params: Params | undefined
+): Params | undefined | false {
+  if (part === undefined || part === '') {
+    return false;
+  }
+  if (segment._tag === 'static') {
+    return part === segment.value ? params : false;
+  }
+  const captured = params ?? {};
+  captured[segment.name] = decodePart(part);
+  return captured;
+}
+
 /**
  * Matches a parsed pattern against pathname parts. Strict: trailing slashes
  * are significant (`'/a/'` never matches `/a` — only a wildcard can produce
@@ -261,28 +310,13 @@ function matchParts(
     }
     if (segment._tag === 'wildcard') {
       // Zero remaining segments is still a match: the capture is ''.
-      if (params === undefined) {
-        params = {};
-      }
-      params[segment.name] = decodePart(parts.slice(i).join('/'));
-      return params;
+      return takeWildcard(segment, parts, i, params);
     }
-    const part = parts[i];
-    // A param must land on a real segment — an empty one comes from a
-    // trailing '/' or '//', which strict matching rejects.
-    if (part === undefined || part === '') {
+    const outcome = takeSegment(segment, parts[i], params);
+    if (outcome === false) {
       return undefined;
     }
-    if (segment._tag === 'static') {
-      if (part !== segment.value) {
-        return undefined;
-      }
-    } else {
-      if (params === undefined) {
-        params = {};
-      }
-      params[segment.name] = decodePart(part);
-    }
+    params = outcome;
   }
   // Every segment consumed — the pathname must be consumed exactly too
   // (rejects both trailing slashes and surplus path).
@@ -317,11 +351,7 @@ function matchPartsOptional(
       return params ?? {};
     }
     if (segment._tag === 'wildcard') {
-      if (params === undefined) {
-        params = {};
-      }
-      params[segment.name] = decodePart(parts.slice(j).join('/'));
-      return params;
+      return takeWildcard(segment, parts, j, params);
     }
     if (segment._tag === 'param' && segment.optional) {
       const part = parts[j];
@@ -341,20 +371,13 @@ function matchPartsOptional(
       // Consume failed (or there was nothing to consume): skip the param.
       return matchPartsOptional(segments, parts, i + 1, j, params);
     }
-    const part = parts[j];
-    if (part === undefined || part === '') {
+    // Static or required param: the shared one-required-segment step —
+    // `false` is the mismatch (empty/missing part or static disagreement).
+    const outcome = takeSegment(segment, parts[j], params);
+    if (outcome === false) {
       return undefined;
     }
-    if (segment._tag === 'static') {
-      if (part !== segment.value) {
-        return undefined;
-      }
-    } else {
-      if (params === undefined) {
-        params = {};
-      }
-      params[segment.name] = decodePart(part);
-    }
+    params = outcome;
     i += 1;
     j += 1;
   }
@@ -668,4 +691,27 @@ export function createMatcher(options: { strict?: boolean } = {}): MatchFn {
   const strict = options.strict ?? true;
   return (routes, method, pathname) =>
     matchRoutes(routes, method, pathname, strict);
+}
+
+/**
+ * @internal The plain-data view of one route for tables and shards:
+ * method, pattern, param names in capture order, and the route-middleware
+ * count — functions never ride along. route-table's renderer and shard's
+ * specs both derive their entries from this one function, so the two
+ * serializable views of "what is registered" cannot drift apart.
+ */
+export function routeEntryOf(route: Route): RouteTableEntry {
+  const params: string[] = [];
+  for (const segment of route.segments) {
+    // Only param/wildcard segments capture — static text carries no key.
+    if (segment._tag !== 'static') {
+      params.push(segment.name);
+    }
+  }
+  return {
+    method: route.method,
+    pattern: route.pattern,
+    params,
+    middlewareCount: route.middlewares.length,
+  };
 }

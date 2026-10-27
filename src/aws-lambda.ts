@@ -15,6 +15,7 @@ import type { App } from './app';
 
 import { handle } from './app';
 import { hasFinishers, runFinish } from './finish';
+import { isSafeHost } from './safe-host';
 
 /** An API Gateway HTTP API (payload v2) event — the structural subset the
  * adapter reads. Real events carry more (`routeKey`, `requestContext`
@@ -56,31 +57,11 @@ export type LambdaHandler = (
   context?: unknown
 ) => Promise<LambdaResultV2>;
 
-/** Host characters legal inside an `https://` authority: the vocabulary
- * `SAFE_HOST` in `src/node.ts` admits — alphanumerics, `.`, `-`, `:`
- * (port) and `[`/`]` (IPv6 literals). Kept in sync by hand on purpose:
- * importing the node adapter here would drag node-only code into a Lambda
- * bundle. A crafted Host — `evil.example/../admin`, `a b`, `u@h`, `x#y`,
- * percent-escapes, an empty value — must not reach the URL: a `/` moves
- * the pathname, and the rest either changes the parse or breaks it. */
-const SAFE_HOST = /^[A-Za-z0-9.[\]:-]+$/;
-
-/** Whether the `host` header may be interpolated into the URL authority:
- * {@link SAFE_HOST} keeps the path/query delimiters out, and the URL
- * parser rejects what the character set still admits but cannot parse
- * (`[`, a port above 65535, leading-zero IPv4 labels) — `new Request`
- * would throw on those. An absent or unsafe host falls back to
- * `localhost`, exactly like `toRequest` in `src/node.ts`. */
-function isSafeHost(host: string | undefined): host is string {
-  return (
-    host !== undefined &&
-    SAFE_HOST.test(host) &&
-    URL.canParse(`https://${host}/`)
-  );
-}
-
 /** The request URL: `https://` plus the validated host and the raw
- * path/query, both passed through un-re-encoded. */
+ * path/query, both passed through un-re-encoded. Host validation is the
+ * shared `isSafeHost` (safe-host.ts) — the same allowlist-plus-URL-parse
+ * gate `src/node.ts`'s toRequest uses, without dragging node-only code
+ * into the Lambda bundle. */
 function requestUrl(event: LambdaEventV2): string {
   const suffix =
     event.rawQueryString === ''
