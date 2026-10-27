@@ -197,6 +197,52 @@ export function multipartFormSchema(
   };
 }
 
+/**
+ * The error branches a route's `throws` gates declare, read off the live
+ * middleware chain: each gate's runtime `_errors` stash (status → example
+ * body — see `s200`'s `throws`) merges into one record. When two gates
+ * name the same status the later registration wins: the type layer unions
+ * body shapes, but example values cannot union, and the last declaration
+ * is the honest pick.
+ */
+export function throwsErrors(route: Route): Record<number, unknown> {
+  const merged: Record<number, unknown> = {};
+  for (const middleware of route.middlewares) {
+    const declared = (middleware as { readonly _errors?: unknown })._errors;
+    if (typeof declared !== 'object' || declared === null) continue;
+    for (const [status, example] of Object.entries(
+      declared as Readonly<Record<string, unknown>>
+    )) {
+      const code = Number(status);
+      if (Number.isInteger(code) && code >= 100 && code <= 599) {
+        merged[code] = example;
+      }
+    }
+  }
+  return merged;
+}
+
+/**
+ * A collision-free name for `base` among `taken` (a set of taken names or
+ * a name-keyed map): `base` itself when free, else `base_2`, `base_3`, …
+ * — suffixes start at 2 so the bare base stays suffix-free. The one dedup
+ * rule shared by `s200/openapi`'s schema names, `s200/codegen`'s method
+ * names, and `s200/mcp`'s tool names; callers add the returned name to
+ * their own taken container.
+ */
+export function uniqueName(
+  base: string,
+  taken: ReadonlySet<string> | ReadonlyMap<string, unknown>
+): string {
+  let name = base;
+  let n = 2;
+  while (taken.has(name)) {
+    name = `${base}_${n}`;
+    n += 1;
+  }
+  return name;
+}
+
 // Stored beside the app, never on it: importing s200/meta is the only way
 // metadata exists (same pattern as s200/websocket's registry).
 const routeMeta = new WeakMap<Route, RouteMeta>();

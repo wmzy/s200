@@ -12,6 +12,9 @@ json<T, S>(ctx, data, init?): JsonResponse<T, S>    // JSON.stringify + content-
 text<S>(ctx, body, init?): StatusedResponse<S>      // text/plain; charset=utf-8
 html<S>(ctx, body, init?): StatusedResponse<S>      // text/html; charset=utf-8 —— 不转义
 redirect<S>(ctx, location, status?): StatusedResponse<S>  // 默认 302
+stringResponse<S>(ctx, body, init?, fallbackContentType?): StatusedResponse<S>  // 共享的字符串体收尾
+adoptResponse(ctx, res): Response                   // ctx.res = res + 挂起头部随行
+jsonFallback(ctx | undefined, status, message, extraHeaders?): Response  // { error } 回退信封
 setHeader(ctx, name, value)                         // 直接写入；响应未物化时挂起
 setHeaders(ctx, { name: value })                    // 一次多个，按插入顺序
 resOf(ctx): Response                                // next() 之后读取 res，误用时点名抛错
@@ -29,7 +32,7 @@ drainPendingHeaders(ctx, res)                       // 低层钩子：见下
 
 注意：
 
-- 四个写字节的助手都显式设置 `content-length` —— 这是 `s200/etag` 与 `s200/compress` 依赖的契约（平台惰性序列化 content-length；裸 `new Response('…')` 不设置）。无主体状态豁免：`send` 在 1xx/204 上绝不宣告，304 则省略该头（RFC 9110 §15.4.5）——既不回显本应具有的大小，也不宣告 `0`。
+- 四个写字节的助手都显式设置 `content-length` —— 这是 `s200/etag` 与 `s200/compress` 依赖的契约（平台惰性序列化 content-length；裸 `new Response('…')` 不设置）。无主体状态对四者一体豁免，`jsonRaw` 亦然：1xx/204 一律不宣告，304 则省略该头（RFC 9110 §8.6/§15.4.5）——既不回显本应具有的大小，也不宣告 `0`。（`json`/`text`/`html` 携带此类状态码只在 light 路径上能完成构造 —— 平台 `Response` 拒绝在无主体状态码上携带 body。）
 - `json`/`text`/`html` 接受 `init.status` 并刻进品牌；`redirect` 的第三参数即状态。
 - `html` **不**转义 —— 用户输入先过 `escapeHtml`（对齐 `hono/html` 的显式转义契约）。
 
@@ -40,7 +43,7 @@ drainPendingHeaders(ctx, res)                       // 低层钩子：见下
 - **`await next()` 之后**响应必定已物化（处理器的、回退的或错误的 —— 链内全部就地物化）；头部直接落在它上面。
 - **响应尚未存在时**（中间件顶部、或 `onError` 内部）头部被挂起，盖印到请求首次物化的那个响应上 —— 处理器响应、`404`/`405`/`500` 回退或错误响应。挂起值覆盖响应自带的同名头部：中间件策略（`x-powered-by`、`cache-control`、安全头）胜过处理器构建的内容。
 
-`drainPendingHeaders(ctx, res)` 是该契约背后的低层 drain 钩子 —— `newResponse`、裸 `Response` 采用与错误映射都会调用它。绕过 `newResponse` 采用响应的电池/适配器作者也需要调用它；应用代码永远用不到。
+`drainPendingHeaders(ctx, res)` 是该契约背后的低层 drain 钩子 —— `newResponse`、裸 `Response` 采用与错误映射都会调用它。绕过 `newResponse` 采用响应的电池/适配器作者通常想要它的一步式形式 `adoptResponse(ctx, res)` —— 赋值 `ctx.res` 并顺带 drain；应用代码两者都用不到。
 
 ### next() 之后的收窄 {#post-next-narrowing}
 

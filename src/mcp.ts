@@ -31,6 +31,7 @@ import {
   isQueryRequired,
   multipartFormSchema,
   querySchemaOf,
+  uniqueName,
   type MultipartBody,
   type RouteMeta,
 } from './meta';
@@ -206,13 +207,7 @@ function compileTools(
   for (const route of app.routes) {
     const meta = getRouteMeta(route);
     if (meta === undefined && options.includeUnannotated !== true) continue;
-    const base = toolSlug(route.method, route.pattern);
-    let name = base;
-    let n = 2;
-    while (routes.has(name)) {
-      name = `${base}_${n}`;
-      n += 1;
-    }
+    const name = uniqueName(toolSlug(route.method, route.pattern), routes);
     routes.set(name, route);
     tools.push({ name, ...descriptionOf(meta, route), inputSchema: toolInputSchema(route, meta) });
   }

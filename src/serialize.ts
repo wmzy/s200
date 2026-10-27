@@ -24,7 +24,7 @@
 
 import type { Ctx } from './types';
 
-import { newResponse, utf8Length } from './respond';
+import { stringResponse } from './respond';
 
 /** Primitive JSON types in the schema subset. */
 export type PrimitiveType = 'string' | 'number' | 'integer' | 'boolean' | 'null';
@@ -298,19 +298,28 @@ function primitiveOk(type: PrimitiveType, data: unknown): boolean {
   }
 }
 
-/** Recursive checker behind {@link compileValidator}: reports into
- * `issues` and returns — one issue per violated node, in schema traversal
- * order. Never throws: it reads, it does not parse. */
-function checkValue(
+/** The one recursive checker behind {@link compileValidator} and
+ * {@link checkSchema}: reports into `issues` and returns — one issue per
+ * violated node, in schema traversal order. Never throws: it reads, it
+ * does not parse. Parameterized by the three ways its two readers
+ * differ: `extend` grows the path (the dot-joined string of the open
+ * validator vs the `PropertyKey` walk of the closed one), `report` lifts
+ * a violation into the caller's issue type, and `closed` adds the
+ * undeclared-key reading — reported after the declared checks, in
+ * document order. */
+function walkValues<P, I>(
   schema: SerializeSchema,
   data: unknown,
-  path: string,
-  issues: ValidationIssue[]
+  path: P,
+  issues: I[],
+  extend: (path: P, key: string | number) => P,
+  report: (path: P, message: string) => I,
+  closed: boolean
 ): void {
   switch (schema.type) {
     case 'object': {
       if (typeof data !== 'object' || data === null || Array.isArray(data)) {
-        issues.push({ path, message: `expected object, got ${typeOf(data)}` });
+        issues.push(report(path, `expected object, got ${typeOf(data)}`));
         return;
       }
       const record = data as Record<string, unknown>;
@@ -318,25 +327,36 @@ function checkValue(
         // `undefined` counts as missing — the serializer's own "absent"
         // reading of an optional key, applied to a required one.
         if (record[key] === undefined) {
-          issues.push({ path: joinPath(path, key), message: 'required' });
+          issues.push(report(extend(path, key), 'required'));
         }
       }
       for (const [key, sub] of Object.entries(schema.properties)) {
         const value = record[key];
-        // Undeclared keys are none of the validator's business — the same
-        // drop-undeclared contract `serialize` applies on output.
+        // Undeclared keys are none of the open validator's business — the
+        // same drop-undeclared contract `serialize` applies on output;
+        // the closed reader reports them below instead.
         if (value === undefined) continue;
-        checkValue(sub, value, joinPath(path, key), issues);
+        walkValues(sub, value, extend(path, key), issues, extend, report, closed);
+      }
+      if (closed) {
+        // The closed-shape contract: serialize drops undeclared keys on
+        // output, so an undeclared key on input is a violation, not
+        // noise — reported after the declared checks, in document order.
+        for (const key of Object.keys(record)) {
+          if (!Object.hasOwn(schema.properties, key)) {
+            issues.push(report(extend(path, key), 'undeclared key'));
+          }
+        }
       }
       return;
     }
     case 'array': {
       if (!Array.isArray(data)) {
-        issues.push({ path, message: `expected array, got ${typeOf(data)}` });
+        issues.push(report(path, `expected array, got ${typeOf(data)}`));
         return;
       }
       for (let i = 0; i < data.length; i++) {
-        checkValue(schema.items, data[i], joinPath(path, String(i)), issues);
+        walkValues(schema.items, data[i], extend(path, i), issues, extend, report, closed);
       }
       return;
     }
@@ -345,10 +365,7 @@ function checkValue(
       // type check runs.
       if (schema.nullable === true && data === null) return;
       if (!primitiveOk(schema.type, data)) {
-        issues.push({
-          path,
-          message: `expected ${schema.type}, got ${typeOf(data)}`,
-        });
+        issues.push(report(path, `expected ${schema.type}, got ${typeOf(data)}`));
       }
     }
   }
@@ -375,7 +392,16 @@ export function compileValidator(
 ): (data: unknown) => readonly ValidationIssue[] {
   return (data) => {
     const issues: ValidationIssue[] = [];
-    checkValue(schema, data, '', issues);
+    // Open reading: dot-joined string paths, undeclared keys ignored.
+    walkValues(
+      schema,
+      data,
+      '',
+      issues,
+      (path, key) => joinPath(path, String(key)),
+      (path, message) => ({ path, message }),
+      false
+    );
     return issues;
   };
 }
@@ -387,69 +413,6 @@ export type SchemaIssue = {
   readonly path: readonly PropertyKey[];
   readonly message: string;
 };
-
-/** Recursive checker behind {@link checkSchema}: reports into `issues` and
- * returns — one issue per violated node, in schema traversal order. Never
- * throws: it reads, it does not parse. Where it differs from
- * {@link checkValue}: undeclared object keys are violations, reported
- * after the declared checks in document order. */
-function collectIssues(
-  schema: SerializeSchema,
-  data: unknown,
-  path: readonly PropertyKey[],
-  issues: SchemaIssue[]
-): void {
-  switch (schema.type) {
-    case 'object': {
-      if (typeof data !== 'object' || data === null || Array.isArray(data)) {
-        issues.push({ path, message: `expected object, got ${typeOf(data)}` });
-        return;
-      }
-      const record = data as Record<string, unknown>;
-      for (const key of schema.required ?? []) {
-        // `undefined` counts as missing — the serializer's own "absent"
-        // reading of an optional key, applied to a required one.
-        if (record[key] === undefined) {
-          issues.push({ path: [...path, key], message: 'required' });
-        }
-      }
-      for (const [key, sub] of Object.entries(schema.properties)) {
-        const value = record[key];
-        if (value === undefined) continue;
-        collectIssues(sub, value, [...path, key], issues);
-      }
-      // The closed-shape contract: serialize drops undeclared keys on
-      // output, so an undeclared key on input is a violation, not noise.
-      for (const key of Object.keys(record)) {
-        if (!Object.hasOwn(schema.properties, key)) {
-          issues.push({ path: [...path, key], message: 'undeclared key' });
-        }
-      }
-      return;
-    }
-    case 'array': {
-      if (!Array.isArray(data)) {
-        issues.push({ path, message: `expected array, got ${typeOf(data)}` });
-        return;
-      }
-      for (let i = 0; i < data.length; i++) {
-        collectIssues(schema.items, data[i], [...path, i], issues);
-      }
-      return;
-    }
-    default: {
-      // Nullable first: `null` satisfies the widened primitive before any
-      // type check runs.
-      if (schema.nullable === true && data === null) return;
-      if (!primitiveOk(schema.type, data)) {
-        issues.push({
-          path,
-          message: `expected ${schema.type}, got ${typeOf(data)}`,
-        });
-      }
-    }
-  }
-}
 
 /**
  * The closed-shape twin of {@link compileValidator}: checks `value`
@@ -468,7 +431,18 @@ export function checkSchema(
   value: unknown
 ): readonly SchemaIssue[] {
   const issues: SchemaIssue[] = [];
-  collectIssues(schema, value, [], issues);
+  // Closed reading: PropertyKey-walk paths, undeclared keys reported
+  // after the declared checks, in document order.
+  const root: readonly PropertyKey[] = [];
+  walkValues(
+    schema,
+    value,
+    root,
+    issues,
+    (path, key) => [...path, key],
+    (path, message) => ({ path, message }),
+    true
+  );
   return issues;
 }
 
@@ -488,15 +462,9 @@ export function checkSchema(
  * ```
  */
 export function jsonRaw(ctx: Ctx, json: string, init?: ResponseInit): Response {
-  const headers = new Headers(init?.headers);
-  if (!headers.has('content-type')) {
-    headers.set('content-type', 'application/json');
-  }
-  headers.set('content-length', String(utf8Length(json)));
-  ctx.res = newResponse(ctx, json, {
-    status: init?.status,
-    statusText: init?.statusText,
-    headers,
-  });
-  return ctx.res;
+  // stringResponse is the shared string-body tail: light requests keep
+  // their zero-copy LightHeaders view (a raw `new Headers(init)` would
+  // bypass it), and the null-body statuses (1xx/204/304) inherit the same
+  // no-content-length guard as json/text/html/send.
+  return stringResponse(ctx, json, init, 'application/json');
 }

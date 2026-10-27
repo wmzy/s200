@@ -17,19 +17,11 @@
  */
 
 import { httpError } from './errors';
-
-/** Base64url without padding: bytes → alphabet, `+` `/` `=` translated. */
-function b64url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+import { b64urlEncode } from './crypto-util';
 
 /** RFC 7636 §4.2 S256: base64url(SHA-256(verifier)). */
 async function s256(text: string): Promise<string> {
-  return b64url(
+  return b64urlEncode(
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
   );
 }
@@ -48,7 +40,7 @@ export type PkcePair = {
  * S256 challenge `base64url(SHA-256(verifier))`.
  */
 export async function createPkcePair(): Promise<PkcePair> {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(64)));
+  const verifier = b64urlEncode(crypto.getRandomValues(new Uint8Array(64)));
   return { verifier, codeChallenge: await s256(verifier) };
 }
 
@@ -57,7 +49,7 @@ export async function createPkcePair(): Promise<PkcePair> {
  * characters. Works as an OIDC nonce too.
  */
 export function randomState(): string {
-  return b64url(crypto.getRandomValues(new Uint8Array(32)));
+  return b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
 }
 
 /** The authorization-request knobs — endpoint and client registration. */
@@ -154,7 +146,7 @@ async function postTokenGrant(
   };
   if (options.clientSecret !== undefined) {
     const encoded = new TextEncoder().encode(`${options.clientId}:${options.clientSecret}`);
-    headers.authorization = `Basic ${b64url(encoded)}`;
+    headers.authorization = `Basic ${b64urlEncode(encoded)}`;
   } else {
     body.set('client_id', options.clientId);
   }

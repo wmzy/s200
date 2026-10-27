@@ -415,23 +415,45 @@ const spawnProcessUnit = (unit: Unit, onSettled?: () => void): void => {
   });
 };
 
+/**
+ * The one stop path for both unit kinds: watch for the exit event, issue
+ * the polite stop ask (drain message / SIGTERM), and escalate after
+ * {@link STOP_GRACE_MS} (terminate / SIGKILL). Resolves on the exit
+ * event, or when an awaitable escalation lands — whichever comes first;
+ * resolve is idempotent, so the stray second path is a no-op.
+ */
+const stopWithGrace = (
+  listenExit: (onExit: () => void) => void,
+  polite: () => void,
+  escalate: () => Promise<void> | undefined
+): Promise<void> =>
+  new Promise<void>((resolve) => {
+    const grace = setTimeout(() => {
+      void escalate()?.then(() => resolve());
+    }, STOP_GRACE_MS);
+    listenExit(() => {
+      clearTimeout(grace);
+      resolve();
+    });
+    polite();
+  });
+
 const stopThreadUnit = async (unit: Unit): Promise<void> => {
   const worker = unit.worker;
   if (worker !== undefined) {
-    try {
-      worker.postMessage({ type: 'drain' });
-    } catch {
-      // Already gone — the exit path settles it.
-    }
-    await new Promise<void>((resolve) => {
-      const grace = setTimeout(() => {
-        void worker.terminate().then(() => resolve());
-      }, STOP_GRACE_MS);
-      worker.once('exit', () => {
-        clearTimeout(grace);
-        resolve();
-      });
-    });
+    await stopWithGrace(
+      (onExit) => worker.once('exit', onExit),
+      () => {
+        try {
+          worker.postMessage({ type: 'drain' });
+        } catch {
+          // Already gone — the exit path settles it.
+        }
+      },
+      async () => {
+        await worker.terminate();
+      }
+    );
     unit.worker = undefined;
   }
   // Parked sockets must die before close(): a paused socket attached to
@@ -451,14 +473,17 @@ const stopProcessUnit = async (unit: Unit): Promise<void> => {
   if (child === undefined || child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  await new Promise<void>((resolve) => {
-    const grace = setTimeout(() => child.kill('SIGKILL'), STOP_GRACE_MS);
-    child.once('exit', () => {
-      clearTimeout(grace);
-      resolve();
-    });
-    child.kill('SIGTERM');
-  });
+  await stopWithGrace(
+    (onExit) => child.once('exit', onExit),
+    () => {
+      child.kill('SIGTERM');
+    },
+    () => {
+      // Fire-and-forget: the exit event (imminent after SIGKILL) settles.
+      child.kill('SIGKILL');
+      return undefined;
+    }
+  );
 };
 
 const stopUnit = (unit: Unit): Promise<void> => {

@@ -111,6 +111,12 @@ describe('createDispatcher (dev shard dispatcher)', function () {
     const res = await bare(new Request('http://x/nope'));
     res.status.should.equal(404);
     (res.headers.get('content-type') ?? '').should.equal('application/json');
+    // The out-of-chain form of the shared fallback envelope stamps its own
+    // honest byte length — nothing under s200's control serializes it
+    // lazily for a response no chain ever materialized.
+    (res.headers.get('content-length') ?? '').should.equal(
+      String(JSON.stringify({ error: 'no shard' }).length)
+    );
     JSON.parse(await res.text()).should.deep.equal({ error: 'no shard' });
   });
 });

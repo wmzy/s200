@@ -673,14 +673,14 @@
       "name": "full library: dist/index.mjs entry + shared chunk (min+gz)",
       "path": "dist/index.mjs",
       "gzip": true,
-      "limit": "9.7 KB"
+      "limit": "9.8 KB"
     },
     {
       "name": "minimal usage: createApp/use/get/handle (min+gz)",
       "path": "src/index.ts",
       "import": "{ createApp, use, get, handle }",
       "gzip": true,
-      "limit": "4.95 KB"
+      "limit": "5.1 KB"
     },
     {
       "name": "node adapter: dist/node.mjs (min+gz, shared core chunk measured by the full-library entry)",
@@ -689,7 +689,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "6.5 KB"
+      "limit": "6.6 KB"
     },
     {
       "name": "compress battery (min+gz)",
@@ -755,7 +755,7 @@
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
-      "limit": "3 KB"
+      "limit": "3.1 KB"
     },
     {
       "name": "response-check battery (min+gz)",
@@ -767,26 +767,26 @@
       "name": "aws-lambda adapter (min+gz)",
       "path": "dist/aws-lambda.mjs",
       "gzip": true,
-      "limit": "4.35 KB"
+      "limit": "4.45 KB"
     },
     {
       "name": "vercel adapter (min+gz)",
       "path": "dist/vercel.mjs",
       "gzip": true,
-      "limit": "3.95 KB"
+      "limit": "4.05 KB"
     },
     {
       "name": "mcp battery (min+gz)",
       "path": "dist/mcp.mjs",
       "gzip": true,
-      "limit": "5.35 KB"
+      "limit": "5.45 KB"
     },
     {
       "name": "openapi battery: meta + openapi (min+gz)",
       "path": "src/openapi.ts",
       "import": "{ openapiSpec, openapiJson }",
       "gzip": true,
-      "limit": "3.75 KB"
+      "limit": "3.85 KB"
     },
     {
       "name": "dev battery (min+gz)",
@@ -807,7 +807,7 @@
       "name": "health battery (min+gz)",
       "path": "dist/health.mjs",
       "gzip": true,
-      "limit": "2.45 KB"
+      "limit": "2.5 KB"
     },
     {
       "name": "config battery (min+gz)",
@@ -852,7 +852,7 @@
       "name": "shard-dev battery (min+gz)",
       "path": "dist/shard-dev.mjs",
       "gzip": true,
-      "limit": "3.8 KB"
+      "limit": "3.85 KB"
     },
     {
       "name": "executor battery (min+gz)",
@@ -861,7 +861,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "9.1 KB"
+      "limit": "9.25 KB"
     },
     {
       "name": "unit-metrics battery (min+gz)",
@@ -870,7 +870,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "3.05 KB"
+      "limit": "3.1 KB"
     }
   ],
   "lint-staged": {

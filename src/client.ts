@@ -15,7 +15,14 @@
  */
 
 import type { App } from './app';
-import type { MergeRecords, Params, RouteDef, Segment, State } from './types';
+import type {
+  MergeRecords,
+  Params,
+  RouteDef,
+  Segment,
+  State,
+  UnionToIntersection,
+} from './types';
 
 import type { ParamsOf } from './router';
 
@@ -300,23 +307,14 @@ type ClientBranches<D extends RouteDef> = [BranchPairs<
   ? BranchResponse<number, unknown>
   : BranchPairs<MergeRecords<BranchRecord<DefBranches<D>>, DefErrors<D>>>;
 
-/** Union → intersection: a union of signatures is not an overload (calls
- * require an argument matching the *intersection* of the parameters); an
- * intersection is a true overload set where each call resolves its own
- * signature. */
-type Intersect<T> = (T extends unknown ? (x: T) => void : never) extends (
-  x: infer I
-) => void
-  ? I
-  : never;
-
 /** The call signatures registered for method `M` — `ALL` routes serve
- * every method. Intersected so the method is an overloaded call target,
- * not a parameter-intersecting union. */
+ * every method. Intersected (via `s200`'s `UnionToIntersection`) so the
+ * method is an overloaded call target, not a parameter-intersecting
+ * union. */
 type MethodCalls<
   R extends readonly RouteDef[],
   M extends string
-> = Intersect<
+> = UnionToIntersection<
   RouteCall<Extract<R[number], { readonly method: M | 'ALL' }>>
 >;
 

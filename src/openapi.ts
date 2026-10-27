@@ -65,6 +65,8 @@ import {
   isQueryRequired,
   multipartFormSchema,
   querySchemaOf,
+  throwsErrors,
+  uniqueName,
   type MultipartBody,
   type QueryParam,
   type RouteMeta,
@@ -185,32 +187,15 @@ function escapePointer(name: string): string {
   return name.replaceAll('~', '~0').replaceAll('/', '~1');
 }
 
-/** Query-level parameters from {@link RouteMeta.query}: `required` is
- * `true` only where the annotation's marker form says so (`false` is the
- * query default, and the gate enforces exactly this flag). */
-function queryParameters(meta: RouteMeta, sites: SchemaSite[]): unknown[] {
-  const out: unknown[] = [];
-  for (const [name, entry] of Object.entries(meta.query ?? {})) {
-    const schema = toJsonSchema(querySchemaOf(entry));
-    const param = {
-      name,
-      in: 'query',
-      required: isQueryRequired(entry),
-      schema,
-    };
-    sites.push({ json: JSON.stringify(schema), holder: param });
-    out.push(param);
-  }
-  return out;
-}
-
-/** Header- and cookie-level parameters from {@link RouteMeta.headers} /
- * {@link RouteMeta.cookies}: the same entry forms as `query`, emitted
- * with the matching OpenAPI `in`. Only `headers` has a runtime gate —
- * cookies stay spec-only (see `RouteMeta.cookies`). */
+/** Located parameters from {@link RouteMeta.query}/`headers`/`cookies`:
+ * the shared entry forms, emitted with the matching OpenAPI `in`. For
+ * `query`, `required` is `true` only where the annotation's marker form
+ * says so (`false` is the query default, and the gate enforces exactly
+ * this flag). Only `headers` has a runtime gate — cookies stay spec-only
+ * (see `RouteMeta.cookies`). */
 function locatedParameters(
   entries: Record<string, QueryParam> | undefined,
-  where: 'header' | 'cookie',
+  where: 'query' | 'header' | 'cookie',
   sites: SchemaSite[]
 ): unknown[] {
   const out: unknown[] = [];
@@ -248,31 +233,6 @@ function multipartEncoding(form: MultipartBody['form']): Record<string, unknown>
     };
   }
   return encoding;
-}
-
-/**
- * The error branches a route's `throws` gates declare, read off the live
- * middleware chain: each gate's runtime `_errors` stash (status → example
- * body — see `s200`'s `throws`) merges into one record. When two gates
- * name the same status the later registration wins: the type layer unions
- * body shapes, but example values cannot union, and the last declaration
- * is the honest pick.
- */
-function throwsErrors(route: Route): Record<number, unknown> {
-  const merged: Record<number, unknown> = {};
-  for (const middleware of route.middlewares) {
-    const declared = (middleware as { readonly _errors?: unknown })._errors;
-    if (typeof declared !== 'object' || declared === null) continue;
-    for (const [status, example] of Object.entries(
-      declared as Readonly<Record<string, unknown>>
-    )) {
-      const code = Number(status);
-      if (Number.isInteger(code) && code >= 100 && code <= 599) {
-        merged[code] = example;
-      }
-    }
-  }
-  return merged;
 }
 
 /** Structural JSON-string equality for the array-items agreement check. */
@@ -422,7 +382,7 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
     const path = openapiPath(route.pattern);
     const parameters = [
       ...pathParameters(route.segments, meta ?? {}, sites),
-      ...queryParameters(meta ?? {}, sites),
+      ...locatedParameters(meta?.query, 'query', sites),
       ...locatedParameters(meta?.headers, 'header', sites),
       ...locatedParameters(meta?.cookies, 'cookie', sites),
     ];
@@ -480,12 +440,7 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
         typeof parsed.title === 'string' && parsed.title !== ''
           ? parsed.title
           : `Schema${(seq += 1)}`;
-      let name = base;
-      let n = 2;
-      while (taken.has(name)) {
-        name = `${base}_${n}`;
-        n += 1;
-      }
+      const name = uniqueName(base, taken);
       taken.add(name);
       schemas[name] = parsed;
       const ref = { $ref: `#/components/schemas/${escapePointer(name)}` };

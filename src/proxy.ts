@@ -61,7 +61,7 @@
 import type { Ctx, Middleware } from './types';
 
 import { httpError } from './errors';
-import { drainPendingHeaders } from './respond';
+import { adoptResponse } from './respond';
 
 /** Hop-by-hop header names (RFC 9110 §7.6.1) — never forwarded either way. */
 const HOP_BY_HOP: readonly string[] = [
@@ -231,8 +231,10 @@ export async function proxyRequest(
     statusText: upstream.statusText,
     headers: responseHeaders,
   });
-  drainPendingHeaders(ctx, proxied);
-  return proxied;
+  // The upstream's answer becomes this ctx's response — deferred
+  // setHeader values ride it. createProxy re-binds ctx.res to the same
+  // object; direct proxyRequest callers keep the returned Response.
+  return adoptResponse(ctx, proxied);
 }
 
 /**

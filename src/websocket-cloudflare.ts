@@ -33,14 +33,14 @@ import type { App } from './app';
 import type { Ctx } from './types';
 
 import {
+  createWsSession,
+  createWsSocket,
   matchWebSocket,
+  negotiateProtocol,
   resolveUpgrade,
+  runWsHandler,
   type WebSocketHandler,
-  type WsCloseCb,
   type WsData,
-  type WsErrorCb,
-  type WsMessageCb,
-  type WsSocket,
 } from './websocket';
 
 /** One half of a Workers `WebSocketPair`, narrowed to the members the
@@ -81,21 +81,12 @@ export type CloudflareWebSocketPair = {
 // inside `upgrade` — a non-Workers host gets a clean 501, not a crash).
 declare const WebSocketPair: new () => CloudflareWebSocketPair;
 
-/**
- * The Workers half of the `??` composition: `upgrade(request)` answers a
+/** The Workers half of the `??` composition: `upgrade(request)` answers a
  * WebSocket handshake — `undefined` means "not for this bridge" and the
  * request falls through to `createHandler(app)`'s HTTP fetch.
  */
 export type CloudflareWebSocketBridge = {
   readonly upgrade: (request: Request) => Promise<Response | undefined>;
-};
-
-/** One live connection: the listener lists the {@link WsSocket} API writes. */
-type CloudflareSession = {
-  readonly onMessage: WsMessageCb[];
-  readonly onClose: WsCloseCb[];
-  readonly onError: WsErrorCb[];
-  readonly onPong: (() => void)[];
 };
 
 /**
@@ -130,20 +121,13 @@ export function createCloudflareWebSocketBridge(app: App): CloudflareWebSocketBr
     if (!decision.ok) {
       return decision.response;
     }
-    // Subprotocol negotiation (server preference order), mirrored from the
-    // node and bun adapters so every runtime picks identically.
-    const offered = request.headers.get('sec-websocket-protocol');
-    const clientProtocols =
-      offered === null
-        ? []
-        : offered.split(',').map((item) => item.trim()).filter((item) => item !== '');
-    let protocol: string | undefined;
-    for (const candidate of matched.route.protocols ?? []) {
-      if (clientProtocols.includes(candidate)) {
-        protocol = candidate;
-        break;
-      }
-    }
+    // Subprotocol negotiation (server preference order), shared with the
+    // node and bun adapters through negotiateProtocol so every runtime
+    // picks identically.
+    const protocol = negotiateProtocol(
+      request.headers.get('sec-websocket-protocol'),
+      matched.route.protocols
+    );
     let pair: CloudflareWebSocketPair;
     try {
       pair = new WebSocketPair();
@@ -179,17 +163,13 @@ function runConnection(
   ctx: Ctx,
   protocol: string | undefined
 ): void {
-  const session: CloudflareSession = {
-    onMessage: [],
-    onClose: [],
-    onError: [],
-    onPong: [],
-  };
+  const session = createWsSession();
+  const close = (code: number, reason: string): void => server.close(code, reason);
   // 'pong' is not a Workers event today (the runtime handles keep-alive) —
   // wire the listener lazily on first onPong registration so a runtime
   // that grows the event starts feeding callbacks without a bridge change.
   let pongWired = false;
-  const wirePong = (): void => {
+  const subscribePong = (): void => {
     if (pongWired) {
       return;
     }
@@ -202,36 +182,21 @@ function runConnection(
       // A runtime rejecting the event type just never fires the callbacks.
     }
   };
-  const socket: WsSocket = {
-    send(data: WsData) {
-      server.send(data);
-    },
-    get bufferedAmount(): number {
-      return typeof server.bufferedAmount === 'number' ? server.bufferedAmount : 0;
-    },
-    close(code, reason) {
-      server.close(code ?? 1000, reason ?? '');
-    },
-    protocol,
-    ping(payload) {
+  // The transport closures carry the workerd specifics: an optional ping
+  // API, a bufferedAmount the runtime may not expose, and the lazy pong
+  // subscription; the rest of the socket API is the shared factory's.
+  const socket = createWsSocket(session, protocol, {
+    send: (data) => server.send(data),
+    close,
+    ping: (payload) => {
       if (typeof server.ping === 'function') {
         server.ping(payload);
       }
     },
-    onMessage(cb) {
-      session.onMessage.push(cb);
-    },
-    onClose(cb) {
-      session.onClose.push(cb);
-    },
-    onError(cb) {
-      session.onError.push(cb);
-    },
-    onPong(cb) {
-      session.onPong.push(cb);
-      wirePong();
-    },
-  };
+    bufferedAmount: () =>
+      typeof server.bufferedAmount === 'number' ? server.bufferedAmount : 0,
+    subscribePong,
+  });
   server.addEventListener('message', (event) => {
     for (const cb of session.onMessage) cb(event.data);
   });
@@ -242,14 +207,7 @@ function runConnection(
     const error = event instanceof Error ? event : new Error('WebSocket error');
     for (const cb of session.onError) cb(error);
   });
-  void Promise.resolve()
-    .then(() => handler(socket, ctx))
-    .catch((error: unknown) => {
-      for (const cb of session.onError) {
-        cb(error instanceof Error ? error : new Error(String(error)));
-      }
-      server.close(1011, 'handler error');
-    });
+  runWsHandler(handler, socket, ctx, session, close);
 }
 
 /** The 101 handshake response: workerd reads the client socket from the

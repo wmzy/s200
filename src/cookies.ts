@@ -12,6 +12,8 @@
 
 import type { Ctx } from './types';
 
+import { b64urlEncode, equalBytes } from './crypto-util';
+
 /** RFC 6265 token — cookie names live in a stricter alphabet than values. */
 const NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
@@ -97,25 +99,41 @@ export function setCookie(
   ctx.res.headers.append('set-cookie', parts.join('; '));
 }
 
-function base64url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
+/** Bounded HMAC-key cache: one imported key per distinct secret. Import
+ * runs a key-derivation pass, so re-importing on every `signCookie`
+ * call was a real per-signature cost; the cap keeps at most 8 secrets
+ * resident, so callers cycling secrets (or an attacker shaping inputs
+ * to none of them) cannot retain unbounded secret material. FIFO
+ * eviction — Map preserves insertion order, the first key goes. */
+const KEY_CACHE_LIMIT = 8;
+const keyCache = new Map<string, Promise<CryptoKey>>();
+
+function hmacKey(secret: string): Promise<CryptoKey> {
+  let key = keyCache.get(secret);
+  if (key === undefined) {
+    if (keyCache.size >= KEY_CACHE_LIMIT) {
+      const oldest = keyCache.keys().next().value;
+      if (oldest !== undefined) {
+        keyCache.delete(oldest);
+      }
+    }
+    key = crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    keyCache.set(secret, key);
   }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return key;
 }
 
 /** HMAC-SHA256 over `value`, base64url — the cookie-signature convention. */
 export async function signCookie(value: string, secret: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
+  const key = await hmacKey(secret);
   const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value));
-  return base64url(new Uint8Array(digest));
+  return b64urlEncode(new Uint8Array(digest));
 }
 
 /**
@@ -128,16 +146,8 @@ export async function signCookie(value: string, secret: string): Promise<string>
  * it carries no secret bits.
  */
 export function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const ua = new TextEncoder().encode(a);
-  const ub = new TextEncoder().encode(b);
-  let diff = 0;
-  for (let i = 0; i < ua.length; i += 1) {
-    diff |= (ua[i] ?? 0) ^ (ub[i] ?? 0);
-  }
-  return diff === 0;
+  const encoder = new TextEncoder();
+  return equalBytes(encoder.encode(a), encoder.encode(b));
 }
 
 /** Checks a stored signature against a recomputed one, constant-time. */

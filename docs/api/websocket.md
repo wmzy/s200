@@ -25,6 +25,10 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 | `matchWebSocket(app, pathname)` | Longest-match lookup against the registry → `WebSocketMatch \| undefined` |
 | `resolveUpgrade(app, route, request, url, params)` | Runs the app + route middleware chain → `WsUpgradeDecision` (adapters' shared decision helper) |
 | `createWsCtx(req, url, params)` | Builds a request-shaped `Ctx` (params/query/url) for a handler |
+| `negotiateProtocol(offered, serverProtocols)` | The adapters' shared subprotocol rule: splits the offered `sec-websocket-protocol` header, server preference order — the first declared protocol the client also offered wins, `undefined` when none matches |
+| `createWsSession()` | Fresh listener bag (`onMessage`/`onClose`/`onError`/`onPong` lists) backing one connection's socket registrations |
+| `createWsSocket(session, protocol, transport)` | The adapters' shared socket factory: builds the `WsSocket` API around runtime transport closures (`send`/`close`/`ping`/`bufferedAmount`, optional `subscribePong`) |
+| `runWsHandler(handler, socket, ctx, session, close)` | Runs the handler outside the middleware chain; a rejection fans out to `session.onError` and closes 1011 through `close` |
 
 `upgradeWebSocket` mirrors the HTTP registrars' variadic shape: every argument between the pattern and the terminal handler is a route-scoped middleware, and the old four-argument form (`handler, options?` with no middlewares) keeps working.
 
@@ -92,7 +96,7 @@ The exact semantics, mirroring HTTP dispatch:
 - **Approval** — when the chain settles with `ctx.res` still `undefined`, the upgrade proceeds: the socket is the response. Middlewares observe `res: undefined` on unwind, and every `ctx.state` mutation rides into the handler's ctx (the same ctx object — `resolveUpgrade` hands it back to the adapter). A middleware that neither answers nor calls `next()` approves implicitly — call `next()` or answer, there is no third branch.
 - **The handler itself runs after approval**, outside the chain: errors it throws do not pass through the middlewares again (they surface through `socket.onError` + close 1011, the pre-existing behavior).
 
-`resolveUpgrade(app, route, request, url, params)` is the shared decision helper every adapter calls — `WsUpgradeDecision` is `{ ok: true; ctx: Ctx }` or `{ ok: false; response: Response }`. It exists for adapter authors; applications get the same behavior from `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` / `createCloudflareWebSocketBridge`.
+`resolveUpgrade(app, route, request, url, params)` is the shared decision helper every adapter calls — `WsUpgradeDecision` is `{ ok: true; ctx: Ctx }` or `{ ok: false; response: Response }`. It exists for adapter authors; applications get the same behavior from `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` / `createCloudflareWebSocketBridge`. The same is true of the connection-phase helpers: `negotiateProtocol` runs the shared subprotocol rule, and `createWsSession` + `createWsSocket` + `runWsHandler` build each runtime's socket — an adapter supplies only its transport closures (node's RFC 6455 framing, bun's `ArrayBuffer`→view coercion, workerd's optional `ping`/`bufferedAmount`).
 
 ## Node (`s200/websocket/node`)
 

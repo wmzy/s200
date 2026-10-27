@@ -333,3 +333,129 @@ export async function resolveUpgrade(
   drainPendingHeaders(ctx, ctx.res);
   return { ok: false, response: ctx.res };
 }
+
+/**
+ * Subprotocol negotiation, the one rule every adapter shares: split the
+ * client's comma-separated `sec-websocket-protocol` offer, then let
+ * server preference order decide — the first route-declared protocol the
+ * client also offered wins. `undefined` when the route declares none or
+ * nothing matches (the header then stays off the 101).
+ */
+export function negotiateProtocol(
+  offered: string | null,
+  serverProtocols: readonly string[] | undefined
+): string | undefined {
+  if (offered === null || serverProtocols === undefined) {
+    return undefined;
+  }
+  const clientProtocols = offered
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+  for (const candidate of serverProtocols) {
+    if (clientProtocols.includes(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** One live connection's listener lists — what a {@link WsSocket}'s
+ * `onX` registrations append to and the adapter's transport events fan
+ * out to. Plain arrays, not event emitters: dispatch is a for-loop over
+ * whatever is registered at event time. */
+export type WsSession = {
+  readonly onMessage: WsMessageCb[];
+  readonly onClose: WsCloseCb[];
+  readonly onError: WsErrorCb[];
+  readonly onPong: (() => void)[];
+};
+
+/** A fresh listener bag for one connection. */
+export function createWsSession(): WsSession {
+  return { onMessage: [], onClose: [], onError: [], onPong: [] };
+}
+
+/** The runtime calls a {@link WsSocket} wraps — the only part of the
+ * connection scaffolding that genuinely differs between the node, bun,
+ * and cloudflare adapters; each supplies closures over its native
+ * socket. */
+export type WsTransport = {
+  /** Frames and sends one message (node wraps it in RFC 6455 framing,
+   * bun coerces an `ArrayBuffer` to a view, cloudflare passes through). */
+  readonly send: (data: WsData) => void;
+  /** Starts the transport's close handshake with concrete arguments —
+   * the factory owns the `1000`/`''` defaults. */
+  readonly close: (code: number, reason: string) => void;
+  /** Sends a ping frame; transports without the primitive no-op. */
+  readonly ping: (payload?: string | Uint8Array) => void;
+  /** Bytes queued for the peer but not yet on the wire, read live. */
+  readonly bufferedAmount: () => number;
+  /** Runs after each `onPong` registration — transports that must attach
+   * their pong listener lazily (workerd's 'pong' is not universal, and a
+   * runtime may reject the event type) subscribe here and guard their
+   * own once-only wiring; where pong delivery is inherent, leave absent. */
+  readonly subscribePong?: () => void;
+};
+
+/**
+ * Builds the {@link WsSocket} every adapter hands its handler — the part
+ * of the connection scaffolding that is verbatim-identical across
+ * runtimes: `onX` registrations append to `session`, `close` defaults to
+ * `1000`/`''`, everything else delegates to the transport closures.
+ */
+export function createWsSocket(
+  session: WsSession,
+  protocol: string | undefined,
+  transport: WsTransport
+): WsSocket {
+  return {
+    send: transport.send,
+    get bufferedAmount(): number {
+      return transport.bufferedAmount();
+    },
+    close(code, reason) {
+      transport.close(code ?? 1000, reason ?? '');
+    },
+    protocol,
+    ping: transport.ping,
+    onMessage(cb) {
+      session.onMessage.push(cb);
+    },
+    onClose(cb) {
+      session.onClose.push(cb);
+    },
+    onError(cb) {
+      session.onError.push(cb);
+    },
+    onPong(cb) {
+      session.onPong.push(cb);
+      transport.subscribePong?.();
+    },
+  };
+}
+
+/**
+ * Runs the route handler outside the middleware chain, the shared tail of
+ * every adapter: the chain has already unwound by the time the socket
+ * exists, so a thrown/rejected handler error must not travel it again —
+ * it fans out to the session's error callbacks and closes 1011 through
+ * the adapter's close (node's `sendClose`, `ws.close`, `server.close`
+ * alike).
+ */
+export function runWsHandler(
+  handler: WebSocketHandler,
+  socket: WsSocket,
+  ctx: Ctx,
+  session: WsSession,
+  close: (code: number, reason: string) => void
+): void {
+  void Promise.resolve()
+    .then(() => handler(socket, ctx))
+    .catch((error: unknown) => {
+      for (const cb of session.onError) {
+        cb(error instanceof Error ? error : new Error(String(error)));
+      }
+      close(1011, 'handler error');
+    });
+}

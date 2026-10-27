@@ -38,6 +38,23 @@ function writeEntry(name: string): { entry: string; marker: string } {
   return { entry, marker };
 }
 
+// The header-flattening witness entry: a handler returning two set-cookie
+// values, which must arrive as two separate header lines (not one
+// comma-joined value) through the child bridge.
+function writeCookieEntry(name: string): string {
+  const entry = join(dir, name + '.mjs');
+  const source = [
+    "import { createApp, get } from '" + SRC_ROOT + "app.ts';",
+    'const app = createApp();',
+    "get(app, '/heavy/cookies', () => new Response('ok', {",
+    "  headers: [['set-cookie', 'a=1'], ['set-cookie', 'b=2; Path=/; HttpOnly']],",
+    '}));',
+    'export { app };',
+  ].join('\n');
+  writeFileSync(entry, source);
+  return entry;
+}
+
 // How many times a child realm actually evaluated the entry — the honest
 // lazy-spawn witness: 0 after start(), 1 after the first request.
 function spawnCount(marker: string): number {
@@ -155,6 +172,27 @@ describe('executor: thread shards', () => {
       await supervisor.stop();
       supervisor.units()[0]!.state.should.equal('stopped');
       (await portClosed(port)).should.equal(true);
+    }
+  );
+
+  it(
+    'keeps every set-cookie line intact across the child bridge',
+    { timeout: 20000 },
+    async () => {
+      const entry = writeCookieEntry('thread-cookies');
+      const port = randomPort();
+      const supervisor = runShards([{ spec: heavySpec, executor: { kind: 'thread', entry }, port }]);
+      active.push(supervisor);
+
+      await supervisor.start();
+      const res = await fetchOk('http://127.0.0.1:' + port + '/heavy/cookies', 8000);
+      // The child bridge flattens Headers via forEach, which joins repeats
+      // with ', ' — set-cookie must ride along as the getSetCookie() array
+      // so each cookie stays its own header line end to end.
+      res.headers.getSetCookie().should.deep.equal(['a=1', 'b=2; Path=/; HttpOnly']);
+
+      await supervisor.stop();
+      supervisor.units()[0]!.state.should.equal('stopped');
     }
   );
 

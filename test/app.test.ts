@@ -391,6 +391,30 @@ describe('405 method misses', () => {
     (res.headers.get('allow') ?? '').should.equal('POST');
     (res.body === null).should.be.true;
   });
+
+  it('405/404/500 share one { error } JSON envelope, length-silent', async () => {
+    const app = createApp();
+    get(app, '/x', () => new Response('get'));
+    get(app, '/silent', () => undefined as unknown as Response);
+    const miss405 = await handle(app, new Request('http://localhost/x', { method: 'PUT' }));
+    miss405.status.should.equal(405);
+    (miss405.headers.get('allow') ?? '').should.equal('GET');
+    (miss405.headers.get('content-type') ?? '').should.equal('application/json');
+    // The fallback contract is length-silent — size-aware batteries
+    // (etag, response-check) treat fallbacks as unstamped.
+    miss405.headers.has('content-length').should.be.false;
+    (await miss405.json()).should.deep.equal({ error: 'Method Not Allowed' });
+    const miss404 = await handle(app, new Request('http://localhost/missing'));
+    miss404.status.should.equal(404);
+    (miss404.headers.get('content-type') ?? '').should.equal('application/json');
+    miss404.headers.has('content-length').should.be.false;
+    (await miss404.json()).should.deep.equal({ error: 'Not Found' });
+    const silent = await handle(app, new Request('http://localhost/silent'));
+    silent.status.should.equal(500);
+    (silent.headers.get('content-type') ?? '').should.equal('application/json');
+    silent.headers.has('content-length').should.be.false;
+    (await silent.json()).should.deep.equal({ error: 'No response written' });
+  });
 });
 
 describe('chain caching', () => {

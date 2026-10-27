@@ -33,7 +33,7 @@ import { compose } from './compose';
 import { mapError } from './error-map';
 import { cachedUrl, isLightRequest, isLightResponse, setCachedUrl } from './light';
 import { neverSignal } from './signal';
-import { drainPendingHeaders, newResponse } from './respond';
+import { adoptResponse, drainPendingHeaders, jsonFallback, newResponse } from './respond';
 import { createMatcher, createRoute, createSegments, matchSegments } from './router';
 
 /**
@@ -837,17 +837,19 @@ function getRouteChain(route: Route): ReturnType<typeof compose> {
     const returned = await route.handler(routeCtx);
     if (routeCtx.res === undefined) {
       if (returned instanceof Response) {
-        routeCtx.res = returned;
+        adoptResponse(routeCtx, returned);
       } else if (
         isLightRequest(routeCtx.req) && isLightResponse(returned)
       ) {
-        routeCtx.res = returned as unknown as Response;
+        adoptResponse(routeCtx, returned as unknown as Response);
       } else if (isHttpError(returned)) {
         throw returned;
       }
     }
-    // A response adopted here (returned rather than written) bypassed
-    // newResponse — apply any headers deferred onto this ctx first.
+    // A response the handler wrote itself (raw `ctx.res = …`, not a
+    // respond helper) also bypassed newResponse — apply any headers
+    // deferred onto this ctx first. The adoptions above already drained;
+    // this is idempotent.
     if (routeCtx.res !== undefined) {
       drainPendingHeaders(routeCtx, routeCtx.res);
     }
@@ -911,34 +913,18 @@ export async function handle<S extends State = State>(
     }
     if (allowedMethods !== undefined) {
       // Path matched but no route's method did: RFC 9110 wants 405 + Allow.
-      ctx.res = newResponse(
-        ctx,
-        JSON.stringify({ error: 'Method Not Allowed' }),
-        {
-          status: 405,
-          headers: {
-            'content-type': 'application/json',
-            Allow: allowedMethods.join(', '),
-          },
-        }
-      );
+      jsonFallback(ctx, 405, 'Method Not Allowed', {
+        Allow: allowedMethods.join(', '),
+      });
     } else if (route === undefined) {
       if (app.onNotFound !== undefined) {
         await app.onNotFound(ctx);
       }
       if (ctx.res === undefined) {
-        ctx.res = newResponse(
-          ctx,
-          JSON.stringify({ error: 'Not Found' }),
-          { status: 404, headers: { 'content-type': 'application/json' } }
-        );
+        jsonFallback(ctx, 404, 'Not Found');
       }
     } else {
-      ctx.res = newResponse(
-        ctx,
-        JSON.stringify({ error: 'No response written' }),
-        { status: 500, headers: { 'content-type': 'application/json' } }
-      );
+      jsonFallback(ctx, 500, 'No response written');
     }
   };
   // The error boundary sits BELOW the app middlewares: a route handler (or

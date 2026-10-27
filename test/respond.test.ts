@@ -4,7 +4,15 @@ import type { Ctx } from '../src/types';
 import { describe, expectTypeOf, it } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
-import { json, resOf, text } from '../src/respond';
+import {
+  html,
+  json,
+  resOf,
+  setHeader,
+  stringResponse,
+  text,
+  utf8Length,
+} from '../src/respond';
 
 const quiet = { logError: () => undefined };
 
@@ -86,5 +94,76 @@ describe('SettledCtx', () => {
     });
     (await handle(app, new Request('http://localhost/'))).status.should.equal(200);
     collected.should.deep.equal(['GET / → 200']);
+  });
+});
+
+describe('the shared materialization tail', () => {
+  it('json/text/html advertise the exact byte length on body-ful statuses', async () => {
+    const app = createApp();
+    get(app, '/j', (ctx) => json(ctx, { ok: true }));
+    get(app, '/t', (ctx) => text(ctx, 'héllo'));
+    get(app, '/h', (ctx) => html(ctx, '<p>ok</p>'));
+    const j = await handle(app, new Request('http://localhost/j'));
+    (j.headers.get('content-type') ?? '').should.equal('application/json');
+    (j.headers.get('content-length') ?? '').should.equal(
+      String(JSON.stringify({ ok: true }).length)
+    );
+    const t = await handle(app, new Request('http://localhost/t'));
+    (t.headers.get('content-type') ?? '').should.equal('text/plain; charset=utf-8');
+    (t.headers.get('content-length') ?? '').should.equal(String(utf8Length('héllo')));
+    const h = await handle(app, new Request('http://localhost/h'));
+    (h.headers.get('content-type') ?? '').should.equal('text/html; charset=utf-8');
+    (h.headers.get('content-length') ?? '').should.equal(String(utf8Length('<p>ok</p>')));
+  });
+
+  it('stringResponse keeps explicit headers and invents no content-type without a fallback', async () => {
+    const app = createApp();
+    get(app, '/s', (ctx) =>
+      stringResponse(ctx, 'héllo', { headers: { 'x-mark': 'on' } })
+    );
+    const res = await handle(app, new Request('http://localhost/s'));
+    res.status.should.equal(200);
+    (res.headers.get('content-length') ?? '').should.equal(String(utf8Length('héllo')));
+    (res.headers.get('x-mark') ?? '').should.equal('on');
+    // No fallbackContentType given, so the helper adds none — whatever
+    // content-type the response carries is the platform's own
+    // text/plain default for USVString bodies, not an invented default.
+    (res.headers.get('content-type') ?? '').should.not.equal('text/csv');
+    (await res.text()).should.equal('héllo');
+  });
+
+  it('stringResponse fills the fallback content-type only when none is set', async () => {
+    const app = createApp();
+    get(app, '/defaulted', (ctx) => stringResponse(ctx, 'x', undefined, 'text/csv'));
+    get(app, '/explicit', (ctx) =>
+      stringResponse(ctx, 'x', { headers: { 'content-type': 'text/plain' } }, 'text/csv')
+    );
+    const defaulted = await handle(app, new Request('http://localhost/defaulted'));
+    (defaulted.headers.get('content-type') ?? '').should.equal('text/csv');
+    const explicit = await handle(app, new Request('http://localhost/explicit'));
+    (explicit.headers.get('content-type') ?? '').should.equal('text/plain');
+  });
+
+  it('adoptResponse rides deferred setHeader values onto a returned Response', async () => {
+    const app = createApp();
+    get(app, '/adopt', (ctx) => {
+      setHeader(ctx, 'x-deferred', 'rides');
+      return new Response('adopted');
+    });
+    const res = await handle(app, new Request('http://localhost/adopt'));
+    res.status.should.equal(200);
+    (res.headers.get('x-deferred') ?? '').should.equal('rides');
+    (await res.text()).should.equal('adopted');
+  });
+
+  it('an error-mapped response carries deferred headers too (mapError adoption)', async () => {
+    const app = createApp(quiet);
+    get(app, '/boom', (ctx) => {
+      setHeader(ctx, 'x-deferred', 'rides-500');
+      throw new Error('kaboom');
+    });
+    const res = await handle(app, new Request('http://localhost/boom'));
+    res.status.should.equal(500);
+    (res.headers.get('x-deferred') ?? '').should.equal('rides-500');
   });
 });

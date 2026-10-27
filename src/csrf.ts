@@ -27,6 +27,7 @@ import type { Ctx, Middleware } from './types';
 import { getCookie, setCookie } from './cookies';
 import { readForm } from './body';
 import { httpError } from './errors';
+import { b64urlDecode, b64urlEncode, equalBytes } from './crypto-util';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -56,70 +57,6 @@ export type CsrfOptions = {
    * verifies. Off by default — tokens are unbound. */
   readonly bind?: (ctx: Ctx) => string | Promise<string>;
 };
-
-/** Base64url alphabet and its decode table (hoisted: token verification
- * runs per unsafe request, so the tables allocate once at import). */
-const B64_ALPHABET =
-  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-const B64_DECODE = new Int8Array(128).fill(-1);
-for (let i = 0; i < B64_ALPHABET.length; i += 1) {
-  B64_DECODE[B64_ALPHABET.charCodeAt(i)] = i;
-}
-
-/** Base64url encode, no padding: 3 bytes → 4 alphabet chars. */
-function b64url(bytes: Uint8Array): string {
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b0 = bytes[i] ?? 0;
-    const b1 = bytes[i + 1] ?? 0;
-    const b2 = bytes[i + 2] ?? 0;
-    const n = (b0 << 16) | (b1 << 8) | b2;
-    const rest = bytes.length - i;
-    out += B64_ALPHABET[(n >> 18) & 63];
-    out += B64_ALPHABET[(n >> 12) & 63];
-    if (rest >= 2) {
-      out += B64_ALPHABET[(n >> 6) & 63];
-    }
-    if (rest >= 3) {
-      out += B64_ALPHABET[n & 63];
-    }
-  }
-  return out;
-}
-
-/** Base64url decode, no padding; `null` on any out-of-alphabet char. */
-function b64urlDecode(text: string): Uint8Array | null {
-  const out = new Uint8Array(Math.floor((text.length * 6) / 8));
-  let acc = 0;
-  let accBits = 0;
-  let outIndex = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (code > 127 || B64_DECODE[code] === -1) {
-      return null;
-    }
-    acc = (acc << 6) | (B64_DECODE[code] ?? 0);
-    accBits += 6;
-    if (accBits >= 8) {
-      accBits -= 8;
-      out[outIndex] = (acc >> accBits) & 0xff;
-      outIndex += 1;
-    }
-  }
-  return out;
-}
-
-/** Constant-time digest equality: XOR-folds the bytes, no early exit. */
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  }
-  return diff === 0;
-}
 
 /**
  * Parses a token and verifies its signature + expiry against the secret.
@@ -237,14 +174,14 @@ export function createCsrf(options: CsrfOptions): Csrf {
     const exp = now + ttl;
     const nonce = new Uint8Array(16);
     crypto.getRandomValues(nonce);
-    const nonceText = b64url(nonce);
+    const nonceText = b64urlEncode(nonce);
     // Bound instances append the bind value after a second dot —
     // unambiguous, since `exp` is digits and the nonce is base64url.
     const message = new TextEncoder().encode(
       bind === undefined ? `${exp}.${nonceText}` : `${exp}.${nonceText}.${bind}`
     );
     const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
-    return `${exp}.${nonceText}.${b64url(sig)}`;
+    return `${exp}.${nonceText}.${b64urlEncode(sig)}`;
   };
 
   const token = async (ctx: Ctx): Promise<string> => {

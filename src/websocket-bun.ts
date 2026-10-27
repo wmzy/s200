@@ -23,14 +23,14 @@ import type { App } from './app';
 import type { Ctx } from './types';
 
 import {
+  createWsSession,
+  createWsSocket,
   matchWebSocket,
+  negotiateProtocol,
   resolveUpgrade,
+  runWsHandler,
   type WebSocketHandler,
-  type WsCloseCb,
-  type WsData,
-  type WsErrorCb,
-  type WsMessageCb,
-  type WsSocket,
+  type WsSession,
 } from './websocket';
 
 /** The `server` Bun hands its `fetch` handler — the upgrade authority. */
@@ -74,14 +74,6 @@ export type BunWebSocketBridge = {
   readonly websocket: BunWsHandlers;
 };
 
-/** One live connection: the listener lists the {@link WsSocket} API writes. */
-type BunSession = {
-  readonly onMessage: WsMessageCb[];
-  readonly onClose: WsCloseCb[];
-  readonly onError: WsErrorCb[];
-  readonly onPong: (() => void)[];
-};
-
 /** The per-upgrade record carried through Bun's ws.data to `open`. */
 type UpgradePayload = {
   readonly route: { readonly handler: WebSocketHandler };
@@ -100,7 +92,7 @@ type UpgradePayload = {
  * listeners receive Bun's message/close events.
  */
 export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
-  const sessions = new Map<BunWs, BunSession>();
+  const sessions = new Map<BunWs, WsSession>();
 
   const upgrade = async (
     req: Request,
@@ -117,20 +109,13 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
     if (!decision.ok) {
       return decision.response;
     }
-    // Subprotocol negotiation (server preference order), mirrored from the
-    // node adapter so both runtimes pick identically.
-    const offered = req.headers.get('sec-websocket-protocol');
-    const clientProtocols =
-      offered === null
-        ? []
-        : offered.split(',').map((item) => item.trim()).filter((item) => item !== '');
-    let protocol: string | undefined;
-    for (const candidate of matched.route.protocols ?? []) {
-      if (clientProtocols.includes(candidate)) {
-        protocol = candidate;
-        break;
-      }
-    }
+    // Subprotocol negotiation (server preference order), shared with the
+    // node and cloudflare adapters through negotiateProtocol so every
+    // runtime picks identically.
+    const protocol = negotiateProtocol(
+      req.headers.get('sec-websocket-protocol'),
+      matched.route.protocols
+    );
     // The data record reaches `open` via Bun's ws.data.
     return server.upgrade(req, {
       data: { route: matched.route, ctx: decision.ctx, protocol },
@@ -144,46 +129,21 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
         | UpgradePayload
         | undefined;
       if (payload === undefined) return;
-      const session: BunSession = { onMessage: [], onClose: [], onError: [], onPong: [] };
+      const session = createWsSession();
       sessions.set(ws, session);
-      const socket: WsSocket = {
-        send(data: WsData) {
-          // Bun's send accepts string|Uint8Array; ArrayBuffer needs the view.
-          ws.send(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
-        },
-        // Live: Bun tracks the per-connection send backlog itself.
-        get bufferedAmount(): number {
-          return ws.getBufferedAmount();
-        },
-        close(code, reason) {
-          ws.close(code ?? 1000, reason ?? '');
-        },
-        protocol: payload.protocol,
-        ping(payloadData) {
-          ws.ping(payloadData);
-        },
-        onMessage(cb) {
-          session.onMessage.push(cb);
-        },
-        onClose(cb) {
-          session.onClose.push(cb);
-        },
-        onError(cb) {
-          session.onError.push(cb);
-        },
-        onPong(cb) {
-          session.onPong.push(cb);
-        },
-      };
-      const ctx = payload.ctx;
-      void Promise.resolve()
-        .then(() => payload.route.handler(socket, ctx))
-        .catch((error: unknown) => {
-          for (const cb of session.onError) {
-            cb(error instanceof Error ? error : new Error(String(error)));
-          }
-          ws.close(1011, 'handler error');
-        });
+      const close = (code: number, reason: string): void => ws.close(code, reason);
+      // The transport closures carry Bun's specifics: send takes
+      // string|Uint8Array (an ArrayBuffer needs the view), ping passes
+      // through, and the live backlog counter is a getter call; the rest
+      // of the socket API is the shared factory's.
+      const socket = createWsSocket(session, payload.protocol, {
+        send: (data) =>
+          ws.send(data instanceof ArrayBuffer ? new Uint8Array(data) : data),
+        close,
+        ping: (pingData) => ws.ping(pingData),
+        bufferedAmount: () => ws.getBufferedAmount(),
+      });
+      runWsHandler(payload.route.handler, socket, payload.ctx, session, close);
     },
     message(ws, data) {
       const session = sessions.get(ws);

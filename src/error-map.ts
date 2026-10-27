@@ -11,7 +11,7 @@ import type { App } from './app';
 import type { Ctx, Params, State } from './types';
 
 import { isHttpError, toErrorResponse } from './errors';
-import { drainPendingHeaders } from './respond';
+import { adoptResponse, drainPendingHeaders } from './respond';
 
 /**
  * The default {@link AppOptions.logError}: one leading context line —
@@ -66,17 +66,18 @@ export async function mapError<S extends State = State>(
     if (!isHttpError(error) || error.cause !== undefined) {
       (app.logError ?? defaultLogError)(error, ctx);
     }
-    ctx.res = toErrorResponse(error);
+    adoptResponse(ctx, toErrorResponse(error));
   } else {
     try {
       await app.onError(ctx, error);
     } catch (handlerError) {
       // A crashing error handler is itself a failure — default mapping.
-      ctx.res = toErrorResponse(handlerError);
+      adoptResponse(ctx, toErrorResponse(handlerError));
     }
   }
-  // The error response bypassed newResponse (or onError wrote one raw) —
-  // headers deferred onto this ctx still ride it.
+  // An onError that wrote its response raw bypassed newResponse — headers
+  // deferred onto this ctx still ride it; the default-mapping adoptions
+  // above already drained.
   if (ctx.res !== undefined) {
     drainPendingHeaders(ctx, ctx.res);
   }

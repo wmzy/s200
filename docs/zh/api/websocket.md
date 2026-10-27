@@ -25,6 +25,10 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });           
 | `matchWebSocket(app, pathname)` | 对注册表做最长匹配查找 → `WebSocketMatch \| undefined` |
 | `resolveUpgrade(app, route, request, url, params)` | 运行应用 + 路由中间件链 → `WsUpgradeDecision`（适配器共用的判定帮助函数） |
 | `createWsCtx(req, url, params)` | 为 handler 构建请求形状的 `Ctx`（params/query/url） |
+| `negotiateProtocol(offered, serverProtocols)` | 适配器共用的子协议规则：拆分客户端提供的 `sec-websocket-protocol` 头，按服务端偏好序 —— 第一个客户端也提供的声明协议胜出，无匹配时为 `undefined` |
+| `createWsSession()` | 新建监听器袋（`onMessage`/`onClose`/`onError`/`onPong` 列表），支撑一条连接的 socket 注册 |
+| `createWsSocket(session, protocol, transport)` | 适配器共用的 socket 工厂：围绕运行时传输闭包（`send`/`close`/`ping`/`bufferedAmount`，可选 `subscribePong`）构建 `WsSocket` API |
+| `runWsHandler(handler, socket, ctx, session, close)` | 在中间件链之外运行 handler；拒绝时向 `session.onError` 扇出并经 `close` 关闭 1011 |
 
 `upgradeWebSocket` 镜像 HTTP 注册器的 variadic 形状：模式与末端 handler 之间的每个实参都是路由级中间件；旧的四参形式（无中间件的 `handler, options?`）继续有效。
 
@@ -92,7 +96,7 @@ upgradeWebSocket(
 - **批准** —— 链正常结束且 `ctx.res` 仍为 `undefined` 时升级继续：socket 即响应。中间件在回卷侧看到 `res: undefined`，且所有 `ctx.state` 修改都随 handler 的 ctx 一并传递（同一个 ctx 对象 —— `resolveUpgrade` 把它交还给适配器）。既不作答也不调 `next()` 的中间件隐式批准 —— 要么调 `next()` 要么作答，没有第三条分支。
 - **handler 本身在批准之后运行**，位于链外：它抛出的错误不再经过中间件（走 `socket.onError` + 以 1011 关闭的既有行为）。
 
-`resolveUpgrade(app, route, request, url, params)` 是所有适配器共用的判定帮助函数 —— `WsUpgradeDecision` 为 `{ ok: true; ctx: Ctx }` 或 `{ ok: false; response: Response }`。它面向适配器作者；应用通过 `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` / `createCloudflareWebSocketBridge` 获得相同行为。
+`resolveUpgrade(app, route, request, url, params)` 是所有适配器共用的判定帮助函数 —— `WsUpgradeDecision` 为 `{ ok: true; ctx: Ctx }` 或 `{ ok: false; response: Response }`。它面向适配器作者；应用通过 `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` / `createCloudflareWebSocketBridge` 获得相同行为。连接阶段的帮助函数同理：`negotiateProtocol` 执行共用的子协议规则，`createWsSession` + `createWsSocket` + `runWsHandler` 构建各运行时的 socket —— 适配器只需提供自己的传输闭包（node 的 RFC 6455 帧封装、bun 的 `ArrayBuffer`→视图转换、workerd 的可选 `ping`/`bufferedAmount`）。
 
 ## Node（`s200/websocket/node`）
 

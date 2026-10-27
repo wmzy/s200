@@ -24,25 +24,18 @@ import type { ShardSpec } from './shard';
 
 import { handle } from './app';
 import { matchShard } from './shard';
-import { utf8Length } from './respond';
+import { jsonFallback } from './respond';
 
 /**
- * The no-shard 404 mirrors the core fallback's shape (`{ error }` JSON,
- * `application/json`, explicit content-length) but cannot call
- * `respond.json` itself: that helper writes `ctx.res` for a request
- * already inside an app's chain, and a request no shard claimed never
- * entered any chain. `utf8Length` keeps the advertised size honest for
- * non-ASCII error payloads, exactly as `json` does in-chain.
+ * The no-shard 404 shares the core fallback's envelope
+ * ({@link jsonFallback}): same `{ error }` JSON body, same
+ * `application/json`, same honest byte length. A request no shard
+ * claimed never entered any app's chain, so no `Ctx` exists — the
+ * `undefined` form hands back the bare platform Response as the whole
+ * answer.
  */
 function noShardResponse(): Response {
-  const body = JSON.stringify({ error: 'no shard' });
-  return new Response(body, {
-    status: 404,
-    headers: {
-      'content-type': 'application/json',
-      'content-length': String(utf8Length(body)),
-    },
-  });
+  return jsonFallback(undefined, 404, 'no shard');
 }
 
 /**

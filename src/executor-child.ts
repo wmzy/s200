@@ -226,10 +226,14 @@ async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResp
         : {}),
     });
     const response = await handle(app, request);
-    const head: Record<string, string> = {};
+    const head: Record<string, string | string[]> = {};
     response.headers.forEach((value, name) => {
       head[name] = value;
     });
+    // forEach would collapse repeated set-cookie into one comma-joined
+    // value, which is not a legal cookie list — keep them as an array.
+    const setCookies = response.headers.getSetCookie();
+    if (setCookies.length > 0) head['set-cookie'] = setCookies;
     res.writeHead(response.status, head);
     if (response.body === null) {
       res.end();

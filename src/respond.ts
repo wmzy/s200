@@ -48,6 +48,21 @@ export function drainPendingHeaders(ctx: Ctx, res: Response): void {
 }
 
 /**
+ * Adopts an externally built `Response` as the request's response: assigns
+ * `ctx.res` and applies any headers deferred via {@link setHeader} — the
+ * adopted response bypassed {@link newResponse}, so this is where deferred
+ * headers ride it. The one-step form of `ctx.res = res;
+ * drainPendingHeaders(ctx, res)`: terminators (handler-returned
+ * responses), the error mapping, and the proxy all adopt responses they
+ * did not build.
+ */
+export function adoptResponse(ctx: Ctx, res: Response): Response {
+  ctx.res = res;
+  drainPendingHeaders(ctx, res);
+  return res;
+}
+
+/**
  * Builds the response object for this request context: a {@link LightResponse}
  * on the adapter's opt-in light path, the platform `Response` everywhere
  * else. Every in-chain response construction goes through here, so light
@@ -151,6 +166,78 @@ export type JsonResponse<T, S extends number = 200> = Response & {
 };
 
 /**
+ * The one materialization tail every byte-writing respond helper funnels
+ * into: advertise the exact byte length, build through
+ * {@link newResponse} (light path included), and assign into `ctx.res`.
+ *
+ * RFC 9110 §8.6: no content-length on 1xx or 204 — a null-body response
+ * with such a status must not advertise the empty size. 304 joins them
+ * (§15.4.5): the would-be length is the only honest size, and s200 omits
+ * the header rather than echo the size or advertise 0 — conditional 304s
+ * (static layer, `s200/etag`) build on this. `byteLength === undefined`
+ * (size not known here) advertises nothing; the platform then serializes
+ * the length lazily.
+ */
+function materialize<S extends number = 200>(
+  ctx: Ctx,
+  body: BodyInit | Uint8Array | null,
+  init: (ResponseInit & { readonly status?: S }) | undefined,
+  headers: Headers,
+  byteLength: number | undefined
+): StatusedResponse<S> {
+  const status = init?.status ?? 200;
+  const nullBodyStatus =
+    (status >= 100 && status < 200) || status === 204 || status === 304;
+  if (byteLength !== undefined && !nullBodyStatus) {
+    headers.set('content-length', String(byteLength));
+  }
+  ctx.res = newResponse(ctx, body, {
+    status: init?.status,
+    statusText: init?.statusText,
+    headers,
+  });
+  return ctx.res as StatusedResponse<S>;
+}
+
+/** Builds a Headers view of `init` with a default content-type filled in —
+ * explicit headers always win over defaults. */
+function defaultedHeaders(
+  ctx: Ctx,
+  init: ResponseInit | undefined,
+  fallback: string
+): Headers {
+  const headers = headersFor(ctx, init?.headers);
+  if (!headers.has('content-type')) {
+    headers.set('content-type', fallback);
+  }
+  return headers;
+}
+
+/**
+ * The string-body tail {@link json}/{@link text}/{@link html} share with
+ * `jsonRaw` (`s200/serialize`): fills the content-type default through
+ * {@link defaultedHeaders} — built on {@link headersFor}, so the light
+ * path keeps its zero-copy {@link LightHeaders} view — advertises the
+ * exact UTF-8 byte length with {@link materialize}'s null-body guard, and
+ * assigns the built response into `ctx.res`. Exported for batteries that
+ * write pre-built strings, so they ride the same header and length
+ * contract as the first-party helpers instead of hand-rolling a
+ * `new Headers`.
+ */
+export function stringResponse<S extends number = 200>(
+  ctx: Ctx,
+  body: string,
+  init?: ResponseInit & { readonly status?: S },
+  fallbackContentType?: string
+): StatusedResponse<S> {
+  const headers =
+    fallbackContentType === undefined
+      ? headersFor(ctx, init?.headers)
+      : defaultedHeaders(ctx, init, fallbackContentType);
+  return materialize(ctx, body, init, headers, utf8Length(body));
+}
+
+/**
  * `Uint8Array` is widened beyond lib-dom's `BodyInit` because TS 5.7 made
  * plain `Uint8Array` mean `Uint8Array<ArrayBufferLike>` while `BodyInit`
  * only accepts the `ArrayBuffer`-backed flavor — every runtime (undici,
@@ -174,23 +261,7 @@ export function send<S extends number = 200>(
   } else if (body === null) {
     length = 0;
   }
-  // RFC 9110 §8.6: no content-length on 1xx or 204 — a null-body send with
-  // such a status must not advertise the empty size. 304 joins them
-  // (§15.4.5): the would-be length is the only honest size, and s200 omits
-  // the header rather than echo the size or advertise 0 — conditional 304s
-  // (static layer, `s200/etag`) build on this.
-  const status = init?.status ?? 200;
-  const nullBodyStatus =
-    (status >= 100 && status < 200) || status === 204 || status === 304;
-  if (length !== undefined && !nullBodyStatus) {
-    headers.set('content-length', String(length));
-  }
-  ctx.res = newResponse(ctx, body, {
-    status: init?.status,
-    statusText: init?.statusText,
-    headers,
-  });
-  return ctx.res as StatusedResponse<S>;
+  return materialize(ctx, body, init, headers, length);
 }
 
 export function json<T = unknown, S extends number = 200>(
@@ -198,32 +269,12 @@ export function json<T = unknown, S extends number = 200>(
   data: T,
   init?: ResponseInit & { readonly status?: S }
 ): JsonResponse<T, S> {
-  const body = JSON.stringify(data);
-  const headers = headersFor(ctx, init?.headers);
-  if (!headers.has('content-type')) {
-    headers.set('content-type', 'application/json');
-  }
-  headers.set('content-length', String(utf8Length(body)));
-  ctx.res = newResponse(ctx, body, {
-    status: init?.status,
-    statusText: init?.statusText,
-    headers,
-  });
-  return ctx.res as JsonResponse<T, S>;
-}
-
-/** Builds a Headers view of `init` with a default content-type filled in —
- * explicit headers always win over defaults. */
-function defaultedHeaders(
-  ctx: Ctx,
-  init: ResponseInit | undefined,
-  fallback: string
-): Headers {
-  const headers = headersFor(ctx, init?.headers);
-  if (!headers.has('content-type')) {
-    headers.set('content-type', fallback);
-  }
-  return headers;
+  return stringResponse(
+    ctx,
+    JSON.stringify(data),
+    init,
+    'application/json'
+  ) as JsonResponse<T, S>;
 }
 
 export function text<S extends number = 200>(
@@ -231,14 +282,7 @@ export function text<S extends number = 200>(
   body: string,
   init?: ResponseInit & { readonly status?: S }
 ): StatusedResponse<S> {
-  const headers = defaultedHeaders(ctx, init, 'text/plain; charset=utf-8');
-  headers.set('content-length', String(utf8Length(body)));
-  ctx.res = newResponse(ctx, body, {
-    status: init?.status,
-    statusText: init?.statusText,
-    headers,
-  });
-  return ctx.res as StatusedResponse<S>;
+  return stringResponse(ctx, body, init, 'text/plain; charset=utf-8');
 }
 
 /**
@@ -251,14 +295,7 @@ export function html<S extends number = 200>(
   body: string,
   init?: ResponseInit & { readonly status?: S }
 ): StatusedResponse<S> {
-  const headers = defaultedHeaders(ctx, init, 'text/html; charset=utf-8');
-  headers.set('content-length', String(utf8Length(body)));
-  ctx.res = newResponse(ctx, body, {
-    status: init?.status,
-    statusText: init?.statusText,
-    headers,
-  });
-  return ctx.res as StatusedResponse<S>;
+  return stringResponse(ctx, body, init, 'text/html; charset=utf-8');
 }
 
 /** Escapes the five HTML-significant characters: `& < > " '`. */
@@ -288,4 +325,42 @@ export function redirect<S extends number = 302>(
     headers: { location },
   });
   return ctx.res as StatusedResponse<S>;
+}
+
+/**
+ * The `{ error }` JSON envelope every framework-level fallback speaks:
+ * the in-chain 405/404/500 terminal of `app.ts` and the out-of-chain
+ * no-shard 404 of `s200/shard-dev`. One shape — status,
+ * `application/json`, extra headers riding along (405's `Allow`) — with
+ * one deliberate split: in-chain callers pass their `Ctx` and get
+ * {@link newResponse} materialization (light path included, assigned into
+ * `ctx.res`) while staying length-silent, the fallback contract
+ * size-aware batteries (`s200/etag`, `s200/response-check`) treat as
+ * unstamped. An out-of-chain caller passes `undefined` — no chain ever
+ * ran, so no `Ctx` exists and the bare platform Response (with its honest
+ * byte length stamped, since nothing under s200's control will serialize
+ * it lazily) is the whole answer.
+ */
+export function jsonFallback(
+  ctx: Ctx | undefined,
+  status: number,
+  message: string,
+  extraHeaders?: Readonly<Record<string, string>>
+): Response {
+  const body = JSON.stringify({ error: message });
+  if (ctx === undefined) {
+    return new Response(body, {
+      status,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(utf8Length(body)),
+        ...extraHeaders,
+      },
+    });
+  }
+  ctx.res = newResponse(ctx, body, {
+    status,
+    headers: { 'content-type': 'application/json', ...extraHeaders },
+  });
+  return ctx.res;
 }

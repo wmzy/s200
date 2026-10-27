@@ -61,6 +61,107 @@ Every command loads its entry with the same convention (default export or a
 named export "app"; default ./app.ts). TypeScript entries need Node >= 22.18
 (or >= 22.6 with --experimental-strip-types).`;
 
+// --- Shared argv grammar -----------------------------------------------------
+//
+// Every command's parser is the same loop over a flag table — one optional
+// positional entry defaulting to ./app.ts, value flags taking both
+// `--flag value` and `--flag=value` spellings, repeatable flags collecting
+// in argv order — plus the same three errors (unknown option, unexpected
+// argument, missing value), each carrying the usage text. The tables below
+// ARE each command's grammar; the loop is written once.
+
+/** One row of a command's flag table. `value` keeps the last hit (flags
+ * may repeat), `repeat` collects every hit in argv order, `switch` is a
+ * bare flag whose presence the caller maps onto its result field. */
+type ArgFlag = {
+  readonly flag: string;
+  readonly kind: 'value' | 'repeat' | 'switch';
+  /** Value validation/coercion (`--port` range check); absent = raw string. */
+  readonly check?: (raw: string) => unknown;
+};
+
+/** What {@link parseCommandArgs} hands back: the entry plus per-flag
+ * results keyed by exact flag spelling. */
+type ParsedArgs = {
+  readonly entry: string;
+  readonly values: Record<string, unknown>;
+  readonly lists: Record<string, string[]>;
+  readonly switches: Record<string, boolean>;
+};
+
+/** The one argv loop behind `parseDevArgs`/`parseRoutesArgs`/
+ * `parseCodegenArgs`. Throws with the usage text on anything off-grammar,
+ * exactly like the per-command parsers it replaced. */
+function parseCommandArgs(
+  command: string,
+  argv: readonly string[],
+  flags: readonly ArgFlag[]
+): ParsedArgs {
+  const values: Record<string, unknown> = {};
+  const lists: Record<string, string[]> = {};
+  const switches: Record<string, boolean> = {};
+  let entry: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    // Switches have no `=` spelling — `--json=x` stays an unknown option.
+    const spec = flags.find(
+      (flag) =>
+        arg === flag.flag ||
+        (flag.kind !== 'switch' && arg.startsWith(flag.flag + '='))
+    );
+    if (spec === undefined) {
+      if (arg.startsWith('--')) {
+        throw new Error(`s200 ${command}: unknown option "${arg}"\n${USAGE}`);
+      }
+      if (entry !== undefined) {
+        throw new Error(`s200 ${command}: unexpected argument "${arg}"\n${USAGE}`);
+      }
+      entry = arg;
+      continue;
+    }
+    if (spec.kind === 'switch') {
+      switches[spec.flag] = true;
+      continue;
+    }
+    // Both spellings funnel here: the inline `=` value, else the next
+    // token — whatever it looks like, the original parsers consumed it.
+    const inline = arg.startsWith(spec.flag + '=') ? arg.slice(spec.flag.length + 1) : undefined;
+    const raw = inline ?? argv[i + 1];
+    if (raw === undefined) {
+      throw new Error(`s200 ${command}: ${arg} requires a value\n${USAGE}`);
+    }
+    if (inline === undefined) {
+      i += 1;
+    }
+    const value = spec.check === undefined ? raw : spec.check(raw);
+    if (spec.kind === 'repeat') {
+      (lists[spec.flag] ??= []).push(value as string);
+    } else {
+      values[spec.flag] = value;
+    }
+  }
+  return { entry: entry ?? './app.ts', values, lists, switches };
+}
+
+/** The `s200 dev --port` value check: integral, 0–65535 (0 = free port). */
+const portOf = (raw: string): number => {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+    throw new Error(`s200 dev: invalid port "${raw}"\n${USAGE}`);
+  }
+  return parsed;
+};
+
+/** The `s200 dev` flag table. */
+const DEV_FLAGS: readonly ArgFlag[] = [
+  { flag: '--port', kind: 'value', check: portOf },
+  { flag: '--no-hints', kind: 'switch' },
+  { flag: '--overlay', kind: 'switch' },
+  { flag: '--host', kind: 'value' },
+  { flag: '--watch', kind: 'repeat' },
+  { flag: '--env-file', kind: 'repeat' },
+];
+
 /** Parsed `s200 dev` arguments — `port`/`hints`/`overlay`/`host` are
  * `undefined` when their flags are absent, so an embedding `runDev` call
  * can supply its own defaults; `watch`/`envFiles` collect their repeatable
@@ -80,62 +181,16 @@ export type DevArgs = {
  * take both `--flag value` and `--flag=value`, `--watch`/`--env-file`
  * repeat. Throws on anything else, with the usage text in the message. */
 export function parseDevArgs(argv: readonly string[]): DevArgs {
-  let entry: string | undefined;
-  let port: number | undefined;
-  let hints: boolean | undefined;
-  let overlay: boolean | undefined;
-  let host: string | undefined;
-  const watch: string[] = [];
-  const envFiles: string[] = [];
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
-    const flagValue = (): string => {
-      const value = argv[i + 1];
-      if (value === undefined) {
-        throw new Error(`s200 dev: ${arg} requires a value\n${USAGE}`);
-      }
-      return value;
-    };
-    const checkPort = (raw: string): number => {
-      const parsed = Number(raw);
-      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
-        throw new Error(`s200 dev: invalid port "${raw}"\n${USAGE}`);
-      }
-      return parsed;
-    };
-    if (arg === '--port') {
-      port = checkPort(flagValue());
-      i += 1;
-    } else if (arg.startsWith('--port=')) {
-      port = checkPort(arg.slice('--port='.length));
-    } else if (arg === '--no-hints') {
-      hints = false;
-    } else if (arg === '--overlay') {
-      overlay = true;
-    } else if (arg === '--host') {
-      host = flagValue();
-      i += 1;
-    } else if (arg.startsWith('--host=')) {
-      host = arg.slice('--host='.length);
-    } else if (arg === '--watch') {
-      watch.push(flagValue());
-      i += 1;
-    } else if (arg.startsWith('--watch=')) {
-      watch.push(arg.slice('--watch='.length));
-    } else if (arg === '--env-file') {
-      envFiles.push(flagValue());
-      i += 1;
-    } else if (arg.startsWith('--env-file=')) {
-      envFiles.push(arg.slice('--env-file='.length));
-    } else if (arg.startsWith('--')) {
-      throw new Error(`s200 dev: unknown option "${arg}"\n${USAGE}`);
-    } else if (entry !== undefined) {
-      throw new Error(`s200 dev: unexpected argument "${arg}"\n${USAGE}`);
-    } else {
-      entry = arg;
-    }
-  }
-  return { entry: entry ?? './app.ts', port, hints, overlay, host, watch, envFiles };
+  const { entry, values, lists, switches } = parseCommandArgs('dev', argv, DEV_FLAGS);
+  return {
+    entry,
+    port: values['--port'] as number | undefined,
+    hints: switches['--no-hints'] === true ? false : undefined,
+    overlay: switches['--overlay'],
+    host: values['--host'] as string | undefined,
+    watch: lists['--watch'] ?? [],
+    envFiles: lists['--env-file'] ?? [],
+  };
 }
 
 /** What the watch seam receives: everything `watchAndReload` needs. */
@@ -507,23 +562,14 @@ export type RoutesArgs = {
   readonly json: boolean;
 };
 
+/** The `s200 routes` flag table. */
+const ROUTES_FLAGS: readonly ArgFlag[] = [{ flag: '--json', kind: 'switch' }];
+
 /** The argv grammar of `s200 routes`: `[entry] [--json]`. Throws on
  * anything else, with the usage text in the message. */
 export function parseRoutesArgs(argv: readonly string[]): RoutesArgs {
-  let entry: string | undefined;
-  let json = false;
-  for (const arg of argv) {
-    if (arg === '--json') {
-      json = true;
-    } else if (arg.startsWith('--')) {
-      throw new Error(`s200 routes: unknown option "${arg}"\n${USAGE}`);
-    } else if (entry !== undefined) {
-      throw new Error(`s200 routes: unexpected argument "${arg}"\n${USAGE}`);
-    } else {
-      entry = arg;
-    }
-  }
-  return { entry: entry ?? './app.ts', json };
+  const { entry, switches } = parseCommandArgs('routes', argv, ROUTES_FLAGS);
+  return { entry, json: switches['--json'] === true };
 }
 
 /**
@@ -551,43 +597,24 @@ export type CodegenArgs = {
   readonly baseUrl: string | undefined;
 };
 
+/** The `s200 codegen` flag table. */
+const CODEGEN_FLAGS: readonly ArgFlag[] = [
+  { flag: '--out', kind: 'value' },
+  { flag: '--name', kind: 'value' },
+  { flag: '--base-url', kind: 'value' },
+];
+
 /** The argv grammar of `s200 codegen`: `[entry] [--out file] [--name X]
  * [--base-url U]` (both spellings, `--flag value` and `--flag=value`).
  * Throws on anything else, with the usage text in the message. */
 export function parseCodegenArgs(argv: readonly string[]): CodegenArgs {
-  let entry: string | undefined;
-  let out: string | undefined;
-  let name: string | undefined;
-  let baseUrl: string | undefined;
-  const flagValue = (flag: string, raw: string | undefined): string => {
-    if (raw === undefined) {
-      throw new Error(`s200 codegen: ${flag} requires a value\n${USAGE}`);
-    }
-    return raw;
+  const { entry, values } = parseCommandArgs('codegen', argv, CODEGEN_FLAGS);
+  return {
+    entry,
+    out: values['--out'] as string | undefined,
+    name: values['--name'] as string | undefined,
+    baseUrl: values['--base-url'] as string | undefined,
   };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
-    if (arg === '--out') {
-      out = flagValue(arg, argv[++i]);
-    } else if (arg.startsWith('--out=')) {
-      out = arg.slice('--out='.length);
-    } else if (arg === '--name') {
-      name = flagValue(arg, argv[++i]);
-    } else if (arg.startsWith('--name=')) {
-      name = arg.slice('--name='.length);
-    } else if (arg === '--base-url') {
-      baseUrl = flagValue(arg, argv[++i]);
-    } else if (arg.startsWith('--base-url=')) {
-      baseUrl = arg.slice('--base-url='.length);
-    } else if (arg.startsWith('--')) {
-      throw new Error(`s200 codegen: unknown option "${arg}"\n${USAGE}`);
-    } else if (entry !== undefined) {
-      throw new Error(`s200 codegen: unexpected argument "${arg}"\n${USAGE}`);
-    } else {
-      entry = arg;
-    }
-  }
-  return { entry: entry ?? './app.ts', out, name, baseUrl };
 }
 
 /**

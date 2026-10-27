@@ -12,6 +12,9 @@ json<T, S>(ctx, data, init?): JsonResponse<T, S>    // JSON.stringify + content-
 text<S>(ctx, body, init?): StatusedResponse<S>      // text/plain; charset=utf-8
 html<S>(ctx, body, init?): StatusedResponse<S>      // text/html; charset=utf-8 — NOT escaped
 redirect<S>(ctx, location, status?): StatusedResponse<S>  // default 302
+stringResponse<S>(ctx, body, init?, fallbackContentType?): StatusedResponse<S>  // the shared string-body tail
+adoptResponse(ctx, res): Response                   // ctx.res = res + deferred headers ride it
+jsonFallback(ctx | undefined, status, message, extraHeaders?): Response  // the { error } fallback envelope
 setHeader(ctx, name, value)                         // direct, or deferred pre-response
 setHeaders(ctx, { name: value })                    // many at once, insertion order
 resOf(ctx): Response                                // post-next() res read, misuse-naming throw
@@ -29,7 +32,7 @@ drainPendingHeaders(ctx, res)                       // low-level: see below
 
 Notes:
 
-- All four byte-writing helpers set an explicit `content-length` — the contract `s200/etag` and `s200/compress` rely on (platforms serialize content-length lazily; a bare `new Response('…')` does not set it). Null-body statuses are exempt: `send` never advertises one on 1xx/204, and 304 omits it (RFC 9110 §15.4.5) instead of echoing the would-be size or advertising `0`.
+- All four byte-writing helpers set an explicit `content-length` — the contract `s200/etag` and `s200/compress` rely on (platforms serialize content-length lazily; a bare `new Response('…')` does not set it). Null-body statuses are exempt across all of them, `jsonRaw` included: no `content-length` on 1xx/204, and 304 omits it (RFC 9110 §8.6/§15.4.5) instead of echoing the would-be size or advertising `0`. (`json`/`text`/`html` carrying such a status only construct on the light path — the platform `Response` refuses a body on a null-body status.)
 - `json`/`text`/`html` accept `init.status` and stamp it into the brand; `redirect`'s third argument is the status.
 - `html` does **not** escape — run user input through `escapeHtml` first (mirrors `hono/html`'s explicit-escape contract).
 
@@ -40,7 +43,7 @@ Notes:
 - **After `await next()`** the response is always materialized (handler's, fallback, or error response — the chain materializes all of them in-band); the header lands on it directly.
 - **Before the response exists** (top of the middleware, or inside `onError`) the header is deferred and stamped onto whichever response the request first materializes — handler response, `404`/`405`/`500` fallback, or error response. A deferred value overrides the response's own header of the same name: middleware policy (`x-powered-by`, `cache-control`, security headers) wins over what the handler built.
 
-`drainPendingHeaders(ctx, res)` is the low-level drain hook behind that contract — `newResponse`, the bare-`Response` adoption, and the error mapping call it. Battery/adapter authors adopting a response that bypassed `newResponse` call it too; application code never needs it.
+`drainPendingHeaders(ctx, res)` is the low-level drain hook behind that contract — `newResponse`, the bare-`Response` adoption, and the error mapping call it. Battery/adapter authors adopting a response that bypassed `newResponse` usually want its one-step form, `adoptResponse(ctx, res)` — it assigns `ctx.res` and drains in one call; application code never needs either.
 
 ### Post-`next()` narrowing
 

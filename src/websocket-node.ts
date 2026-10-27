@@ -39,14 +39,14 @@ import { createHash } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 import {
+  createWsSession,
+  createWsSocket,
   matchWebSocket,
+  negotiateProtocol,
   resolveUpgrade,
+  runWsHandler,
   type WebSocketHandler,
-  type WsCloseCb,
   type WsData,
-  type WsErrorCb,
-  type WsMessageCb,
-  type WsSocket,
 } from './websocket';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -148,19 +148,14 @@ function acceptUpgrade(
   const accept = createHash('sha1').update(key + WS_GUID).digest('base64');
 
   // Subprotocol negotiation: server preference order — the first protocol
-  // the route declares that the client also offered wins.
+  // the route declares that the client also offered wins. The header's
+  // node type is string | string[] | undefined; only a plain string is an
+  // offer (a non-string counts as none, as before the shared helper).
   const offered = req.headers['sec-websocket-protocol'];
-  const clientProtocols =
-    typeof offered === 'string'
-      ? offered.split(',').map((item) => item.trim()).filter((item) => item !== '')
-      : [];
-  let protocol: string | undefined;
-  for (const candidate of matched.route.protocols ?? []) {
-    if (clientProtocols.includes(candidate)) {
-      protocol = candidate;
-      break;
-    }
-  }
+  const protocol = negotiateProtocol(
+    typeof offered === 'string' ? offered : null,
+    matched.route.protocols
+  );
 
   // permessage-deflate (RFC 7692): accept only as no-context-takeover in
   // both directions — stateless per-message compression, no shared window
@@ -298,6 +293,14 @@ function encodeCloseReason(reason: string): Uint8Array {
   return bytes.subarray(0, end);
 }
 
+/** A close frame's payload: the 2-byte code then the reason bytes. */
+function closePayload(code: number, reasonBytes: Uint8Array): Buffer {
+  const payload = Buffer.alloc(2 + reasonBytes.byteLength);
+  payload.writeUInt16BE(code, 0);
+  payload.set(reasonBytes, 2);
+  return payload;
+}
+
 function runConnection(
   socket: Duplex,
   head: Buffer,
@@ -307,10 +310,7 @@ function runConnection(
   handler: WebSocketHandler,
   ctx: Ctx
 ): void {
-  const messageCbs: WsMessageCb[] = [];
-  const closeCbs: WsCloseCb[] = [];
-  const errorCbs: WsErrorCb[] = [];
-  const pongCbs: (() => void)[] = [];
+  const session = createWsSession();
 
   let pending = head;
   let finished = false;
@@ -346,10 +346,7 @@ function runConnection(
     closeSent = true;
     closeCode = code;
     closeReason = reason;
-    const reasonBytes = encodeCloseReason(reason);
-    const payload = Buffer.alloc(2 + reasonBytes.byteLength);
-    payload.writeUInt16BE(code, 0);
-    payload.set(reasonBytes, 2);
+    const payload = closePayload(code, encodeCloseReason(reason));
     socket.write(Buffer.concat([frameHeader(0x8, payload.byteLength), payload]));
     socket.end(); // flush, then close our side once the peer answers
   };
@@ -360,10 +357,10 @@ function runConnection(
 
   const dispatchClose = (): void => {
     finished = true;
-    for (const cb of closeCbs) cb(closeCode, closeReason);
-    closeCbs.length = 0;
-    messageCbs.length = 0;
-    errorCbs.length = 0;
+    for (const cb of session.onClose) cb(closeCode, closeReason);
+    session.onClose.length = 0;
+    session.onMessage.length = 0;
+    session.onError.length = 0;
   };
 
   const deliver = (opcode: number, payload: Buffer, inflate: boolean): void => {
@@ -400,11 +397,11 @@ function runConnection(
         payload.byteOffset + payload.byteLength
       ) as ArrayBuffer;
     }
-    for (const cb of messageCbs) {
+    for (const cb of session.onMessage) {
       try {
         cb(data);
       } catch (error) {
-        for (const errorCb of errorCbs) {
+        for (const errorCb of session.onError) {
           errorCb(error instanceof Error ? error : new Error(String(error)));
         }
         sendClose(1011, 'handler error');
@@ -564,9 +561,7 @@ function runConnection(
             if (code === 1005) {
               socket.write(frameHeader(0x8, 0));
             } else {
-              const echo = Buffer.alloc(2 + TEXT_ENCODER.encode(reason).byteLength);
-              echo.writeUInt16BE(code, 0);
-              echo.set(TEXT_ENCODER.encode(reason), 2);
+              const echo = closePayload(code, TEXT_ENCODER.encode(reason));
               socket.write(Buffer.concat([frameHeader(0x8, echo.byteLength), echo]));
             }
           }
@@ -579,7 +574,7 @@ function runConnection(
           break;
         case 0xa:
           // Pong: surface to the heartbeat watchers.
-          for (const cb of pongCbs) cb();
+          for (const cb of session.onPong) cb();
           break;
         default:
           failProtocol();
@@ -595,7 +590,7 @@ function runConnection(
   });
   socket.on('error', (error) => {
     if (finished) return;
-    for (const cb of errorCbs) cb(error);
+    for (const cb of session.onError) cb(error);
     // An errored socket is done; destroy so the 'close' path runs.
     socket.destroy();
   });
@@ -615,7 +610,10 @@ function runConnection(
     dispatchClose();
   });
 
-  const socketApi: WsSocket = {
+  // The transport closures are the only socket-API part native to node:
+  // RFC 6455 framing for send/ping, writableLength for backpressure, and
+  // the guarded sendClose; everything else is the shared factory's.
+  const socketApi = createWsSocket(session, protocol, {
     send(data) {
       if (typeof data === 'string') {
         sendMessage(0x1, TEXT_ENCODER.encode(data));
@@ -623,14 +621,7 @@ function runConnection(
         sendMessage(0x2, data instanceof Uint8Array ? data : new Uint8Array(data));
       }
     },
-    // Live: bytes node has queued for the wire but not yet flushed.
-    get bufferedAmount(): number {
-      return socket.writableLength;
-    },
-    close(code, reason) {
-      sendClose(code ?? 1000, reason ?? '');
-    },
-    protocol,
+    close: sendClose,
     ping(payload) {
       const bytes =
         payload === undefined
@@ -640,26 +631,8 @@ function runConnection(
             : payload;
       writeFrame(0x9, bytes);
     },
-    onMessage(cb) {
-      messageCbs.push(cb);
-    },
-    onClose(cb) {
-      closeCbs.push(cb);
-    },
-    onError(cb) {
-      errorCbs.push(cb);
-    },
-    onPong(cb) {
-      pongCbs.push(cb);
-    },
-  };
+    bufferedAmount: () => socket.writableLength,
+  });
 
-  void Promise.resolve()
-    .then(() => handler(socketApi, ctx))
-    .catch((error: unknown) => {
-      for (const cb of errorCbs) {
-        cb(error instanceof Error ? error : new Error(String(error)));
-      }
-      sendClose(1011, 'handler error');
-    });
+  runWsHandler(handler, socketApi, ctx, session, sendClose);
 }

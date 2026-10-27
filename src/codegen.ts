@@ -23,10 +23,17 @@
 
 import type { App } from './app';
 
-import type { Route, Segment } from './types';
+import type { Segment } from './types';
 import type { SerializeSchema } from './serialize';
 
-import { getRouteMeta, isMultipartBody, isQueryRequired, querySchemaOf } from './meta';
+import {
+  getRouteMeta,
+  isMultipartBody,
+  isQueryRequired,
+  querySchemaOf,
+  throwsErrors,
+  uniqueName,
+} from './meta';
 
 /** Options for {@link generateClient}. */
 export type GenerateClientOptions = {
@@ -172,30 +179,6 @@ function argsTypeOf(segments: readonly Segment[]): string | undefined {
     members.push(`${propertyKey(segment.name)}${optional}: string`);
   }
   return members.length === 0 ? undefined : `{ ${members.join('; ')} }`;
-}
-
-/**
- * The error branches a route's `throws` gates declare, read off the live
- * middleware chain: each gate's runtime `_errors` stash (status → example
- * body — see `s200`'s `throws`) merges into one record; when two gates
- * name the same status the later registration wins (the type layer unions
- * body shapes, example values cannot).
- */
-function throwsErrors(route: Route): Record<number, unknown> {
-  const merged: Record<number, unknown> = {};
-  for (const middleware of route.middlewares) {
-    const declared = (middleware as { readonly _errors?: unknown })._errors;
-    if (typeof declared !== 'object' || declared === null) continue;
-    for (const [status, example] of Object.entries(
-      declared as Readonly<Record<string, unknown>>
-    )) {
-      const code = Number(status);
-      if (Number.isInteger(code) && code >= 100 && code <= 599) {
-        merged[code] = example;
-      }
-    }
-  }
-  return merged;
 }
 
 /** One response branch of a route: its status literal and body type. */
@@ -401,13 +384,7 @@ export function generateClient(app: App, options: GenerateClientOptions = {}): s
       skippedAll.push(route.pattern);
       continue;
     }
-    const base = routeMethodName(route.method, route.pattern);
-    let name = base;
-    let suffix = 2;
-    while (used.has(name)) {
-      name = `${base}_${suffix}`;
-      suffix += 1;
-    }
+    const name = uniqueName(routeMethodName(route.method, route.pattern), used);
     used.add(name);
     const typeBase = capitalize(name);
     const meta = getRouteMeta(route);

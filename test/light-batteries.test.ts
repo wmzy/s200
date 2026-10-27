@@ -15,6 +15,7 @@ import { etag } from '../src/etag';
 import { isLightRequest, LightHeaders } from '../src/light';
 import { createFileRangeReader, createFileReader, createFileStat, serve } from '../src/node';
 import { json, setHeader, setHeaders, text } from '../src/respond';
+import { jsonRaw, serialize } from '../src/serialize';
 import { serveStatic } from '../src/static';
 import { stream, streamSSE } from '../src/streaming';
 
@@ -1046,5 +1047,77 @@ describe('LightHeaders.set validation (direct)', () => {
     headers.get(name)!.should.equal('ok');
     headers.append(name, 'twice');
     headers.get(name)!.should.equal('ok, twice');
+  });
+});
+
+describe('jsonRaw over real http (both modes)', () => {
+  let urls: { normal: string; light: string };
+
+  beforeAll(async () => {
+    urls = await serveBoth(() => {
+      const app = createApp();
+      use(app, modeMarker());
+      const toUser = serialize({
+        type: 'object',
+        properties: { id: { type: 'integer' } },
+      });
+      get(app, '/u', (ctx) => jsonRaw(ctx, toUser({ id: 42 })));
+      return app;
+    });
+  });
+
+  it('rides the shared string tail in both modes — light ctx keeps the LightHeaders path', async () => {
+    const seen = await inBoth(urls, async (url) => {
+      const res = await fetch(`${url}/u`);
+      return {
+        mode: res.headers.get('x-s200-mode'),
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+        contentLength: res.headers.get('content-length'),
+        body: await res.text(),
+      };
+    });
+    seen.normal.mode?.should.equal('normal');
+    seen.light.mode?.should.equal('light');
+    for (const mode of ['normal', 'light'] as const) {
+      seen[mode].status.should.equal(200);
+      (seen[mode].contentType ?? '').should.equal('application/json');
+      // The body is ASCII, so the advertised length is the string length.
+      (seen[mode].contentLength ?? '').should.equal(String(seen[mode].body.length));
+      seen[mode].body.should.equal('{"id":42}');
+    }
+  });
+});
+
+describe('null-body statuses through the helpers (light wire)', () => {
+  let light: string;
+
+  beforeAll(async () => {
+    const build = () => {
+      const app = createApp();
+      use(app, modeMarker());
+      get(app, '/j204', (ctx) => json(ctx, { ok: true }, { status: 204 }));
+      get(app, '/t304', (ctx) => text(ctx, 'same', { status: 304 }));
+      return app;
+    };
+    const server = await serve(build(), { port: 0, light: true });
+    servers.push(server);
+    light = server.url;
+  });
+
+  it('json/text advertise no content-length on 204/304 (RFC 9110 §8.6/§15.4.5)', async () => {
+    // Only the light path can even construct these (the platform Response
+    // refuses a body on a null-body status) — which is exactly where the
+    // helpers used to leak a content-length onto the wire.
+    const j = await fetch(`${light}/j204`);
+    j.status.should.equal(204);
+    (j.headers.get('x-s200-mode') ?? '').should.equal('light');
+    j.headers.has('content-length').should.be.false;
+    await j.text();
+    const t = await fetch(`${light}/t304`);
+    t.status.should.equal(304);
+    (t.headers.get('x-s200-mode') ?? '').should.equal('light');
+    t.headers.has('content-length').should.be.false;
+    await t.text();
   });
 });

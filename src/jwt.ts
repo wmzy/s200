@@ -24,66 +24,22 @@ import type { Ctx, Middleware, State } from './types';
 
 import { getCookie } from './cookies';
 import { httpError } from './errors';
+import {
+  b64urlDecode as decodeB64url,
+  b64urlEncode,
+  equalBytes,
+} from './crypto-util';
 
-const B64_ALPHABET =
-  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-const B64_DECODE = new Int8Array(128).fill(-1);
-for (let i = 0; i < B64_ALPHABET.length; i += 1) {
-  B64_DECODE[B64_ALPHABET.charCodeAt(i)] = i;
-}
-
-/** Base64url encode, no padding: 3 bytes → 4 alphabet chars, with the
- * trailing group emitting 2 chars for 1 leftover byte and 3 for 2. */
-function b64url(bytes: Uint8Array): string {
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const rest = bytes.length - i;
-    const n =
-      ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
-    out += B64_ALPHABET.charAt((n >> 18) & 63);
-    out += B64_ALPHABET.charAt((n >> 12) & 63);
-    if (rest >= 2) {
-      out += B64_ALPHABET.charAt((n >> 6) & 63);
-    }
-    if (rest >= 3) {
-      out += B64_ALPHABET.charAt(n & 63);
-    }
-  }
-  return out;
-}
-
-/** Base64url decode without padding; throws on out-of-alphabet input. */
+/** Decoding that keeps this module's throw-site contract: any invalid
+ * input (padding, out-of-alphabet char, impossible length) surfaces as
+ * the same plain `Error` verifyJwt's callers and the header/payload
+ * catch blocks below pin. */
 function b64urlDecode(text: string): Uint8Array {
-  const out = new Uint8Array(Math.floor((text.length * 6) / 8));
-  let acc = 0;
-  let accBits = 0;
-  let outIndex = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (code > 127 || B64_DECODE[code] === -1) {
-      throw new Error('invalid base64url input');
-    }
-    acc = (acc << 6) | (B64_DECODE[code] ?? 0);
-    accBits += 6;
-    if (accBits >= 8) {
-      accBits -= 8;
-      out[outIndex] = (acc >> accBits) & 0xff;
-      outIndex += 1;
-    }
+  const bytes = decodeB64url(text);
+  if (bytes === null) {
+    throw new Error('invalid base64url input');
   }
-  return out;
-}
-
-/** Constant-time digest equality — the MAC comparison must not early-exit. */
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  }
-  return diff === 0;
+  return bytes;
 }
 
 type AlgInfo =
@@ -272,7 +228,7 @@ async function importAsymKey(
 }
 
 function secretText(secret: string | Uint8Array): string {
-  return typeof secret === 'string' ? secret : b64url(secret);
+  return typeof secret === 'string' ? secret : b64urlEncode(secret);
 }
 
 function isSecretKey(key: JwtKey): key is string | Uint8Array {
@@ -453,8 +409,8 @@ export async function signJwt(
     claims.jti = options.jwtId;
   }
   const encoder = new TextEncoder();
-  const headerText = b64url(encoder.encode(JSON.stringify({ alg, typ: 'JWT' })));
-  const payloadText = b64url(encoder.encode(JSON.stringify(claims)));
+  const headerText = b64urlEncode(encoder.encode(JSON.stringify({ alg, typ: 'JWT' })));
+  const payloadText = b64urlEncode(encoder.encode(JSON.stringify(claims)));
   const signingKey = await getSignKey(key, alg);
   const data = encoder.encode(`${headerText}.${payloadText}`);
   const params: AlgorithmIdentifier | string =
@@ -470,7 +426,7 @@ export async function signJwt(
   const sig = new Uint8Array(
     await crypto.subtle.sign(params, signingKey, data)
   );
-  return `${headerText}.${payloadText}.${b64url(sig)}`;
+  return `${headerText}.${payloadText}.${b64urlEncode(sig)}`;
 }
 
 export type JwtVerifyOptions = {
