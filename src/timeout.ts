@@ -16,15 +16,14 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
+import { assertPositive } from './assert';
 import { httpError } from './errors';
 
 // `AbortSignal.any` composes the previous signal with the deadline's;
 // runtimes without it keep the old detached-loss semantics instead of
 // breaking the swap contract.
 export function timeout(ms: number): Middleware {
-  if (!Number.isFinite(ms) || ms <= 0) {
-    throw new Error(`Invalid timeout ${String(ms)}ms: must be positive`);
-  }
+  assertPositive('timeout', 'ms', ms);
   return (ctx: Ctx, next: Next): Promise<void> => {
     const controller = new AbortController();
     const prev = ctx.signal;

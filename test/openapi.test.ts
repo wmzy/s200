@@ -156,6 +156,9 @@ describe('openapi (spec emission)', () => {
     envelope.should.deep.equal({
       type: 'object',
       properties: { error: { type: 'string' } },
+      // exampleToSchema marks every shown key required — the one
+      // inference layer, rendered through toJsonSchema.
+      required: ['error'],
     });
     (bare[404] as { description: string }).description.should.equal('Error response');
 
@@ -169,6 +172,7 @@ describe('openapi (spec emission)', () => {
     schema.should.deep.equal({
       type: 'object',
       properties: { issues: { type: 'array', items: { type: 'string' } } },
+      required: ['issues'],
     });
   });
 
@@ -191,7 +195,11 @@ describe('openapi (spec emission)', () => {
         'application/json'
       ] as { schema: unknown }
     ).schema as Record<string, unknown>;
-    gate.should.deep.equal({ type: 'object', properties: { error: { type: 'string' } } });
+    gate.should.deep.equal({
+      type: 'object',
+      properties: { error: { type: 'string' } },
+      required: ['error'],
+    });
   });
 
   it('emits servers, components.securitySchemes and per-route security', () => {

@@ -14,7 +14,7 @@
 import type { App } from './app';
 
 import { handle } from './app';
-import { hasFinishers, runFinish } from './finish';
+import { finishGuarded } from './finish';
 import { isSafeHost } from './safe-host';
 
 /** An API Gateway HTTP API (payload v2) event — the structural subset the
@@ -175,17 +175,6 @@ export function createLambdaHandler(app: App): LambdaHandler {
     // The result fully buffers the response before Lambda sees it — finish
     // callbacks run at buffer time, completed unless the body itself
     // failed mid-read.
-    try {
-      const result = await toResult(response);
-      if (hasFinishers(request)) {
-        runFinish(request, { aborted: false }, app.logError);
-      }
-      return result;
-    } catch (error) {
-      if (hasFinishers(request)) {
-        runFinish(request, { aborted: true }, app.logError);
-      }
-      throw error;
-    }
+    return finishGuarded(request, app.logError, () => toResult(response));
   };
 }

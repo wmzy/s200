@@ -12,8 +12,14 @@
 
 import type { Ctx } from './types';
 
-import { b64urlEncode, equalBytes } from './crypto-util';
-import { evictOldest } from './map-limit';
+import {
+  b64urlEncode,
+  equalBytes,
+  getHmacKey,
+  lruGet,
+  lruSet,
+  type HmacKeyCache,
+} from './crypto-util';
 
 /** RFC 6265 token — cookie names live in a stricter alphabet than values. */
 const NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -100,38 +106,26 @@ export function setCookie(
   ctx.res.headers.append('set-cookie', parts.join('; '));
 }
 
-/** Bounded HMAC-key cache: one imported key per distinct secret. Import
- * runs a key-derivation pass, so re-importing on every `signCookie`
- * call was a real per-signature cost; the cap keeps at most 8 secrets
- * resident, so callers cycling secrets (or an attacker shaping inputs
- * to none of them) cannot retain unbounded secret material. FIFO
- * eviction — Map preserves insertion order, the first key goes. */
+/** Bounded HMAC-key cache for cookie signing: one imported key per
+ * distinct secret, keyed by the secret's SHA-256 digest — the material
+ * itself never lands in a Map key. Import runs a key-derivation pass,
+ * so re-importing on every `signCookie` call was a real per-signature
+ * cost; the cap keeps at most 8 secrets resident, so callers cycling
+ * secrets (or an attacker shaping inputs to none of them) cannot retain
+ * unbounded key material. LRU eviction — re-insertion on read bumps
+ * recency, the least recently used entry goes. Module-level, so every
+ * app instance in the process shares the cache. */
 const KEY_CACHE_LIMIT = 8;
 const keyCache = new Map<string, Promise<CryptoKey>>();
 
-function hmacKey(secret: string): Promise<CryptoKey> {
-  let key = keyCache.get(secret);
-  if (key === undefined) {
-    // Evict BEFORE insert (FIFO — reads never re-insert), so the cap is
-    // never exceeded even transiently.
-    if (keyCache.size >= KEY_CACHE_LIMIT) {
-      evictOldest(keyCache);
-    }
-    key = crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    keyCache.set(secret, key);
-  }
-  return key;
-}
+const hmacCache: HmacKeyCache = {
+  lruGet: (key) => lruGet(keyCache, key),
+  lruSet: (key, value) => lruSet(keyCache, key, value, KEY_CACHE_LIMIT),
+};
 
 /** HMAC-SHA256 over `value`, base64url — the cookie-signature convention. */
 export async function signCookie(value: string, secret: string): Promise<string> {
-  const key = await hmacKey(secret);
+  const key = await getHmacKey(secret, 'SHA-256', ['sign'], hmacCache);
   const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value));
   return b64urlEncode(new Uint8Array(digest));
 }

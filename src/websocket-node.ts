@@ -38,7 +38,7 @@ import { STATUS_CODES } from 'node:http';
 import { createHash } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
-import { rawHeaderPairs } from './raw-headers';
+import { rawHeaderPairs, splitTokens } from './raw-headers';
 
 import {
   createWsSession,
@@ -130,9 +130,7 @@ function acceptUpgrade(
   const version = req.headers['sec-websocket-version'];
   const key = req.headers['sec-websocket-key'];
   const tokens =
-    typeof connection === 'string'
-      ? connection.split(',').map((token) => token.trim().toLowerCase())
-      : [];
+    typeof connection === 'string' ? splitTokens(connection) : [];
   if (
     typeof upgrade !== 'string' ||
     upgrade.toLowerCase() !== 'websocket' ||

@@ -1,7 +1,15 @@
 import { describe, expectTypeOf, it } from 'vitest';
 
 import { createApp, get, handle } from '../src/app';
-import { jsonRaw, serialize, type InferSchema, type SerializeSchema } from '../src/serialize';
+import {
+  compileValidator,
+  exampleToSchema,
+  jsonRaw,
+  serialize,
+  toJsonSchema,
+  type InferSchema,
+  type SerializeSchema,
+} from '../src/serialize';
 
 describe('serialize', () => {
   const user = serialize({
@@ -208,5 +216,66 @@ describe('jsonRaw', () => {
     );
     const res = await handle(app, new Request('http://localhost/x'));
     (res.headers.get('content-type') ?? '').should.equal('application/problem+json');
+  });
+});
+
+describe('exampleToSchema', () => {
+  it('maps leaves directly, splitting integer from number by integrality', () => {
+    exampleToSchema('x')!.should.deep.equal({ type: 'string' });
+    exampleToSchema(true)!.should.deep.equal({ type: 'boolean' });
+    exampleToSchema(null)!.should.deep.equal({ type: 'null' });
+    exampleToSchema(1)!.should.deep.equal({ type: 'integer' });
+    exampleToSchema(1.5)!.should.deep.equal({ type: 'number' });
+  });
+
+  it('declares every shown object key, all required, nesting included', () => {
+    exampleToSchema({ id: 1, name: 'ada' })!.should.deep.equal({
+      type: 'object',
+      properties: { id: { type: 'integer' }, name: { type: 'string' } },
+      required: ['id', 'name'],
+    });
+    exampleToSchema({ user: { roles: ['a'] } })!.should.deep.equal({
+      type: 'object',
+      properties: {
+        user: {
+          type: 'object',
+          properties: { roles: { type: 'array', items: { type: 'string' } } },
+          required: ['roles'],
+        },
+      },
+      required: ['user'],
+    });
+    exampleToSchema({})!.should.deep.equal({ type: 'object', properties: {} });
+  });
+
+  it('keeps array items only when every element infers the same schema', () => {
+    exampleToSchema([1, 2])!.should.deep.equal({ type: 'array', items: { type: 'integer' } });
+    // Empty or mixed (integer vs number included) stays unconstrained.
+    exampleToSchema([])!.should.deep.equal({ type: 'array' });
+    exampleToSchema([1, 2.5])!.should.deep.equal({ type: 'array' });
+    exampleToSchema(['a', 1])!.should.deep.equal({ type: 'array' });
+  });
+
+  it('returns undefined for values with no JSON analogue, dropping such keys', () => {
+    (exampleToSchema(undefined) === undefined).should.be.true;
+    (exampleToSchema(() => undefined) === undefined).should.be.true;
+    exampleToSchema({ id: 1, fn: () => undefined })!.should.deep.equal({
+      type: 'object',
+      properties: { id: { type: 'integer' } },
+      required: ['id'],
+    });
+  });
+});
+
+describe('arrays without items', () => {
+  it('leave elements unconstrained across the battery', () => {
+    const list = serialize({ type: 'array' });
+    list([1, 'a', null]).should.equal('[1,"a",null]');
+    compileValidator({ type: 'array' })(['a', 1]).should.deep.equal([]);
+    compileValidator({ type: 'array' })('nope').should.deep.equal([
+      { path: '', message: 'expected array, got string' },
+    ]);
+    toJsonSchema({ type: 'array' }).should.deep.equal({ type: 'array' });
+    expectTypeOf<InferSchema<{ type: 'array' }>>().toEqualTypeOf<unknown[]>();
   });
 });

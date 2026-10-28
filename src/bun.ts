@@ -2,9 +2,16 @@ import type { App } from './app';
 import type { StaticFileInfo } from './static';
 
 import { lstatSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
 
-import { createRealPathGuardWith, MISSING_FILE_CODES } from './fs-containment';
+import {
+  createFileRangeReaderWith,
+  createFileReaderWith,
+  createFileStatWith,
+  createRealPathGuardWith,
+  existsWith,
+  missOrNull,
+  type FileIo,
+} from './fs-containment';
 import { edgeFetch } from './finish';
 
 // Module-scoped ambient surface of the global Bun runtime — exactly the
@@ -127,9 +134,29 @@ export function serve(app: App, options: BunServeOptions = {}): BunServer {
   };
 }
 
-/** Buffered-whole-file ceiling (16 MiB): files strictly larger stream
- * instead — mirrors the node adapter's default. */
-const STREAM_THRESHOLD = 16 * 1024 * 1024;
+/**
+ * The Bun flavor of the shared file-service primitives
+ * (fs-containment's `FileIo`): sync stat + `Bun.file` bytes/windows. The
+ * always-stream precheck runs the shared stat policy — a directory reads
+ * as a miss, everything but a genuine miss (`MISSING_FILE_CODES`) throws
+ * — then the file streams.
+ */
+const bunFileIo: FileIo = {
+  stat: async (file) => statSync(file),
+  readAll: async (file) => new Uint8Array(await Bun.file(file).arrayBuffer()),
+  createStream: async (file) => {
+    try {
+      if (statSync(file).isDirectory()) return null;
+    } catch (error) {
+      return missOrNull(error);
+    }
+    return Bun.file(file).stream();
+  },
+  createStreamUnchecked: (file) => Bun.file(file).stream(),
+  createRangeStream: (file, start, end) =>
+    Bun.file(file).slice(start, end + 1).stream(),
+  createGuard: createRealPathGuard,
+};
 
 /**
  * Whole-file reader with safe defaults. Containment first: the resolved
@@ -139,8 +166,8 @@ const STREAM_THRESHOLD = 16 * 1024 * 1024;
  * filesystem trust). Then no unbounded buffering: files strictly larger
  * than `streamThreshold` (default 16 MiB) stream instead of buffering —
  * pair with `createFileStat`/`createFileRangeReader` so size, validators
- * and ranges ride the injected metadata. With `{ stream: true }`
- * everything streams regardless of size.
+ * and ranges ride the injected metadata. With `{ stream: true }` everything
+ * streams regardless of size.
  */
 export function createFileReader(
   root: string,
@@ -150,34 +177,7 @@ export function createFileReader(
     readonly streamThreshold?: number;
   } = {}
 ): (path: string) => Promise<Uint8Array | ReadableStream<Uint8Array> | null> {
-  const guard = options.realPath === false ? undefined : createRealPathGuard(root);
-  const streamThreshold = options.streamThreshold ?? STREAM_THRESHOLD;
-  return async (
-    path: string
-  ): Promise<Uint8Array | ReadableStream<Uint8Array> | null> => {
-    if (guard !== undefined && (await guard(path)) === null) return null;
-    const filePath = join(root, path);
-    let size: number;
-    try {
-      const info = statSync(filePath);
-      // A directory (also via symlink) would start a response that dies
-      // mid-stream — read it as a miss, like the node adapter.
-      if (info.isDirectory()) return null;
-      size = info.size;
-    } catch (error) {
-      // Only a genuine miss (fs-containment's MISSING_FILE_CODES) reads as
-      // null — EACCES, EMFILE, … rethrow so a real IO failure is not
-      // masked as a 404 (the node adapter's shared policy).
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-        return null;
-      }
-      throw error;
-    }
-    const file = Bun.file(filePath);
-    if (options.stream === true || size > streamThreshold) return file.stream();
-    return new Uint8Array(await file.arrayBuffer());
-  };
+  return createFileReaderWith(root, bunFileIo, options);
 }
 
 /**
@@ -190,22 +190,7 @@ export function createFileReader(
 export function createFileStat(
   root: string
 ): (path: string) => Promise<StaticFileInfo | null> {
-  const guard = createRealPathGuard(root);
-  return async (path: string): Promise<StaticFileInfo | null> => {
-    if ((await guard(path)) === null) return null;
-    try {
-      const info = statSync(join(root, path));
-      if (info.isDirectory()) return null;
-      return { size: info.size, mtimeMs: info.mtimeMs };
-    } catch (error) {
-      // Only a genuine miss reads as null — see createFileReader's catch.
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-        return null;
-      }
-      throw error;
-    }
-  };
+  return createFileStatWith(root, bunFileIo);
 }
 
 /**
@@ -222,28 +207,7 @@ export function createFileRangeReader(
   start: number,
   end: number
 ) => Promise<ReadableStream<Uint8Array> | null> {
-  const guard = createRealPathGuard(root);
-  return async (
-    path: string,
-    start: number,
-    end: number
-  ): Promise<ReadableStream<Uint8Array> | null> => {
-    if ((await guard(path)) === null) return null;
-    const filePath = join(root, path);
-    try {
-      // A directory (or a symlink to one) would start the 206 and then
-      // reset the connection when the slice stream fails — miss instead.
-      if (statSync(filePath).isDirectory()) return null;
-    } catch (error) {
-      // Only a genuine miss reads as null — see createFileReader's catch.
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-        return null;
-      }
-      throw error;
-    }
-    return Bun.file(filePath).slice(start, end + 1).stream();
-  };
+  return createFileRangeReaderWith(root, bunFileIo);
 }
 
 function bunRealpath(path: string): string | null {
@@ -251,19 +215,6 @@ function bunRealpath(path: string): string | null {
     return realpathSync(path);
   } catch {
     return null;
-  }
-}
-
-/** Existence probe for the shared containment guard: only a genuinely
- * absent entry answers `'missing'`; a dangling symlink or an unreadable
- * path counts as existing, so the guard fails closed. */
-async function bunExists(path: string): Promise<'exists' | 'missing'> {
-  try {
-    lstatSync(path);
-    return 'exists';
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'exists';
   }
 }
 
@@ -285,6 +236,6 @@ export function createRealPathGuard(
   return createRealPathGuardWith(
     root,
     async (path) => bunRealpath(path),
-    bunExists
+    existsWith(async (path) => lstatSync(path))
   );
 }

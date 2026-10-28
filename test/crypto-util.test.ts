@@ -1,6 +1,16 @@
 import { describe, it } from 'vitest';
 
-import { b64Encode, b64urlDecode, b64urlEncode, equalBytes, toHex } from '../src/crypto-util';
+import {
+  b64Encode,
+  b64urlDecode,
+  b64urlEncode,
+  equalBytes,
+  getHmacKey,
+  materialDigest,
+  randomToken,
+  toHex,
+  type HmacKeyCache,
+} from '../src/crypto-util';
 
 describe('crypto-util', function () {
   it('encodes known vectors: partial and full 3-byte groups', function () {
@@ -76,5 +86,53 @@ describe('crypto-util', function () {
   it('renders lowercase hex, two chars per byte (toHex)', function () {
     toHex(new Uint8Array(0)).should.equal('');
     toHex(new Uint8Array([0x00, 0x0f, 0xa5, 0xff])).should.equal('000fa5ff');
+  });
+
+  it('digests key material to hex (materialDigest)', async function () {
+    // FIPS 180-2 change-notice vectors.
+    (await materialDigest('abc')).should.equal(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+    );
+    (await materialDigest('')).should.equal(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    );
+  });
+
+  it('imports one HMAC key per (secret, hash, usage), cached', async function () {
+    const signKey = await getHmacKey('cache-me', 'SHA-256', ['sign']);
+    (signKey === (await getHmacKey('cache-me', 'SHA-256', ['sign']))).should.be
+      .true;
+    // A different usage list is a different cache entry — and key.
+    const verifyKey = await getHmacKey('cache-me', 'SHA-256', ['sign', 'verify']);
+    (signKey === verifyKey).should.be.false;
+    signKey.extractable.should.be.false;
+    signKey.type.should.equal('secret');
+    Array.from(verifyKey.usages).should.deep.equal(['sign', 'verify']);
+  });
+
+  it('hands the injected cache digest keys, never the secret', async function () {
+    const seen: string[] = [];
+    const store: HmacKeyCache = {
+      lruGet: () => undefined,
+      lruSet: (key) => seen.push(key),
+    };
+    await getHmacKey('top-secret', 'SHA-256', ['sign'], store);
+    await getHmacKey('top-secret', 'SHA-256', ['sign'], store);
+    seen.length.should.equal(2); // lruGet misses, so both calls import+set.
+    seen[0]!.should.match(/^SHA-256:sign:[0-9a-f]{64}$/);
+    seen[0]!.should.not.match(/top-secret/);
+  });
+
+  it('mints random url-safe tokens of the requested entropy (randomToken)', function () {
+    for (const bytes of [1, 16, 32, 64]) {
+      const token = randomToken(bytes);
+      token.should.match(/^[A-Za-z0-9_-]+$/);
+      // ⌈bytes·8/6⌉ chars, no '=' tail: 1→2, 16→22, 32→43, 64→86.
+      token.length.should.equal(Math.ceil((bytes * 8) / 6));
+      // Decodes back to exactly that many bytes.
+      b64urlDecode(token)!.length.should.equal(bytes);
+    }
+    const tokens = new Set(Array.from({ length: 64 }, () => randomToken(16)));
+    tokens.size.should.equal(64);
   });
 });

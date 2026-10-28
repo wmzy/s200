@@ -62,6 +62,7 @@ import type { Ctx, Middleware } from './types';
 
 import { httpError } from './errors';
 import { adoptResponse } from './respond';
+import { splitTokens } from './raw-headers';
 
 /** Hop-by-hop header names (RFC 9110 §7.6.1) — never forwarded either way. */
 const HOP_BY_HOP: readonly string[] = [
@@ -119,13 +120,7 @@ export type CreateProxyOptions = {
 
 /** Lowercased token list of a `connection` header value (`keep-alive, x-named` → both). */
 function connectionTokens(value: string | null): readonly string[] {
-  if (value === null) {
-    return [];
-  }
-  return value
-    .split(',')
-    .map((token) => token.trim().toLowerCase())
-    .filter((token) => token !== '');
+  return value === null ? [] : splitTokens(value);
 }
 
 /** Strips the hop-by-hop set plus the tokens `connection` names, in place. */

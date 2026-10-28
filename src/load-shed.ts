@@ -27,6 +27,7 @@ import type { Ctx, Middleware } from './types';
 
 import { performance } from 'node:perf_hooks';
 
+import { assertPositive } from './assert';
 import { httpError } from './errors';
 
 /**
@@ -126,21 +127,11 @@ export function loadShed(options: LoadShedOptions = {}): Middleware {
       `Invalid load-shed maxEventLoopUtilization ${String(maxElu)}: must be in (0, 1]`
     );
   }
-  if (
-    maxRssBytes !== undefined &&
-    (!Number.isFinite(maxRssBytes) || maxRssBytes <= 0)
-  ) {
-    throw new Error(
-      `Invalid load-shed maxRssBytes ${String(maxRssBytes)}: must be positive`
-    );
+  if (maxRssBytes !== undefined) {
+    assertPositive('load-shed', 'maxRssBytes', maxRssBytes);
   }
-  if (
-    maxInFlight !== undefined &&
-    (!Number.isFinite(maxInFlight) || maxInFlight <= 0)
-  ) {
-    throw new Error(
-      `Invalid load-shed maxInFlight ${String(maxInFlight)}: must be positive`
-    );
+  if (maxInFlight !== undefined) {
+    assertPositive('load-shed', 'maxInFlight', maxInFlight);
   }
   if (!Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 1) {
     throw new Error(

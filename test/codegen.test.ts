@@ -292,6 +292,18 @@ describe('generateClient (typed emission)', () => {
     );
   });
 
+  it('renders a mixed-element throws example as an unconstrained array', () => {
+    // exampleToSchema (s200/serialize) keeps `items` only when every
+    // element agrees — mixed examples render `unknown[]`, not a union.
+    const app = createApp();
+    get(app, '/mix', throws({ 422: { found: [1, 'a'] } }), () => new Response('ok'));
+    get(app, '/even', throws({ 422: { ids: [1, 2] } }), () => new Response('ok'));
+    const source = generateClient(app);
+
+    source.should.contain('Branch<422, { found: unknown[] }>');
+    source.should.contain('Branch<422, { ids: number[] }>');
+  });
+
   it('compiles the generated module with tsc (typed and empty alike)', async () => {
     const dir = await mkdtemp(join(tmpdir(), 's200-codegen-tsc-'));
     try {

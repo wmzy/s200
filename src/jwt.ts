@@ -28,9 +28,12 @@ import {
   b64urlDecode as decodeB64url,
   b64urlEncode,
   equalBytes,
-  toHex,
+  getHmacKey,
+  lruGet,
+  lruSet,
+  materialDigest,
+  type HmacKeyCache,
 } from './crypto-util';
-import { evictOldest } from './map-limit';
 
 /** Decoding that keeps this module's throw-site contract: any invalid
  * input (padding, out-of-alphabet char, impossible length) surfaces as
@@ -91,6 +94,30 @@ function pssSaltLength(hash: 'SHA-256' | 'SHA-384' | 'SHA-512'): number {
   return hash === 'SHA-256' ? 32 : hash === 'SHA-384' ? 48 : 64;
 }
 
+/** Subtle sign/verify algorithm parameters for the asymmetric families:
+ * Ed25519 takes the string identifier (some runtimes mishandle the
+ * object form for secure curves), RSA-PSS carries its RFC 7518 §3.5
+ * salt length, and the rest name the hash in an algorithm object. */
+function asymParams(
+  info: Exclude<AlgInfo, { kind: 'hmac' }>
+): AlgorithmIdentifier | string {
+  if (info.kind === 'ed') {
+    return 'Ed25519';
+  }
+  if (info.kind === 'rsa') {
+    return info.algName === 'RSA-PSS'
+      ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
+      : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier);
+  }
+  return { name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier;
+}
+
+/** The full parameter set per family — HMAC signs (and re-signs to
+ * verify) with the string identifier. */
+function signatureParams(info: AlgInfo): AlgorithmIdentifier | string {
+  return info.kind === 'hmac' ? 'HMAC' : asymParams(info);
+}
+
 function jwtError(message: string): Error {
   const error = new Error(message);
   error.name = 'JwtError';
@@ -126,61 +153,18 @@ const KEY_CACHE_LIMIT = 100;
 
 const keyCache = new Map<string, Promise<CryptoKey>>();
 
-/** LRU read over a plain Map: re-insertion bumps recency (insertion order
- * is recency order), zero dependencies. */
-function lruGet<K, V>(cache: Map<K, V>, key: K): V | undefined {
-  const value = cache.get(key);
-  if (value !== undefined) {
-    cache.delete(key);
-    cache.set(key, value);
-  }
-  return value;
-}
-
-/** LRU write over a plain Map: one past the bound, the oldest entry goes. */
-function lruSet<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
-  cache.set(key, value);
-  if (cache.size > limit) {
-    evictOldest(cache);
-  }
-}
-
 const defaultKeyStore: JwtKeyStore = {
   get: (key) => lruGet(keyCache, key),
   set: (key, value) => lruSet(keyCache, key, value, KEY_CACHE_LIMIT),
 };
 
-/** Hex of a SHA-256 digest of key material — the import cache is keyed by
- * this, so a store that persists or logs its keys never sees the material
- * (an HMAC secret, a private signing JWK) in the clear. */
-async function materialDigest(material: string): Promise<string> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material))
-  );
-  return toHex(digest);
-}
-
-/** One imported HMAC key per (secret digest, hash, usage) — importing per
- * signature would cost a key-derivation pass on every request. */
-async function getHmacKey(
-  secretText: string,
-  hash: string,
-  usages: readonly KeyUsage[],
-  store: JwtKeyStore
-): Promise<CryptoKey> {
-  const cacheKey = `${hash}:${usages.join('+')}:${await materialDigest(secretText)}`;
-  let key = store.get(cacheKey);
-  if (key === undefined) {
-    key = crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(secretText),
-      { name: 'HMAC', hash },
-      false,
-      usages
-    );
-    store.set(cacheKey, key);
-  }
-  return key;
+/** Adapts a {@link JwtKeyStore} to the shared HMAC import cache contract —
+ * the store keeps its own bounds and lifetime policy. */
+function hmacCacheOf(store: JwtKeyStore): HmacKeyCache {
+  return {
+    lruGet: (key) => store.get(key),
+    lruSet: (key, value) => store.set(key, value),
+  };
 }
 
 /** One imported asymmetric key per (alg, JWK digest, usage). */
@@ -273,42 +257,16 @@ async function assertEd25519(): Promise<void> {
   }
 }
 
-/** Resolves signing key material for an algorithm, rejecting mismatches. */
-async function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
-  const info = ALG_INFO[alg];
-  if (info.kind === 'ed') {
-    await assertEd25519();
-  }
-  if (info.kind === 'hmac') {
-    if (!isSecretKey(key)) {
-      throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
-    }
-    return getHmacKey(secretText(key), info.hash, ['sign'], defaultKeyStore);
-  }
-  if (key instanceof CryptoKey) {
-    if (!keyMatches(key, info)) {
-      throw jwtError(`key does not match algorithm ${alg}`);
-    }
-    return key;
-  }
-  const jwk = key as JsonWebKey;
-  const expected = info.kind === 'rsa' ? 'RSA' : info.kind === 'ec' ? 'EC' : 'OKP';
-  if (jwk.kty !== expected) {
-    throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
-  }
-  if (info.kind === 'ed' && jwk.crv !== 'Ed25519') {
-    throw jwtError(`key crv '${String(jwk.crv)}' does not match algorithm ${alg} (Ed25519 only)`);
-  }
-  return importAsymKey(jwk, alg, ['sign'], defaultKeyStore);
-}
-
-/** Resolves verification key material, rejecting family mismatches (this
- * is the algorithm-confusion defense: an RS header can never be verified
- * with HMAC secret bytes, and vice versa). */
-async function getVerifyKey(
+/** Resolves key material for one operation, rejecting family mismatches.
+ * `usages` is `['sign']` when signing and `['verify']` when verifying —
+ * HMAC verification re-signs and compares constant-time, so the key
+ * needs the sign usage too (verify comes along for free). */
+async function resolveKey(
   key: JwtKey,
   alg: JwtAlgorithm,
-  store: JwtKeyStore
+  usages: readonly KeyUsage[],
+  store: JwtKeyStore,
+  errPrefix: string
 ): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
   if (info.kind === 'ed') {
@@ -316,27 +274,44 @@ async function getVerifyKey(
   }
   if (info.kind === 'hmac') {
     if (!isSecretKey(key)) {
-      throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
+      throw jwtError(`${errPrefix}HMAC algorithm ${alg} requires a secret string or Uint8Array`);
     }
-    // HMAC verification re-signs and compares constant-time, so the key
-    // needs the sign usage (verify comes along for free).
-    return getHmacKey(secretText(key), info.hash, ['sign', 'verify'], store);
+    const hmacUsages: readonly KeyUsage[] = usages.includes('verify')
+      ? ['sign', 'verify']
+      : usages;
+    return getHmacKey(secretText(key), info.hash, hmacUsages, hmacCacheOf(store));
   }
   if (key instanceof CryptoKey) {
     if (!keyMatches(key, info)) {
-      throw jwtError(`key does not match algorithm ${alg}`);
+      throw jwtError(`${errPrefix}key does not match algorithm ${alg}`);
     }
     return key;
   }
   const jwk = key as JsonWebKey;
   const expected = info.kind === 'rsa' ? 'RSA' : info.kind === 'ec' ? 'EC' : 'OKP';
   if (jwk.kty !== expected) {
-    throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
+    throw jwtError(`${errPrefix}key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
   }
   if (info.kind === 'ed' && jwk.crv !== 'Ed25519') {
-    throw jwtError(`key crv '${String(jwk.crv)}' does not match algorithm ${alg} (Ed25519 only)`);
+    throw jwtError(`${errPrefix}key crv '${String(jwk.crv)}' does not match algorithm ${alg} (Ed25519 only)`);
   }
-  return importAsymKey(jwk, alg, ['verify'], store);
+  return importAsymKey(jwk, alg, usages, store);
+}
+
+/** Resolves signing key material for an algorithm, rejecting mismatches. */
+function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
+  return resolveKey(key, alg, ['sign'], defaultKeyStore, '');
+}
+
+/** Resolves verification key material, rejecting family mismatches (this
+ * is the algorithm-confusion defense: an RS header can never be verified
+ * with HMAC secret bytes, and vice versa). */
+function getVerifyKey(
+  key: JwtKey,
+  alg: JwtAlgorithm,
+  store: JwtKeyStore
+): Promise<CryptoKey> {
+  return resolveKey(key, alg, ['verify'], store, '');
 }
 
 export type JwtSignOptions = {
@@ -408,18 +383,8 @@ export async function signJwt(
   const payloadText = b64urlEncode(encoder.encode(JSON.stringify(claims)));
   const signingKey = await getSignKey(key, alg);
   const data = encoder.encode(`${headerText}.${payloadText}`);
-  const params: AlgorithmIdentifier | string =
-    info.kind === 'hmac'
-      ? 'HMAC'
-      : info.kind === 'ed'
-        ? 'Ed25519'
-        : info.kind === 'rsa'
-          ? info.algName === 'RSA-PSS'
-            ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
-            : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
-          : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
   const sig = new Uint8Array(
-    await crypto.subtle.sign(params, signingKey, data)
+    await crypto.subtle.sign(signatureParams(info), signingKey, data)
   );
   return `${headerText}.${payloadText}.${b64urlEncode(sig)}`;
 }
@@ -510,16 +475,8 @@ export async function verifyJwt<T = Record<string, unknown>>(
       throw jwtError('invalid signature');
     }
   } else {
-    const params: AlgorithmIdentifier | string =
-      info.kind === 'ed'
-        ? 'Ed25519'
-        : info.kind === 'rsa'
-          ? info.algName === 'RSA-PSS'
-            ? ({ name: 'RSA-PSS', saltLength: pssSaltLength(info.hash) } as AlgorithmIdentifier)
-            : ({ name: info.algName, hash: info.hash } as AlgorithmIdentifier)
-          : ({ name: 'ECDSA', hash: info.hash } as AlgorithmIdentifier);
     const ok = await crypto.subtle.verify(
-      params,
+      asymParams(info),
       verifyingKey,
       sigBytes as Uint8Array<ArrayBuffer>,
       data as Uint8Array<ArrayBuffer>

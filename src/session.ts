@@ -20,6 +20,7 @@
 
 import type { Middleware } from './types';
 
+import { assertPositive } from './assert';
 import { getSignedCookie, setSignedCookie, type CookieOptions } from './cookies';
 
 /** Per-session data bag: plain JSON-shaped records, opaque to the store. */
@@ -208,9 +209,7 @@ export function createSession(options: SessionOptions): {
     throw new Error('Invalid session secret: must be a non-empty string');
   }
   const maxAge = options.cookie?.maxAge ?? 86_400;
-  if (maxAge <= 0) {
-    throw new Error(`Invalid session cookie maxAge ${String(maxAge)}: must be positive`);
-  }
+  assertPositive('session', 'cookie maxAge', maxAge);
   const cookieName = options.cookie?.name ?? 's200.sid';
   const cookieAttributes: CookieOptions = {
     maxAge,

@@ -15,6 +15,8 @@
 
 import type { Middleware } from './types';
 
+import { b64Encode } from './crypto-util';
+
 /** One CSP/permissions-policy directive: a value, several values, or an
  * empty array for a valueless directive (`upgrade-insecure-requests`). */
 export type Directive = string | readonly string[];
@@ -116,11 +118,7 @@ export type SecureHeadersOptions = {
  * in `policy` when the header lands — see {@link NonceCsp}.
  */
 export function cspNonce(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
+  return b64Encode(crypto.getRandomValues(new Uint8Array(16)));
 }
 
 /**

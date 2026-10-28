@@ -71,15 +71,6 @@ const TRANSPORT_PAD_MAX = 256;
 
 const encoder = new TextEncoder();
 
-function appendBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  if (b.length === 0) return a;
-  if (a.length === 0) return b;
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a);
-  out.set(b, a.length);
-  return out;
-}
-
 /** `haystack.indexOf(needle)` for bytes, scanning from `from` — first-byte
  * quick reject, then a compare loop. Needles are ASCII line/boundary
  * fragments a few bytes long, so this stays cheaper than any cleverness. */
@@ -403,7 +394,11 @@ async function scanForm(
       // an unterminated header block or a dangling partial delimiter.
       throw httpError(400, 'Malformed multipart body');
     }
-    if (result.value.length > 0) carry = appendBytes(carry, result.value);
+    // concatBytes (not a zero-copy alias of the stream's chunk): the
+    // carry is only ever read (indexed, subarrayed) and reassigned, so a
+    // fresh buffer is byte-identical while keeping this file to one
+    // shared concat helper.
+    if (result.value.length > 0) carry = concatBytes([carry, result.value]);
   }
 }
 

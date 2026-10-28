@@ -190,6 +190,29 @@ export function validate(
 }
 
 /**
+ * @internal
+ * The shared body of the record gates — `queryParams` (`s200/query`),
+ * {@link validateParams}, {@link validateHeaders}: read the family's
+ * record, run the Standard Schema flavor through {@link
+ * standardValidate} or the parse flavor verbatim (it owns its failure
+ * mode), and store the product on `ctx.state[key]`. Same seam as {@link
+ * jsonBody}'s `validate(parse)` stitching, one record read lower.
+ */
+export function recordGate<R>(
+  read: (ctx: Ctx) => R,
+  schemaOrParse: StandardSchema | ((record: R) => unknown),
+  key: string
+): Middleware {
+  return async (ctx, next) => {
+    const record = read(ctx);
+    ctx.state[key] = isStandardSchema(schemaOrParse)
+      ? standardValidate(schemaOrParse, record)
+      : schemaOrParse(record);
+    return next();
+  };
+}
+
+/**
  * Convenience over {@link validate} for JSON request bodies, in two
  * flavors:
  *
@@ -279,15 +302,13 @@ export function validateParams(
   schemaOrParse: StandardSchema | ((params: never) => unknown),
   options: ValidateOptions = {}
 ): Middleware {
-  const key = options.key ?? 'validated';
-  return async (ctx, next) => {
-    ctx.state[key] = isStandardSchema(schemaOrParse)
-      ? standardValidate(schemaOrParse, ctx.params)
-      : // The captured record is the runtime input; `Q` is the callback's
-        // declared (narrower) view of it — the cast is the type-level seam.
-        (schemaOrParse as (params: Params) => unknown)(ctx.params);
-    return next();
-  };
+  return recordGate(
+    (ctx) => ctx.params,
+    // The captured record is the runtime input; `Q` is the callback's
+    // declared (narrower) view of it — the cast is the type-level seam.
+    schemaOrParse as StandardSchema | ((params: Params) => unknown),
+    options.key ?? 'validated'
+  );
 }
 
 /** The record `parseHeaders` produces: header names lowercased (the
@@ -343,16 +364,13 @@ export function validateHeaders(
   schemaOrParse: StandardSchema | ((headers: never) => unknown),
   options: ValidateOptions = {}
 ): Middleware {
-  const key = options.key ?? 'validated';
-  return async (ctx, next) => {
-    const record = parseHeaders(ctx);
-    ctx.state[key] = isStandardSchema(schemaOrParse)
-      ? standardValidate(schemaOrParse, record)
-      : // The header record is the runtime input; `Q` is the callback's
-        // declared (narrower) view of it — the cast is the type-level seam.
-        (schemaOrParse as (headers: HeaderRecord) => unknown)(record);
-    return next();
-  };
+  return recordGate(
+    parseHeaders,
+    // The header record is the runtime input; `Q` is the callback's
+    // declared (narrower) view of it — the cast is the type-level seam.
+    schemaOrParse as StandardSchema | ((headers: HeaderRecord) => unknown),
+    options.key ?? 'validated'
+  );
 }
 
 /**

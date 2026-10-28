@@ -27,7 +27,7 @@ import type { Ctx, Middleware } from './types';
 import { getCookie, setCookie } from './cookies';
 import { readForm } from './body';
 import { httpError } from './errors';
-import { b64urlDecode, b64urlEncode, equalBytes } from './crypto-util';
+import { b64urlDecode, b64urlEncode, equalBytes, randomToken } from './crypto-util';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -59,6 +59,21 @@ export type CsrfOptions = {
 };
 
 /**
+ * The signed message shared by mint and verify: `exp.nonce` unbound,
+ * `exp.nonce.bind` when bound — unambiguous, since `exp` is digits and
+ * the nonce is base64url, so neither segment can contain the separator.
+ */
+function tokenMessage(
+  exp: string,
+  nonce: string,
+  bind: string | undefined
+): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(
+    bind === undefined ? `${exp}.${nonce}` : `${exp}.${nonce}.${bind}`
+  );
+}
+
+/**
  * Parses a token and verifies its signature + expiry against the secret.
  * `bind` is the current bind value for a bound instance (`undefined` for
  * an unbound one — the signed message stays exactly `exp.nonce`).
@@ -80,16 +95,14 @@ async function verifyToken(
   if (
     !Number.isFinite(exp) ||
     exp <= now ||
+    expPart === undefined ||
     nonce === undefined ||
     sig === undefined
   ) {
     return null;
   }
-  // Appending the bind value is unambiguous: `expPart` is digits and the
-  // nonce is base64url, so neither segment can contain the separator.
-  const message = new TextEncoder().encode(
-    bind === undefined ? `${expPart}.${nonce}` : `${expPart}.${nonce}.${bind}`
-  );
+  // Appending the bind value is unambiguous — see {@link tokenMessage}.
+  const message = tokenMessage(expPart, nonce, bind);
   const expected = new Uint8Array(
     await crypto.subtle.sign('HMAC', hmacKey, message)
   );
@@ -172,14 +185,8 @@ export function createCsrf(options: CsrfOptions): Csrf {
     const key = await getKey();
     const now = Date.now();
     const exp = now + ttl;
-    const nonce = new Uint8Array(16);
-    crypto.getRandomValues(nonce);
-    const nonceText = b64urlEncode(nonce);
-    // Bound instances append the bind value after a second dot —
-    // unambiguous, since `exp` is digits and the nonce is base64url.
-    const message = new TextEncoder().encode(
-      bind === undefined ? `${exp}.${nonceText}` : `${exp}.${nonceText}.${bind}`
-    );
+    const nonceText = randomToken(16);
+    const message = tokenMessage(String(exp), nonceText, bind);
     const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
     return `${exp}.${nonceText}.${b64urlEncode(sig)}`;
   };
@@ -214,67 +221,63 @@ export function createCsrf(options: CsrfOptions): Csrf {
       remaining !== null ? cookieToken : await createToken(bind);
     ctx.state.csrfToken = installed;
 
-    if (SAFE_METHODS.has(ctx.req.method.toUpperCase())) {
-      await next();
-      if (ctx.res !== undefined && ctx.state.csrfToken !== cookieToken) {
-        setCookie(
-          ctx,
-          cookieName,
-          ctx.state.csrfToken as string,
-          cookieOptions
-        );
-      }
-      return;
-    }
-
-    // Unsafe: the Origin header, when present, must match the request's
-    // own origin — a cross-site form cannot fake it. Behind a proxy the
-    // comparison only works on the corrected URL (see s200/trust-proxy).
-    // When Origin is absent (same-origin form posts often omit it), the
-    // Sec-Fetch-Site metadata header is the fallback: `cross-site` is
-    // rejected outright, `same-origin`/`same-site`/`none` fall through
-    // to the token check.
-    const originHeader = ctx.req.headers.get('origin');
-    if (originHeader !== null) {
-      try {
-        if (new URL(originHeader).origin !== ctx.url.origin) {
-          throw httpError(403, 'CSRF check failed: Origin mismatch');
+    // The cookie-write baseline differs by branch: safe responses
+    // compare against the request cookie, so a missing, forged, expired,
+    // or foreign-bound one replaced at install time ships the fresh
+    // token now (refresh); unsafe responses compare against the
+    // installed value, so only a handler rotation (`issueToken`) writes
+    // — the rotate-on-login path.
+    const safe = SAFE_METHODS.has(ctx.req.method.toUpperCase());
+    if (!safe) {
+      // Unsafe: the Origin header, when present, must match the request's
+      // own origin — a cross-site form cannot fake it. Behind a proxy the
+      // comparison only works on the corrected URL (see s200/trust-proxy).
+      // When Origin is absent (same-origin form posts often omit it), the
+      // Sec-Fetch-Site metadata header is the fallback: `cross-site` is
+      // rejected outright, `same-origin`/`same-site`/`none` fall through
+      // to the token check.
+      const originHeader = ctx.req.headers.get('origin');
+      if (originHeader !== null) {
+        try {
+          if (new URL(originHeader).origin !== ctx.url.origin) {
+            throw httpError(403, 'CSRF check failed: Origin mismatch');
+          }
+        } catch {
+          throw httpError(403, 'CSRF check failed: malformed Origin');
         }
-      } catch {
-        throw httpError(403, 'CSRF check failed: malformed Origin');
+      } else if (ctx.req.headers.get('sec-fetch-site') === 'cross-site') {
+        throw httpError(403, 'CSRF check failed: cross-site request');
       }
-    } else if (ctx.req.headers.get('sec-fetch-site') === 'cross-site') {
-      throw httpError(403, 'CSRF check failed: cross-site request');
-    }
 
-    let presented = ctx.req.headers.get(headerName);
-    if (presented === null || presented === '') {
-      const contentType = ctx.req.headers.get('content-type') ?? '';
+      let presented = ctx.req.headers.get(headerName);
+      if (presented === null || presented === '') {
+        const contentType = ctx.req.headers.get('content-type') ?? '';
+        if (
+          contentType.startsWith('application/x-www-form-urlencoded') ||
+          contentType.startsWith('multipart/form-data')
+        ) {
+          // readForm caches the parse per request, so a later handler read
+          // replays the same body instead of hitting "already consumed".
+          const field = (await readForm(ctx)).get(formField);
+          if (typeof field === 'string' && field !== '') {
+            presented = field;
+          }
+        }
+      }
+      if (presented === null || presented === '') {
+        throw httpError(403, 'CSRF token missing');
+      }
       if (
-        contentType.startsWith('application/x-www-form-urlencoded') ||
-        contentType.startsWith('multipart/form-data')
+        (await verifyToken(presented, await getKey(), Date.now(), bind)) === null
       ) {
-        // readForm caches the parse per request, so a later handler read
-        // replays the same body instead of hitting "already consumed".
-        const field = (await readForm(ctx)).get(formField);
-        if (typeof field === 'string' && field !== '') {
-          presented = field;
-        }
+        throw httpError(403, 'CSRF token invalid or expired');
       }
-    }
-    if (presented === null || presented === '') {
-      throw httpError(403, 'CSRF token missing');
-    }
-    if (
-      (await verifyToken(presented, await getKey(), Date.now(), bind)) === null
-    ) {
-      throw httpError(403, 'CSRF token invalid or expired');
     }
     await next();
-    // A handler that rotated the token (`issueToken`) gets the fresh one
-    // persisted as the response cookie — unsafe requests included, which
-    // is the rotate-on-login path.
-    if (ctx.res !== undefined && ctx.state.csrfToken !== installed) {
+    if (
+      ctx.res !== undefined &&
+      ctx.state.csrfToken !== (safe ? cookieToken : installed)
+    ) {
       setCookie(ctx, cookieName, ctx.state.csrfToken as string, cookieOptions);
     }
   };

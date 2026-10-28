@@ -9,12 +9,7 @@
 
 import type { Ctx, Middleware } from './types';
 
-import {
-  isStandardSchema,
-  standardValidate,
-  type InputOf,
-  type StandardSchema,
-} from './validate';
+import { recordGate, type InputOf, type StandardSchema } from './validate';
 
 /** The record shape `parseQuery` produces: every key optional; repeated
  * keys (`?tag=a&tag=b`) collect into `string[]`. */
@@ -96,14 +91,11 @@ export function queryParams(
   schemaOrParse: StandardSchema | ((q: never) => unknown),
   options: QueryParamsOptions = {}
 ): Middleware {
-  const key = options.key ?? 'validated';
-  return async (ctx, next) => {
-    const record = parseQuery(ctx);
-    ctx.state[key] = isStandardSchema(schemaOrParse)
-      ? standardValidate(schemaOrParse, record)
-      : // The parsed record is the runtime input; `Q` is the callback's
-        // declared (narrower) view of it — the cast is the type-level seam.
-        (schemaOrParse as (q: QueryRecord) => unknown)(record);
-    return next();
-  };
+  return recordGate(
+    parseQuery,
+    // The parsed record is the runtime input; `Q` is the callback's
+    // declared (narrower) view of it — the cast is the type-level seam.
+    schemaOrParse as StandardSchema | ((q: QueryRecord) => unknown),
+    options.key ?? 'validated'
+  );
 }

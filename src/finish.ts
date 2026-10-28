@@ -275,6 +275,35 @@ export function trackFinish(
 }
 
 /**
+ * Runs `fn` under the finish contract for runtimes that fully buffer the
+ * response (the Lambda adapter): the result is awaited first, then — when
+ * callbacks exist — `{ aborted: false }` fires before the result returns;
+ * a failure fires `{ aborted: true }` before the error rethrows. The
+ * buffered twin of {@link edgeFetch}: the finish trigger is the buffer's
+ * outcome, not a body stream.
+ *
+ * @internal
+ */
+export async function finishGuarded<T>(
+  request: Request,
+  logError: ((error: unknown, ctx: Ctx) => void) | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  try {
+    const result = await fn();
+    if (hasFinishers(request)) {
+      runFinish(request, { aborted: false }, logError);
+    }
+    return result;
+  } catch (error) {
+    if (hasFinishers(request)) {
+      runFinish(request, { aborted: true }, logError);
+    }
+    throw error;
+  }
+}
+
+/**
  * The fetch-handler composition every edge adapter shares (Cloudflare
  * Workers, Vercel, Bun's non-websocket tail): `handle` under the runtime's
  * request signal — feature-detected by `signalInit`, since not every

@@ -17,3 +17,25 @@ export function evictOldest<K, V>(map: Map<K, V>): void {
     map.delete(oldest.value);
   }
 }
+
+/** Trims a sliding-window timestamp deque to entries newer than
+ * `windowMs` (an entry expires exactly `windowMs` after it landed), then
+ * pushes `now` — the shared clip between rate-limit's per-key buckets and
+ * circuit-breaker's failure window. Mutates `timestamps` in place.
+ *
+ * @internal */
+export function pushSlidingTimestamps(
+  timestamps: number[],
+  now: number,
+  windowMs: number
+): void {
+  const cutoff = now - windowMs;
+  let drop = 0;
+  while (drop < timestamps.length && (timestamps[drop] ?? 0) <= cutoff) {
+    drop += 1;
+  }
+  if (drop > 0) {
+    timestamps.splice(0, drop);
+  }
+  timestamps.push(now);
+}

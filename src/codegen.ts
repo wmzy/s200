@@ -24,7 +24,8 @@
 import type { App } from './app';
 
 import type { Segment } from './types';
-import type { SerializeSchema } from './serialize';
+
+import { exampleToSchema, type SerializeSchema } from './serialize';
 
 import {
   getRouteMeta,
@@ -99,8 +100,9 @@ function propertyKey(key: string): string {
  * A `SerializeSchema` as a TypeScript type string — exactly the subset
  * the descriptor carries at runtime: `string`/`number` (`integer`
  * included)/`boolean`/`null`, arrays, and objects whose `required` list
- * drives optionality; `nullable` widens a primitive with `| null`. No
- * other markers exist in the DSL, so none are invented here.
+ * drives optionality; `nullable` widens a primitive with `| null`. An
+ * array without `items` leaves its elements unconstrained (`unknown[]`).
+ * No other markers exist in the DSL, so none are invented here.
  */
 function schemaToTs(schema: SerializeSchema): string {
   switch (schema.type) {
@@ -113,6 +115,7 @@ function schemaToTs(schema: SerializeSchema): string {
       return members.length === 0 ? '{ }' : `{ ${members.join('; ')} }`;
     }
     case 'array': {
+      if (schema.items === undefined) return 'unknown[]';
       const item = schemaToTs(schema.items);
       return `${item.includes('|') ? `(${item})` : item}[]`;
     }
@@ -129,44 +132,7 @@ function schemaToTs(schema: SerializeSchema): string {
 }
 
 /**
- * A `throws` example body as a TypeScript type string: structural
- * inference over the runtime value. Every key an example object shows is
- * required (optionality is unknowable from an example), array elements
- * union when they disagree, and values with no JSON analogue (functions,
- * `undefined`) fall back to `unknown`.
- */
-function exampleToTs(example: unknown): string {
-  if (example === null) {
-    return 'null';
-  }
-  switch (typeof example) {
-    case 'string':
-      return 'string';
-    case 'number':
-      return 'number';
-    case 'boolean':
-      return 'boolean';
-    case 'object': {
-      if (Array.isArray(example)) {
-        const itemTypes = [...new Set(example.map(exampleToTs))];
-        if (itemTypes.length === 0) {
-          return 'unknown[]';
-        }
-        const item = itemTypes.join(' | ');
-        return `${item.includes('|') ? `(${item})` : item}[]`;
-      }
-      const members = Object.entries(example as Readonly<Record<string, unknown>>).map(
-        ([key, value]) => `${propertyKey(key)}: ${exampleToTs(value)}`
-      );
-      return members.length === 0 ? '{ }' : `{ ${members.join('; ')} }`;
-    }
-    default:
-      return 'unknown';
-  }
-}
-
-/**
- * The inline `args` record for a pattern: every `:param`/`:param?`/
+ * One pattern segment's contribution to a method name: `:id` → `Id`,
  * `*name` capture as a string member — required except optional params
  * (`/users/:id` → `{ id: string }`, `/posts/:postId?` →
  * `{ postId?: string }`). `undefined` when the pattern captures nothing.
@@ -439,7 +405,10 @@ export function generateClient(app: App, options: GenerateClientOptions = {}): s
     for (const [status, example] of Object.entries(throwsErrors(route))) {
       const code = Number(status);
       if (metaStatuses.has(code)) continue;
-      branches.push({ status: code, body: exampleToTs(example) });
+      // The one inference layer (`s200/serialize`), rendered here — no
+      // schema (undefined, a function, …) keeps the honest `unknown`.
+      const schema = exampleToSchema(example);
+      branches.push({ status: code, body: schema === undefined ? 'unknown' : schemaToTs(schema) });
     }
     let responseType = 'Response';
     if (branches.length > 0) {

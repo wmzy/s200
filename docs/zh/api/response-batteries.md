@@ -21,17 +21,20 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 | `jsonRaw(ctx, json, init?)` | 写入已序列化的 JSON 串：`content-type: application/json`、精确 `content-length` |
 | `compileValidator(schema)` | 读取侧孪生：`(data) => readonly ValidationIssue[]` —— 空列表即合规；绝不抛错或改写 |
 | `checkSchema(schema, value)` | 闭形状孪生：`(schema, value) => readonly SchemaIssue[]` —— 同一子集，但未声明的键就是违规；`path` 是键步进（`['items', 1, 'name']`，根为 `[]`），不是字符串 |
+| `exampleToSchema(example)` | 从示例值推断 `SerializeSchema` —— `undefined` 表示"无 schema"（无 JSON 对应物） |
 
 `SerializeSchema`（子集）：
 
 ```ts
 type SerializeSchema =
   | { type: 'object'; properties: { [key: string]: SerializeSchema }; required?: readonly string[] }
-  | { type: 'array'; items: SerializeSchema }
+  | { type: 'array'; items?: SerializeSchema }
   | { readonly type: PrimitiveType; readonly nullable?: boolean };
 // 每个节点还接受可选 `title?: string` —— 纯注解：`toJsonSchema` 把它带入
 // 输出的 JSON Schema（在 `s200/openapi` 里为去重后的 `components.schemas`
-// 条目命名）；序列化与校验忽略它。
+// 条目命名）；序列化与校验忽略它。不带 `items` 的数组元素不受约束：
+// `serialize` 把数组原样交给 `JSON.stringify`，校验器只检查数组性，
+// `InferSchema` 读作 `unknown[]`。
 ```
 
 `PrimitiveType` 命名叶子备选：`'string' | 'number' | 'integer' | 'boolean' | 'null'`。
@@ -42,7 +45,21 @@ type SerializeSchema =
 - `compileValidator` 一对一镜像该子集：类型不匹配在违规节点报告，`nullable` 先放行 `null`，缺失的 `required` 键在自己的路径报告，多余键被忽略。这正是 `s200/openapi` 的 `withRouteValidation` 使用的验证器。
 - `checkSchema` 是它的闭形状孪生（`additionalProperties: false`，与 `serialize` 输出侧一致 —— 未声明的键即违规），报告 `SchemaIssue`（`{ path: readonly PropertyKey[]; message }`）。这是 `s200/response-check` 对响应 body 跑的检查器。
 
-`ValidationIssue`：`{ path: string; message: string }` —— `path` 点连接模式相对位置（`'items.2.name'`；根为 `''`）。
+`ValidationIssue`：`{ path: string; message }` —— `path` 点连接模式相对位置（`'items.2.name'`；根为 `''`）。
+
+### 示例推断（`exampleToSchema`）
+
+`exampleToSchema(example)` 从运行时值推断 DSL —— 示例衍生表面背后唯一的结构推断层：`s200/codegen` 把它的输出渲染为 `throws` 示例的 TypeScript 类型，`s200/openapi` 经 `toJsonSchema` 把它渲染为错误响应的 schema，因此两个视图不会漂移。
+
+```ts
+exampleToSchema({ id: 1, roles: ['a', 'b'] });
+// { type: 'object',
+//   properties: { id: { type: 'integer' },
+//                 roles: { type: 'array', items: { type: 'string' } } },
+//   required: ['id', 'roles'] }
+```
+
+规则：数字按整型性拆分 `integer`/`number`；对象声明示例展示的每个键，全部 `required`（可选性无法从示例得知）；数组仅在所有元素推断出同一 schema 时携带 `items` —— 空数组或混合数组保持 `{ type: 'array' }`，元素不受约束。`undefined` —— 函数、symbol、bigint 等无 JSON 对应物的值同样 —— 表示"无 schema"；此类键从对象中丢弃，顶层这样的示例使该表面保持未声明。
 
 ## ETag（`s200/etag`）
 

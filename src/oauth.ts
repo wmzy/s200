@@ -17,13 +17,18 @@
  */
 
 import { httpError } from './errors';
-import { b64Encode, b64urlEncode } from './crypto-util';
+import { b64Encode, b64urlEncode, randomToken } from './crypto-util';
 
 /** RFC 7636 §4.2 S256: base64url(SHA-256(verifier)). */
 async function s256(text: string): Promise<string> {
   return b64urlEncode(
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
   );
+}
+
+/** Space-joins an array scope; a string scope passes through as-is. */
+function joinScope(scope: string | readonly string[]): string {
+  return typeof scope === 'string' ? scope : scope.join(' ');
 }
 
 /** One PKCE pair: the verifier rides the token request, the challenge
@@ -40,7 +45,7 @@ export type PkcePair = {
  * S256 challenge `base64url(SHA-256(verifier))`.
  */
 export async function createPkcePair(): Promise<PkcePair> {
-  const verifier = b64urlEncode(crypto.getRandomValues(new Uint8Array(64)));
+  const verifier = randomToken(64);
   return { verifier, codeChallenge: await s256(verifier) };
 }
 
@@ -49,7 +54,7 @@ export async function createPkcePair(): Promise<PkcePair> {
  * characters. Works as an OIDC nonce too.
  */
 export function randomState(): string {
-  return b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  return randomToken(32);
 }
 
 /** The authorization-request knobs — endpoint and client registration. */
@@ -88,10 +93,7 @@ export function buildAuthorizeUrl(
   params.set('client_id', options.clientId);
   params.set('redirect_uri', options.redirectUri);
   if (options.scope !== undefined) {
-    params.set(
-      'scope',
-      typeof options.scope === 'string' ? options.scope : options.scope.join(' ')
-    );
+    params.set('scope', joinScope(options.scope));
   }
   params.set('state', flow.state);
   if (flow.nonce !== undefined) {
@@ -231,10 +233,7 @@ export async function refreshToken(
     refresh_token: grant.refreshToken,
   });
   if (grant.scope !== undefined) {
-    body.set(
-      'scope',
-      typeof grant.scope === 'string' ? grant.scope : grant.scope.join(' ')
-    );
+    body.set('scope', joinScope(grant.scope));
   }
   return postTokenGrant(options, body);
 }
@@ -258,10 +257,7 @@ export async function clientCredentials(
 ): Promise<OAuthTokens> {
   const body = new URLSearchParams({ grant_type: 'client_credentials' });
   if (grant.scope !== undefined) {
-    body.set(
-      'scope',
-      typeof grant.scope === 'string' ? grant.scope : grant.scope.join(' ')
-    );
+    body.set('scope', joinScope(grant.scope));
   }
   return postTokenGrant(options, body);
 }

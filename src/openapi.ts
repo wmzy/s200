@@ -74,7 +74,12 @@ import {
 import { parseQuery } from './query';
 import { json } from './respond';
 import { createRoute } from './router';
-import { compileValidator, toJsonSchema } from './serialize';
+import {
+  compileValidator,
+  exampleToSchema,
+  toJsonSchema,
+  type ValidationIssue,
+} from './serialize';
 import { validationError } from './validate';
 
 /**
@@ -235,45 +240,6 @@ function multipartEncoding(form: MultipartBody['form']): Record<string, unknown>
   return encoding;
 }
 
-/** Structural JSON-string equality for the array-items agreement check. */
-function sameJson(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/**
- * A `throws` example body as a JSON Schema: structural inference over the
- * example value — strings/booleans/null map directly, integrality splits
- * `integer` from `number`, arrays describe their `items` when every
- * element agrees (an empty or mixed array stays unconstrained), objects
- * list the keys present. Required-ness is unknowable from an example, so
- * no key is ever `required`. `undefined` means "no body declared" — the
- * status answers with no JSON content.
- */
-function exampleToJsonSchema(example: unknown): Record<string, unknown> | undefined {
-  if (example === undefined) return undefined;
-  if (example === null) return { type: 'null' };
-  if (typeof example === 'string') return { type: 'string' };
-  if (typeof example === 'boolean') return { type: 'boolean' };
-  if (typeof example === 'number') {
-    return { type: Number.isInteger(example) ? 'integer' : 'number' };
-  }
-  if (Array.isArray(example)) {
-    const schemas = example.map(exampleToJsonSchema);
-    const first = schemas[0];
-    return first !== undefined && schemas.every((schema) => sameJson(schema, first))
-      ? { type: 'array', items: first }
-      : { type: 'array' };
-  }
-  const properties: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(example as Readonly<Record<string, unknown>>)) {
-    const schema = exampleToJsonSchema(value);
-    if (schema !== undefined) {
-      properties[key] = schema;
-    }
-  }
-  return { type: 'object', ...(Object.keys(properties).length > 0 ? { properties } : {}) };
-}
-
 /**
  * Responses by status code: the metadata's declarations (or a bare 200)
  * merged with the `throws` gates' error branches. Neither clobbers the
@@ -306,14 +272,16 @@ function responsesOf(
   }
   for (const [status, example] of Object.entries(gates)) {
     if (status in out) continue;
-    const schema = exampleToJsonSchema(example);
+    // The one inference layer (`s200/serialize`), rendered through the
+    // same bridge every declared schema takes.
+    const inferred = exampleToSchema(example);
     out[status] = {
       description: 'Error response',
-      ...(schema === undefined
+      ...(inferred === undefined
         ? {}
         : {
             content: {
-              'application/json': { schema },
+              'application/json': { schema: toJsonSchema(inferred) },
             },
           }),
     };
@@ -484,6 +452,44 @@ export function openapiJson(ctx: Ctx, app: App, options?: OpenApiSpecOptions): R
   }));
 }
 
+/** One gate entry: the key, its compiled validator, and its `required`
+ * marker — the shared shape of the `query`, `params`, and `headers`
+ * families. */
+type GateEntry = readonly [
+  string,
+  (value: unknown) => readonly ValidationIssue[],
+  boolean,
+];
+
+/**
+ * The one loop behind the gate's three record families: an absent value
+ * (whatever `read` normalizes to `undefined` — headers arrive as `null`)
+ * passes unless its entry is required — the marker's rejection is the
+ * spec-twin 422 `validationError` (`'<scope>.<key>: required'`, scope
+ * naming the family) — and a present value runs its compiled validator
+ * (each family has its own value domain — repeated query keys arrive as
+ * arrays), whose issues throw the same 422.
+ */
+function checkEntries(
+  entries: readonly GateEntry[],
+  scope: string,
+  read: (key: string) => unknown
+): void {
+  for (const [key, validate, required] of entries) {
+    const value = read(key);
+    if (value === undefined) {
+      if (required) {
+        throw validationError(`${scope}.${key}`, [{ path: '', message: 'required' }]);
+      }
+      continue;
+    }
+    const issues = validate(value);
+    if (issues.length > 0) {
+      throw validationError(`${scope}.${key}`, issues);
+    }
+  }
+}
+
 /**
  * The gate a validated route runs in front of its own middlewares:
  * validators compile once at transform time, then each request is
@@ -520,61 +526,25 @@ function validationGate(meta: RouteMeta): Middleware {
         throw validationError('body', issues);
       }
     }
+    // Absent keys pass — optional is the query default. A `required`
+    // marker flips it: the spec's `parameters[].required: true` and the
+    // gate reject the same requests (422, `validationError`).
     if (query.length > 0) {
       const record = parseQuery(ctx);
-      for (const [key, validate, required] of query) {
-        const value = record[key];
-        // Absent keys pass — optional is the query default. A `required`
-        // marker flips it: the spec's `parameters[].required: true` and
-        // the gate reject the same requests (422, `validationError`).
-        if (value === undefined) {
-          if (required) {
-            throw validationError(`query.${key}`, [{ path: '', message: 'required' }]);
-          }
-          continue;
-        }
-        const issues = validate(value);
-        if (issues.length > 0) {
-          throw validationError(`query.${key}`, issues);
-        }
-      }
+      checkEntries(query, 'query', (key) => record[key]);
     }
+    // The captured params record — every matched segment is present;
+    // only an optional segment (`:id?`) can leave a key absent, and a
+    // `required` marker rejects exactly that absence (422), mirroring
+    // the query branch. Values are seen verbatim (the string domain).
     if (params.length > 0) {
-      // The captured params record — every matched segment is present;
-      // only an optional segment (`:id?`) can leave a key absent, and a
-      // `required` marker rejects exactly that absence (422), mirroring
-      // the query branch. Values are seen verbatim (the string domain).
-      for (const [key, validate, required] of params) {
-        const value = ctx.params[key];
-        if (value === undefined) {
-          if (required) {
-            throw validationError(`params.${key}`, [{ path: '', message: 'required' }]);
-          }
-          continue;
-        }
-        const issues = validate(value);
-        if (issues.length > 0) {
-          throw validationError(`params.${key}`, issues);
-        }
-      }
+      checkEntries(params, 'params', (key) => ctx.params[key]);
     }
+    // Absent headers pass — optional is the HTTP default; a `required`
+    // marker flips it, exactly like the query branch, and the spec's
+    // `parameters[].required: true` describes the same rejection.
     if (headers.length > 0) {
-      // Absent headers pass — optional is the HTTP default; a `required`
-      // marker flips it, exactly like the query branch, and the spec's
-      // `parameters[].required: true` describes the same rejection.
-      for (const [key, validate, required] of headers) {
-        const value = ctx.req.headers.get(key);
-        if (value === null) {
-          if (required) {
-            throw validationError(`headers.${key}`, [{ path: '', message: 'required' }]);
-          }
-          continue;
-        }
-        const issues = validate(value);
-        if (issues.length > 0) {
-          throw validationError(`headers.${key}`, issues);
-        }
-      }
+      checkEntries(headers, 'headers', (key) => ctx.req.headers.get(key) ?? undefined);
     }
     await next();
   };

@@ -21,18 +21,22 @@ get(app, '/users/:id', (ctx) => jsonRaw(ctx, toUser({ id: 1, name: 'ada' })));
 | `jsonRaw(ctx, json, init?)` | Writes an already-serialized JSON string: `content-type: application/json`, exact `content-length` |
 | `compileValidator(schema)` | The read-side twin: `(data) => readonly ValidationIssue[]` — an empty list means conforming; never throws or rewrites |
 | `checkSchema(schema, value)` | The closed-shape twin: `(schema, value) => readonly SchemaIssue[]` — same subset, but undeclared keys ARE violations; `path` is the key walk (`['items', 1, 'name']`, `[]` at the root), not a string |
+| `exampleToSchema(example)` | Infers a `SerializeSchema` from an example value — `undefined` means "no schema" (no JSON analogue) |
 
 `SerializeSchema` (the subset):
 
 ```ts
 type SerializeSchema =
   | { type: 'object'; properties: { [key: string]: SerializeSchema }; required?: readonly string[] }
-  | { type: 'array'; items: SerializeSchema }
+  | { type: 'array'; items?: SerializeSchema }
   | { readonly type: PrimitiveType; readonly nullable?: boolean };
 // Every node also accepts an optional `title?: string` — a pure
 // annotation: `toJsonSchema` carries it into the emitted JSON Schema
 // (naming deduplicated `components.schemas` in `s200/openapi`);
-// serialization and validation ignore it.
+// serialization and validation ignore it. An array without `items`
+// leaves its elements unconstrained: `serialize` passes the array
+// through `JSON.stringify` verbatim, the validators only check
+// array-ness, and `InferSchema` reads `unknown[]`.
 ```
 
 `PrimitiveType` names the leaf alternatives: `'string' | 'number' | 'integer' | 'boolean' | 'null'`.
@@ -43,7 +47,21 @@ type SerializeSchema =
 - `compileValidator` mirrors the subset one-for-one: type mismatches report at the offending node, `nullable` admits `null` first, missing `required` keys report at their own path, extra keys are ignored. This is the validator `s200/openapi`'s `withRouteValidation` uses.
 - `checkSchema` is its closed-shape twin (`additionalProperties: false`, matching what `serialize` emits on output — undeclared keys are violations), reporting `SchemaIssue` (`{ path: readonly PropertyKey[]; message }`). This is the checker `s200/response-check` runs against response bodies.
 
-`ValidationIssue`: `{ path: string; message: string }` — `path` dot-joins the schema-relative location (`'items.2.name'`; the root is `''`).
+`ValidationIssue`: `{ path: string; message }` — `path` dot-joins the schema-relative location (`'items.2.name'`; the root is `''`).
+
+### Example inference (`exampleToSchema`)
+
+`exampleToSchema(example)` infers the DSL from a runtime value — the single structural-inference layer behind the example-derived surfaces: `s200/codegen` renders its output as the `throws` example's TypeScript type, `s200/openapi` renders it through `toJsonSchema` as the error response's schema, so the two views cannot drift.
+
+```ts
+exampleToSchema({ id: 1, roles: ['a', 'b'] });
+// { type: 'object',
+//   properties: { id: { type: 'integer' },
+//                 roles: { type: 'array', items: { type: 'string' } } },
+//   required: ['id', 'roles'] }
+```
+
+Rules: numbers split `integer`/`number` by integrality; an object declares every key its example shows, all `required` (optionality is unknowable from an example); an array carries `items` only when every element infers the same schema — an empty or mixed array stays `{ type: 'array' }`, its elements unconstrained. `undefined` — also functions, symbols, bigints, values with no JSON analogue — means "no schema"; such keys are dropped from objects and a top-level such example leaves the surface undeclared.
 
 ## ETag (`s200/etag`)
 

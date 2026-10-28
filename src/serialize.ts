@@ -1,7 +1,9 @@
 /**
  * Schema-driven JSON serializer: `serialize(schema)` compiles a
- * serialization function for a JSON-Schema-shaped subset, and `jsonRaw`
- * writes an already-serialized JSON string as a response.
+ * serialization function for a JSON-Schema-shaped subset, `jsonRaw`
+ * writes an already-serialized JSON string as a response, and
+ * `exampleToSchema` infers the subset from an example value (the one
+ * inference layer `s200/codegen` and `s200/openapi` render).
  *
  * The schema is developer-authored code, compiled once at startup through
  * the Function constructor into a function of straight string
@@ -32,9 +34,13 @@ export type PrimitiveType = 'string' | 'number' | 'integer' | 'boolean' | 'null'
 /**
  * The supported schema subset. `type: 'object'` requires `properties`;
  * `required` names the non-optional keys (absent = every key optional).
- * `nullable: true` widens a primitive to `T | null`. `title` is an
- * optional annotation carried into `toJsonSchema` output (and used to
- * name hoisted `components.schemas` entries — see `s200/openapi`).
+ * `nullable: true` widens a primitive to `T | null`. An array without
+ * `items` leaves its elements unconstrained — the shape {@link
+ * exampleToSchema} infers for a mixed-element example; `serialize` passes
+ * such an array through `JSON.stringify` verbatim and the validators
+ * check array-ness only. `title` is an optional annotation carried into
+ * `toJsonSchema` output (and used to name hoisted
+ * `components.schemas` entries — see `s200/openapi`).
  */
 export type SerializeSchema =
   | {
@@ -46,7 +52,7 @@ export type SerializeSchema =
        * serialization and validation ignore it. */
       readonly title?: string;
     }
-  | { readonly type: 'array'; readonly items: SerializeSchema; readonly title?: string }
+  | { readonly type: 'array'; readonly items?: SerializeSchema; readonly title?: string }
   | { readonly type: PrimitiveType; readonly nullable?: boolean; readonly title?: string };
 
 /** The object member of the schema union — named so mapped types can
@@ -125,11 +131,77 @@ export function toJsonSchema(schema: SerializeSchema): Record<string, unknown> {
       };
     }
     case 'array':
-      return { type: 'array', items: toJsonSchema(schema.items), ...title };
+      // No `items`: elements unconstrained — the bare array shape (what
+      // `exampleToSchema` infers for a mixed-element example).
+      return schema.items === undefined
+        ? { type: 'array', ...title }
+        : { type: 'array', items: toJsonSchema(schema.items), ...title };
     default:
       return schema.nullable === true
         ? { type: [schema.type, 'null'], ...title }
         : { type: schema.type, ...title };
+  }
+}
+
+/** Structural JSON-string equality for the array-items agreement check:
+ * two schemas produced by the same recursion stringify identically iff
+ * they are structurally equal, key order included. */
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Infers a {@link SerializeSchema} from an example value — the single
+ * structural-inference layer behind the example-derived surfaces:
+ * `s200/codegen` renders its output through the schema-to-TypeScript
+ * walk and `s200/openapi` through {@link toJsonSchema}, so the two
+ * views cannot drift. `undefined` means "no schema" — the example
+ * carries nothing the DSL can declare.
+ *
+ * Semantics:
+ *
+ * - `null`/`string`/`boolean` map directly; numbers split `integer`
+ *   from `number` by integrality;
+ * - an object declares every key its example shows, all `required`
+ *   (optionality is unknowable from an example); keys whose values
+ *   infer no schema are dropped;
+ * - an array carries `items` only when every element infers the same
+ *   schema (structural equality — `1` and `1.5` disagree under the
+ *   integrality split); an empty or mixed array stays
+ *   `{ type: 'array' }`, its elements unconstrained;
+ * - values with no JSON analogue (`undefined`, functions, symbols,
+ *   bigints) infer no schema at any depth.
+ */
+export function exampleToSchema(example: unknown): SerializeSchema | undefined {
+  if (example === undefined) return undefined;
+  if (example === null) return { type: 'null' };
+  switch (typeof example) {
+    case 'string':
+      return { type: 'string' };
+    case 'boolean':
+      return { type: 'boolean' };
+    case 'number':
+      return { type: Number.isInteger(example) ? 'integer' : 'number' };
+    case 'object': {
+      if (Array.isArray(example)) {
+        const schemas = example.map(exampleToSchema);
+        const first = schemas[0];
+        return first !== undefined && schemas.every((schema) => sameJson(schema, first))
+          ? { type: 'array', items: first }
+          : { type: 'array' };
+      }
+      const properties: Record<string, SerializeSchema> = {};
+      for (const [key, value] of Object.entries(example as Readonly<Record<string, unknown>>)) {
+        const schema = exampleToSchema(value);
+        if (schema !== undefined) {
+          properties[key] = schema;
+        }
+      }
+      const required = Object.keys(properties);
+      return { type: 'object', properties, ...(required.length > 0 ? { required } : {}) };
+    }
+    default:
+      return undefined;
   }
 }
 
@@ -183,6 +255,12 @@ function compileValue(schema: SerializeSchema): (value: string) => string {
       return (value) =>
         withNullable(schema, value, `(${value} === true ? 'true' : 'false')`);
     case 'array': {
+      // No `items`: elements unconstrained — the whole array passes
+      // through `JSON.stringify` verbatim (holes and `undefined` map to
+      // `null`, the native rule).
+      if (schema.items === undefined) {
+        return (value) => `JSON.stringify(${value})`;
+      }
       const item = compileValue(schema.items);
       // `Array.from`, not `.map`: map skips holes, which `join` then renders
       // as empty slots (`[,"a"]`). `?? 'null'` matches `JSON.stringify` for
@@ -355,6 +433,8 @@ function walkValues<P, I>(
         issues.push(report(path, `expected array, got ${typeOf(data)}`));
         return;
       }
+      // No `items`: elements unconstrained — array-ness is the whole check.
+      if (schema.items === undefined) return;
       for (let i = 0; i < data.length; i++) {
         walkValues(schema.items, data[i], extend(path, i), issues, extend, report, closed);
       }

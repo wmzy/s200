@@ -29,7 +29,9 @@
  * @module
  */
 
+import { assertPositive } from './assert';
 import { httpError, isHttpError } from './errors';
+import { pushSlidingTimestamps } from './map-limit';
 
 /** Phase of the state machine: `closed` → `open` → `half-open` → … */
 export type CircuitPhase = 'closed' | 'open' | 'half-open';
@@ -198,11 +200,7 @@ export function createCircuitBreaker(
     ['successesNeeded', config.successesNeeded],
     ['probeConcurrency', config.probeConcurrency],
   ] as const) {
-    if (value <= 0) {
-      throw new Error(
-        `Invalid circuit-breaker ${name} ${String(value)}: must be positive`
-      );
-    }
+    assertPositive('circuit-breaker', name, value);
   }
   return {
     options: config,
@@ -293,17 +291,8 @@ export function recordFailure(
     return false;
   }
   const now = breaker.options.now();
-  const cutoff = now - breaker.options.windowMs;
-  const timestamps = breaker.failures;
-  let drop = 0;
-  while (drop < timestamps.length && (timestamps[drop] ?? 0) <= cutoff) {
-    drop += 1;
-  }
-  if (drop > 0) {
-    timestamps.splice(0, drop);
-  }
-  timestamps.push(now);
-  if (timestamps.length >= breaker.options.failureThreshold) {
+  pushSlidingTimestamps(breaker.failures, now, breaker.options.windowMs);
+  if (breaker.failures.length >= breaker.options.failureThreshold) {
     trip(breaker);
   }
   return true;

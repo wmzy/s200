@@ -287,6 +287,18 @@ function withValidators(
 }
 
 /**
+ * The unsatisfiable-range answer: 416 with the resource's current size in
+ * `content-range` — shared by the bytes path and the streamed
+ * `readRange` path.
+ */
+function unsatisfiable(ctx: Ctx, size: number): void {
+  send(ctx, null, {
+    status: 416,
+    headers: { 'content-range': `bytes */${size}` },
+  });
+}
+
+/**
  * Sends byte-backed content, honoring a single `Range` request with
  * 206/416 — video seeking works — and HEAD stays bodyless with
  * `accept-ranges` advertised. With `info`, validators ride along so clients
@@ -326,10 +338,7 @@ function serveBytes(
     return;
   }
   if (range === null) {
-    send(ctx, null, {
-      status: 416,
-      headers: { 'content-range': `bytes */${bytes.byteLength}` },
-    });
+    unsatisfiable(ctx, bytes.byteLength);
     return;
   }
   send(ctx, bytes.subarray(range.start, range.end + 1), {
@@ -464,10 +473,7 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
           ? parseByteRange(ctx.req.headers.get('range'), info.size)
           : undefined;
         if (range === null) {
-          send(ctx, null, {
-            status: 416,
-            headers: { 'content-range': `bytes */${info.size}` },
-          });
+          unsatisfiable(ctx, info.size);
           return;
         }
         if (range !== undefined) {

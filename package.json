@@ -689,7 +689,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "6.71 KB"
+      "limit": "6.75 KB"
     },
     {
       "name": "compress battery (min+gz)",
@@ -722,7 +722,7 @@
       "name": "timeout battery (min+gz)",
       "path": "dist/timeout.mjs",
       "gzip": true,
-      "limit": "0.62 KB"
+      "limit": "650 B"
     },
     {
       "name": "timing battery (min+gz)",
@@ -755,7 +755,7 @@
       "name": "serialize battery (min+gz)",
       "path": "dist/serialize.mjs",
       "gzip": true,
-      "limit": "3.12 KB"
+      "limit": "3.25 KB"
     },
     {
       "name": "response-check battery (min+gz)",

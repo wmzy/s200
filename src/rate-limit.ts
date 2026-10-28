@@ -17,7 +17,9 @@
 
 import type { Ctx, Middleware } from './types';
 
+import { assertPositive } from './assert';
 import { httpError } from './errors';
+import { pushSlidingTimestamps } from './map-limit';
 
 export type RateLimitOptions = {
   /** Window length in milliseconds; default 60_000. */
@@ -84,24 +86,17 @@ function memoryStore(): RateLimitStore {
         timestamps = [];
         buckets.set(key, timestamps);
       }
-      const cutoff = now - windowMs;
-      let drop = 0;
-      while (
-        drop < timestamps.length &&
-        (timestamps[drop] ?? 0) <= cutoff
-      ) {
-        drop += 1;
-      }
-      if (drop > 0) {
-        timestamps.splice(0, drop);
-      }
-      timestamps.push(now);
+      pushSlidingTimestamps(timestamps, now, windowMs);
       const count = timestamps.length;
       // Sweep on over-limit AND on a hit counter: an under-limit-only
       // workload would otherwise never trigger cleanup once the map
       // passed MAX_BUCKETS, leaking one deque per distinct key forever.
       hits += 1;
       if (buckets.size > MAX_BUCKETS && (count > limit || hits % 256 === 0)) {
+        // Not pushSlidingTimestamps: this is a many-bucket janitor pass —
+        // it only drops expired entries and must not land a hit in
+        // buckets whose keys were never touched.
+        const cutoff = now - windowMs;
         for (const [candidate, entries] of buckets) {
           while (entries.length > 0 && (entries[0] ?? 0) <= cutoff) {
             entries.shift();
@@ -144,16 +139,8 @@ export function rateLimit(options: RateLimitOptions = {}): Middleware {
   const skip = options.skip;
   const now = options.now ?? Date.now;
   const store = options.store ?? memoryStore();
-  if (windowMs <= 0) {
-    throw new Error(
-      `Invalid rate-limit windowMs ${String(windowMs)}: must be positive`
-    );
-  }
-  if (limit <= 0) {
-    throw new Error(
-      `Invalid rate-limit limit ${String(limit)}: must be positive`
-    );
-  }
+  assertPositive('rate-limit', 'windowMs', windowMs);
+  assertPositive('rate-limit', 'limit', limit);
 
   return async (ctx: Ctx, next) => {
     // Exempt requests bypass the whole gate — key, store hit, 429 — so

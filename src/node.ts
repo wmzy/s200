@@ -16,13 +16,19 @@ import {
   type IncomingHttpHeaders,
 } from 'node:http2';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
-import { join } from 'node:path';
 import { Readable, type Duplex } from 'node:stream';
 
 import { LightHeaders, LightRequest, LightResponse, setCachedUrl } from './light';
 
 import { handle } from './app';
-import { createRealPathGuardWith, MISSING_FILE_CODES } from './fs-containment';
+import {
+  createFileRangeReaderWith,
+  createFileReaderWith,
+  createFileStatWith,
+  createRealPathGuardWith,
+  existsWith,
+  type FileIo,
+} from './fs-containment';
 import { runFinish } from './finish';
 import { rawHeaderPairs } from './raw-headers';
 import { isSafeHost } from './safe-host';
@@ -197,6 +203,35 @@ type ResponseLike = {
   destroy(): unknown;
 };
 
+/** The node-constructor-known server tunables — the whitelist `serve`
+ * copies field by field, so unknown keys can never reach node's
+ * constructors (never a blind spread of a foreign options object).
+ * `maxConnections`/`maxRequestsPerSocket` are post-construction setters
+ * and `backlog` rides `listen()`, so none of them belongs here. */
+const TUNABLE_KEYS = [
+  'maxHeaderSize',
+  'requestTimeout',
+  'headersTimeout',
+  'keepAliveTimeout',
+  'connectionsCheckingInterval',
+  'keepAlive',
+  'noDelay',
+  'highWaterMark',
+] as const;
+
+/** Copies one whitelisted tunable when the caller set it — generic over
+ * the key so each field's own type travels with it. */
+function pickTunable<K extends (typeof TUNABLE_KEYS)[number]>(
+  key: K,
+  from: NodeServerTunables,
+  into: { -readonly [P in keyof NodeServerTunables]: NodeServerTunables[P] }
+): void {
+  const value = from[key];
+  if (value !== undefined) {
+    into[key] = value;
+  }
+}
+
 export async function serve(
   app: App,
   options: NodeServeOptions = {}
@@ -210,24 +245,13 @@ export async function serve(
     void dispatch(app, req, res, options.light === true, options.abortOnDisconnect !== false);
   };
   // Whitelisted node constructor options — never a blind spread of a
-  // foreign options object. Each field is picked explicitly so unknown
-  // keys cannot reach node's constructors.
+  // foreign options object. Each field is picked explicitly (the
+  // TUNABLE_KEYS loop) so unknown keys cannot reach node's constructors.
   const tunables: { -readonly [K in keyof NodeServerTunables]: NodeServerTunables[K] } = {};
   const requested = options.server;
   if (requested !== undefined) {
-    if (requested.maxHeaderSize !== undefined) tunables.maxHeaderSize = requested.maxHeaderSize;
-    if (requested.requestTimeout !== undefined) tunables.requestTimeout = requested.requestTimeout;
-    if (requested.headersTimeout !== undefined) tunables.headersTimeout = requested.headersTimeout;
-    if (requested.keepAliveTimeout !== undefined) {
-      tunables.keepAliveTimeout = requested.keepAliveTimeout;
-    }
-    if (requested.connectionsCheckingInterval !== undefined) {
-      tunables.connectionsCheckingInterval = requested.connectionsCheckingInterval;
-    }
-    if (requested.keepAlive !== undefined) tunables.keepAlive = requested.keepAlive;
-    if (requested.noDelay !== undefined) tunables.noDelay = requested.noDelay;
-    if (requested.highWaterMark !== undefined) {
-      tunables.highWaterMark = requested.highWaterMark;
+    for (const key of TUNABLE_KEYS) {
+      pickTunable(key, requested, tunables);
     }
   }
   const server: NodeServerKind =
@@ -609,22 +633,32 @@ export async function brotliCompress(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
- * Buffered-whole-file ceiling (16 MiB): files strictly larger stream
- * instead, so a huge asset cannot balloon memory by default. The
- * threshold matches `serveStatic`'s streamed path — with `stat` injected
- * the response still carries content-length/validators.
+ * The node flavor of the shared file-service primitives
+ * (fs-containment's `FileIo`): `fs/promises` stat/readFile over
+ * `createReadStream` windows. The always-stream precheck is node's real
+ * extra — a directory passes `access(R_OK)` but its stream errors after
+ * the response has started, and any precheck failure (including EACCES)
+ * reads as a miss so nothing surfaces mid-response.
  */
-const STREAM_THRESHOLD = 16 * 1024 * 1024;
-
-// "Miss or throw": only the shared missing-file codes (fs-containment's
-// MISSING_FILE_CODES) read as a miss — anything else (EACCES, EMFILE, …)
-// rethrows so a real IO failure is not masked as a 404.
-const missOrNull = (error: unknown): null => {
-  const code = (error as { code?: unknown }).code;
-  if (typeof code === 'string' && MISSING_FILE_CODES.includes(code)) {
-    return null;
-  }
-  throw error;
+const nodeFileIo: FileIo = {
+  stat,
+  readAll: readFile,
+  createStream: async (file) => {
+    try {
+      if ((await stat(file)).isDirectory()) return null;
+      await access(file, constants.R_OK);
+    } catch {
+      return null;
+    }
+    return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
+  },
+  createStreamUnchecked: (file) =>
+    Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>,
+  createRangeStream: (file, start, end) =>
+    Readable.toWeb(
+      createReadStream(file, { start, end })
+    ) as ReadableStream<Uint8Array>,
+  createGuard: createRealPathGuard,
 };
 
 /**
@@ -648,44 +682,7 @@ export function createFileReader(
     readonly streamThreshold?: number;
   } = {}
 ): (path: string) => Promise<Uint8Array | ReadableStream<Uint8Array> | null> {
-  const stream = options.stream === true;
-  const guard = options.realPath === false ? undefined : createRealPathGuard(root);
-  const streamThreshold = options.streamThreshold ?? STREAM_THRESHOLD;
-  return async (
-    path: string
-  ): Promise<Uint8Array | ReadableStream<Uint8Array> | null> => {
-    if (guard !== undefined && (await guard(path)) === null) return null;
-    const file = join(root, path);
-    if (stream) {
-      try {
-        // A directory passes access(R_OK), but its stream errors after the
-        // response has started — read it as a miss like the buffered path.
-        if ((await stat(file)).isDirectory()) return null;
-        await access(file, constants.R_OK);
-      } catch {
-        return null;
-      }
-      return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
-    }
-    // Stat before reading: the size decides buffered vs streamed, and a
-    // directory (or a race-deleted path) reads as a plain miss.
-    let size: number;
-    try {
-      const info = await stat(file);
-      if (info.isDirectory()) return null;
-      size = info.size;
-    } catch (error) {
-      return missOrNull(error);
-    }
-    if (size > streamThreshold) {
-      return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
-    }
-    try {
-      return await readFile(file);
-    } catch (error) {
-      return missOrNull(error);
-    }
-  };
+  return createFileReaderWith(root, nodeFileIo, options);
 }
 
 /**
@@ -700,19 +697,7 @@ export function createFileReader(
 export function createFileStat(
   root: string
 ): (path: string) => Promise<StaticFileInfo | null> {
-  const guard = createRealPathGuard(root);
-  return async (path: string): Promise<StaticFileInfo | null> => {
-    if ((await guard(path)) === null) return null;
-    try {
-      const info = await stat(join(root, path));
-      if (info.isDirectory()) {
-        return null;
-      }
-      return { size: info.size, mtimeMs: info.mtimeMs };
-    } catch (error) {
-      return missOrNull(error);
-    }
-  };
+  return createFileStatWith(root, nodeFileIo);
 }
 
 /**
@@ -730,40 +715,7 @@ export function createFileRangeReader(
   start: number,
   end: number
 ) => Promise<ReadableStream<Uint8Array> | null> {
-  const guard = createRealPathGuard(root);
-  return async (
-    path: string,
-    start: number,
-    end: number
-  ): Promise<ReadableStream<Uint8Array> | null> => {
-    if ((await guard(path)) === null) return null;
-    const file = join(root, path);
-    try {
-      if ((await stat(file)).isDirectory()) return null;
-    } catch (error) {
-      return missOrNull(error);
-    }
-    return Readable.toWeb(
-      createReadStream(file, { start, end })
-    ) as ReadableStream<Uint8Array>;
-  };
-}
-
-/**
- * Existence probe for the shared containment guard: only a genuinely
- * absent entry answers `'missing'`; a dangling symlink or an unreadable
- * path counts as existing, so the guard refuses instead of authorizing a
- * miss. The algorithm itself lives in {@link createRealPathGuardWith} and
- * is shared verbatim with the Bun adapter.
- */
-async function nodeExists(path: string): Promise<'exists' | 'missing'> {
-  try {
-    await lstat(path);
-    return 'exists';
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'exists';
-  }
+  return createFileRangeReaderWith(root, nodeFileIo);
 }
 
 /**
@@ -790,6 +742,6 @@ export function createRealPathGuard(
   return createRealPathGuardWith(
     root,
     (path) => realpath(path).catch(() => null),
-    nodeExists
+    existsWith(lstat)
   );
 }

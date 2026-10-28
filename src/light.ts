@@ -239,18 +239,25 @@ export class LightHeaders {
         if (name === undefined || value === undefined || name.startsWith(':')) {
           continue;
         }
-        const key = name.toLowerCase();
-        const slot = store.index.get(key);
-        if (slot !== undefined) {
-          slot.values.push(value);
-        } else {
-          const created: HeaderSlot = { name: key, values: [value] };
-          store.slots.push(created);
-          store.index.set(key, created);
-        }
+        this.slotFor(name.toLowerCase()).values.push(value);
       }
     }
     return store;
+  }
+
+  /** Finds `key`'s slot, creating and indexing an empty one on a miss —
+   * the shared miss path of {@link ensure}'s raw drain, {@link set} and
+   * {@link append}. Safe to call mid-{@link ensure}: the store is
+   * assigned before the drain starts, so the re-entrant {@link ensure}
+   * returns that same partially-filled store. */
+  private slotFor(key: string): HeaderSlot {
+    const { slots, index } = this.ensure();
+    const slot = index.get(key);
+    if (slot !== undefined) return slot;
+    const created: HeaderSlot = { name: key, values: [] };
+    slots.push(created);
+    index.set(key, created);
+    return created;
   }
 
   get(name: string): string | null {
@@ -264,30 +271,12 @@ export class LightHeaders {
 
   set(name: string, value: string): void {
     validateHeader(name, value);
-    const { slots, index } = this.ensure();
-    const key = name.toLowerCase();
-    const slot = index.get(key);
-    if (slot !== undefined) {
-      slot.values = [value];
-      return;
-    }
-    const created: HeaderSlot = { name: key, values: [value] };
-    slots.push(created);
-    index.set(key, created);
+    this.slotFor(name.toLowerCase()).values = [value];
   }
 
   append(name: string, value: string): void {
     validateHeader(name, value);
-    const { slots, index } = this.ensure();
-    const key = name.toLowerCase();
-    const slot = index.get(key);
-    if (slot !== undefined) {
-      slot.values.push(value);
-      return;
-    }
-    const created: HeaderSlot = { name: key, values: [value] };
-    slots.push(created);
-    index.set(key, created);
+    this.slotFor(name.toLowerCase()).values.push(value);
   }
 
   delete(name: string): void {
