@@ -16,7 +16,7 @@
 
 import type { Ctx, Middleware } from './types';
 
-import { LightResponse } from './light';
+import { byteBodyOf } from './light';
 import { newResponse } from './respond';
 import { toHex } from './crypto-util';
 
@@ -58,11 +58,7 @@ export function etag(options: EtagOptions = {}): Middleware {
     // synchronously — no platform body read, no defensive copy. Streamed
     // and lazy light bodies fall through to the async read, exactly like a
     // platform response.
-    const source =
-      res instanceof LightResponse
-        ? (res.bytesSync() as Uint8Array<ArrayBuffer> | null)
-        : null;
-    const bytes = source ?? new Uint8Array(await res.arrayBuffer());
+    const bytes = byteBodyOf(res) ?? new Uint8Array(await res.arrayBuffer());
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', bytes));
     const tag = `${prefix}"${toHex(digest)}"`;
     const headers = new Headers(res.headers);

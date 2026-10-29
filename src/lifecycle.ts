@@ -18,6 +18,7 @@
  * @module
  */
 
+import { drainHttpServer } from './drain';
 import { finishersIdle } from './finish';
 
 /**
@@ -126,10 +127,6 @@ export function lifecycle(
       : typeof options.onShutdown === 'function'
         ? [options.onShutdown]
         : options.onShutdown;
-  // Idle-socket reap cadence for the node path: fast enough that a
-  // response finishing mid-drain doesn't wait the whole budget for its
-  // keep-alive socket to be noticed, slow enough to be free in production.
-  const reapMs = Math.max(1, Math.min(250, Math.floor(timeoutMs / 20)));
 
   let drain: Promise<void> | undefined;
   // The active hard-kill while connections are being waited on — a second
@@ -169,45 +166,20 @@ export function lifecycle(
   };
 
   // Node path: stop accepting new connections, reap keep-alive sockets
-  // that go idle mid-drain, force-close on deadline. Resolves when the
-  // server's close callback fires — never rejects.
+  // that go idle mid-drain, force-close on deadline. The skeleton is
+  // drain.ts's, shared with the node adapter's close() and the shard
+  // executor's child realms; this wiring only adds the second-signal
+  // kill switch. Resolves when the server's close callback fires — never
+  // rejects (a close() error here means already-drained).
   const drainNode = (raw: RawServer): Promise<void> =>
     new Promise((resolve) => {
-      let settled = false;
-      let reaper: ReturnType<typeof setInterval> | undefined;
-      const finish = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        if (reaper !== undefined) {
-          clearInterval(reaper);
-        }
-        clearTimeout(deadline);
-        kill = undefined;
-        resolve();
-      };
-      const hardKill = (): void => {
-        raw.closeAllConnections?.();
-      };
-      const deadline = setTimeout(hardKill, timeoutMs);
-      kill = hardKill;
-      try {
-        // Stop accepting new connections. The callback fires once every
-        // connection has ended — in-flight responses finish and their
-        // sockets are reaped below.
-        raw.close?.(() => finish());
-      } catch {
-        // A server that refuses a second close() is already drained.
-        finish();
-      }
-      if (!settled) {
-        // Keep-alive sockets that go idle mid-drain (their response just
-        // finished) would otherwise hold close()'s callback open until the
-        // deadline — reap continuously, not once.
-        raw.closeIdleConnections?.();
-        reaper = setInterval(() => raw.closeIdleConnections?.(), reapMs);
-      }
+      drainHttpServer(raw, {
+        budgetMs: timeoutMs,
+        onKill: (killNow) => {
+          kill = killNow;
+        },
+        settle: () => resolve(),
+      });
     });
 
   // Bun path: stop(false) is the graceful stop, stop() the immediate one.

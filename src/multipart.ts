@@ -58,8 +58,10 @@ const TAB = 0x09;
  * and no legitimate form comes close. */
 const DEFAULT_MAX_PARTS = 256;
 /** Default cap on one part's assembled size — the per-part memory bound.
- * `Number.POSITIVE_INFINITY` lifts it for trusted callers. */
-const DEFAULT_MAX_PART_SIZE = 8 * 1024 * 1024;
+ * `Number.POSITIVE_INFINITY` lifts it for trusted callers. Exported
+ * because `s200/upload` rides it: its streaming per-part floor is the
+ * larger of the file cap and this default, so both stay defined once. */
+export const DEFAULT_MAX_PART_SIZE = 8 * 1024 * 1024;
 
 /** A part's header block is the one place the parser buffers text before
  * validating it — cap it so an adversarial stream cannot grow it forever. */
@@ -265,6 +267,18 @@ async function scanForm(
   let name = '';
   let filename: string | undefined;
   let contentType: string | undefined;
+  // Enforced as the bytes land, not once the part is complete: an
+  // oversized part aborts the receive instead of buffering it whole. The
+  // two places bytes join a part (mid-part flush, delimiter-terminated
+  // final chunk) share this one check.
+  const checkPartSize = (): void => {
+    if (partLen > bounds.maxPartSize) {
+      throw httpError(
+        413,
+        `Multipart part "${name}" exceeds the ${bounds.maxPartSize}-byte part limit`
+      );
+    }
+  };
 
   for (;;) {
     if (stage === 'preamble') {
@@ -340,14 +354,7 @@ async function scanForm(
           partChunks.push(carry.subarray(0, flush));
           partLen += flush;
           carry = carry.subarray(flush);
-          // Checked as the bytes land, not once the part is complete: an
-          // oversized part aborts the receive instead of buffering whole.
-          if (partLen > bounds.maxPartSize) {
-            throw httpError(
-              413,
-              `Multipart part "${name}" exceeds the ${bounds.maxPartSize}-byte part limit`
-            );
-          }
+          checkPartSize();
         }
         from = 0;
       } else {
@@ -363,12 +370,7 @@ async function scanForm(
           if (i > 0) {
             partChunks.push(carry.subarray(0, i));
             partLen += i;
-            if (partLen > bounds.maxPartSize) {
-              throw httpError(
-                413,
-                `Multipart part "${name}" exceeds the ${bounds.maxPartSize}-byte part limit`
-              );
-            }
+            checkPartSize();
           }
           const part: FormPart = {
             name,

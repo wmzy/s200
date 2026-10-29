@@ -25,6 +25,14 @@ throw httpError(401, 'Unauthorized', { error: 'Unauthorized' }, {
 });
 ```
 
+`Retry-After` 的取值遵循同一约定：`retryAfterSeconds(ms)` —— 剩余毫秒数向上取整，下限为 `1`（刚触发的闸门绝不应答 `0`）。`s200/rate-limit` 的 429 与 `s200/circuit-breaker` 的 503 的响应头都用它计算；给你自己的闸门也用它，让每个应答读的是同一座时钟：
+
+```ts
+throw httpError(503, 'Cooling down', { error: 'Cooling down' }, {
+  'retry-after': String(retryAfterSeconds(cooldownLeftMs)),
+});
+```
+
 第五个参数附带 `cause` —— 被包装的根源（502 之下的数据库错误、网关超时之下的上游故障）。它是诊断信息，绝不是 payload：`toErrorResponse` 不序列化它，客户端 body 与没有 cause 时完全一致。它原封不动地流入错误边界，你的 `onError` 在那里读到它（`error.cause`），日志 sink 呈现它：
 
 ```ts
@@ -40,7 +48,7 @@ const app = createApp({
 
 随之而来的一条规则翻转：不带 cause 的 `HttpError` 是刻意的客户端错误，保持不记录；携带 `cause` 的那个则是主动要求 —— 边界把它路由给 `logError`（默认 sink 在 `console.error` 行末追加 cause），同时仍以错误自身的状态码与 body 应答客户端。
 
-错误模型就是三个函数加一条规则：`httpError(status, message?, body?, headers?, cause?)` 构建带标记的值（`status` 为 `[400, 599]` 内的整数，`body` 原样搭载、替代默认的 `{ "error": message }` 信封，`cause` 则搭载到日志 sink 一侧），`isHttpError(error)` 结构化检查标记，`toErrorResponse(error)` 把任何被抛出的值映射为 `Response` —— 与边界应用的映射相同，在链外就地应答错误时有用。那条规则：**throw，不要手工返回** —— 被抛出的 `HttpError` 能到达 `onError` 并参与 unwind 盖章；你自己写的响应只是一个响应。
+错误模型就是四个函数加一条规则：`httpError(status, message?, body?, headers?, cause?)` 构建带标记的值（`status` 为 `[400, 599]` 内的整数，`body` 原样搭载、替代默认的 `{ "error": message }` 信封，`cause` 则搭载到日志 sink 一侧），`isHttpError(error)` 结构化检查标记，`toErrorResponse(error)` 把任何被抛出的值映射为 `Response` —— 与边界应用的映射相同，在链外就地应答错误时有用 —— 而 `retryAfterSeconds(ms)` 把剩余毫秒预算格式化为共享的 `Retry-After` 秒值。那条规则：**throw，不要手工返回** —— 被抛出的 `HttpError` 能到达 `onError` 并参与 unwind 盖章；你自己写的响应只是一个响应。
 
 ## 默认映射
 

@@ -56,7 +56,6 @@ export const SELF_PATH: string =
 
 /** Child-side drain deadline: reap idle connections, then force-close. */
 const CHILD_DRAIN_MS = 2000;
-const REAP_MS = 250;
 
 export function messageOf(error: unknown): string {
   if (error instanceof Error) {
@@ -165,6 +164,26 @@ function loadCore(): Promise<typeof import('./app')> {
   return core;
 }
 
+// The shared drain skeleton (drain.ts) and the shared Headers→record
+// mapping (raw-headers.ts), each loaded lazily for the same link-time
+// reason as the core dispatcher: this module must evaluate under plain
+// node (as a forked shim main) without touching relative imports at link
+// time, and both only ever run long after installShardResolution() has
+// settled in this realm.
+let drainKit: Promise<typeof import('./drain')> | undefined;
+
+function loadDrainKit(): Promise<typeof import('./drain')> {
+  drainKit ??= import('./drain');
+  return drainKit;
+}
+
+let headerKit: Promise<typeof import('./raw-headers')> | undefined;
+
+function loadHeaderKit(): Promise<typeof import('./raw-headers')> {
+  headerKit ??= import('./raw-headers');
+  return headerKit;
+}
+
 /**
  * Resolves the shard app from a user entry: `app` export, then `default`,
  * then calling `createApp()` — the contract every executor realm uses.
@@ -200,6 +219,7 @@ export function createShardServer(app: App): HttpServer {
 async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const { handle } = await loadCore();
+    const { headerRecordOf } = await loadHeaderKit();
     const headers = new Headers();
     for (const [name, value] of Object.entries(req.headers)) {
       if (value === undefined) {
@@ -226,14 +246,10 @@ async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResp
         : {}),
     });
     const response = await handle(app, request);
-    const head: Record<string, string | string[]> = {};
-    response.headers.forEach((value, name) => {
-      head[name] = value;
-    });
-    // forEach would collapse repeated set-cookie into one comma-joined
-    // value, which is not a legal cookie list — keep them as an array.
-    const setCookies = response.headers.getSetCookie();
-    if (setCookies.length > 0) head['set-cookie'] = setCookies;
+    // The shared mapping (raw-headers.ts): repeated set-cookie stays an
+    // array — forEach would collapse it into one comma-joined value,
+    // which is not a legal cookie list.
+    const head = headerRecordOf(response.headers);
     res.writeHead(response.status, head);
     if (response.body === null) {
       res.end();
@@ -256,28 +272,31 @@ async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResp
 /**
  * Graceful drain for a child-realm http server: stop accepting, reap
  * keep-alive sockets that go idle mid-drain (undici leaves them parked),
- * force-close at {@link CHILD_DRAIN_MS}, then hand control back.
+ * force-close at {@link CHILD_DRAIN_MS}, then hand control back. The
+ * skeleton is drain.ts's, shared with the node adapter's close() and
+ * `s200/lifecycle` — it loads lazily (one import tick before the drain
+ * starts, always after this realm's resolve fallback settled).
  */
 function drainServer(server: HttpServer, done: () => void): void {
-  let settled = false;
-  const reaper = setInterval(() => server.closeIdleConnections?.(), REAP_MS);
-  const deadline = setTimeout(() => server.closeAllConnections?.(), CHILD_DRAIN_MS);
-  const finish = (): void => {
-    if (settled) {
+  void loadDrainKit().then((kit) => {
+    kit.drainHttpServer(server, { budgetMs: CHILD_DRAIN_MS, settle: () => done() });
+  });
+}
+
+/**
+ * One-shot gate around {@link drainServer} for both child realms: the
+ * first call starts the drain, every later one is a no-op — a drain
+ * message racing SIGTERM must never start a second drain.
+ */
+function drainOnce(server: HttpServer, done: () => void): () => void {
+  let drained = false;
+  return (): void => {
+    if (drained) {
       return;
     }
-    settled = true;
-    clearInterval(reaper);
-    clearTimeout(deadline);
-    done();
+    drained = true;
+    drainServer(server, done);
   };
-  server.closeIdleConnections?.();
-  try {
-    server.close(() => finish());
-  } catch {
-    // A server refusing a second close() is already drained.
-    finish();
-  }
 }
 
 /**
@@ -303,17 +322,10 @@ export async function startShardWorker(
       // Parent gone (stop() racing us) — the exit path settles it.
     }
   };
-  let drained = false;
-  const drain = (): void => {
-    if (drained) {
-      return;
-    }
-    drained = true;
-    drainServer(httpServer, () => {
-      post({ type: 'stopped' });
-      setImmediate(() => process.exit(0));
-    });
-  };
+  const drain = drainOnce(httpServer, () => {
+    post({ type: 'stopped' });
+    setImmediate(() => process.exit(0));
+  });
   httpServer.listen(data.mode === 'eager' ? (data.port ?? 0) : 0, '127.0.0.1', () => {
     const address = httpServer.address();
     post({ type: 'ready', port: typeof address === 'object' ? address?.port : undefined });
@@ -367,14 +379,7 @@ async function runProcessShim(): Promise<void> {
   server.listen(Number(process.env.S200_PORT ?? '0'), '127.0.0.1', () => {
     process.send?.({ type: 'ready' });
   });
-  let drained = false;
-  const drain = (): void => {
-    if (drained) {
-      return;
-    }
-    drained = true;
-    drainServer(server, () => process.exit(0));
-  };
+  const drain = drainOnce(server, () => process.exit(0));
   process.on('SIGTERM', drain);
   process.on('message', (message: unknown) => {
     if ((message as { type?: string }).type === 'drain') {

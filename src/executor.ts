@@ -273,6 +273,18 @@ function relayToWorker(unit: Unit, socket: Socket): void {
   conn.on('error', kill);
 }
 
+/** Relay adoption — the worker just reported ready on its private port:
+ * point this unit's relays at that port, flip the unit ready, and flush
+ * every parked socket into the relay. The ready path of relay-mode units
+ * and the handle-transfer fallback (node < 26) alike. */
+const adoptRelay = (unit: Unit, port: number | undefined, sockets: readonly Socket[]): void => {
+  unit.relayPort = port;
+  markReady(unit);
+  for (const socket of sockets) {
+    relayToWorker(unit, socket);
+  }
+};
+
 const onWorkerMessage = (unit: Unit, worker: Worker, message: WorkerOut): void => {
   if (message.type === 'error') {
     unit.lastError = message.message;
@@ -285,11 +297,7 @@ const onWorkerMessage = (unit: Unit, worker: Worker, message: WorkerOut): void =
   // (and every unit once the capability probe said no) point relays at it;
   // a first transfer-capable worker instead gets the public listener.
   if (unit.mode === 'relay' || handleTransferWorks === false) {
-    unit.relayPort = message.port;
-    markReady(unit);
-    for (const socket of unit.pending.splice(0)) {
-      relayToWorker(unit, socket);
-    }
+    adoptRelay(unit, message.port, unit.pending.splice(0));
     return;
   }
   const server = unit.server;
@@ -309,11 +317,7 @@ const onWorkerMessage = (unit: Unit, worker: Worker, message: WorkerOut): void =
     // Same worker, same lazy spawn: the first request still gets served.
     handleTransferWorks = false;
     unit.mode = 'relay';
-    unit.relayPort = message.port;
-    markReady(unit);
-    for (const socket of sockets) {
-      relayToWorker(unit, socket);
-    }
+    adoptRelay(unit, message.port, sockets);
   }
 };
 
@@ -330,6 +334,17 @@ const markFailed = (unit: Unit, message: string): void => {
   scheduleRestart(unit);
 };
 
+/** Destroys the unit's parked (never-adopted) sockets so their clients
+ * fail fast instead of hanging on a socket nobody will ever read — a
+ * paused socket attached to the listener would hold close()'s callback
+ * open forever. The worker-death path and stop()'s close path alike;
+ * relayed sockets die with the worker's exit on their own. */
+const destroyParked = (unit: Unit): void => {
+  for (const socket of unit.pending.splice(0)) {
+    socket.destroy();
+  }
+};
+
 const onWorkerExit = (unit: Unit, code: number): void => {
   unit.worker = undefined;
   unit.relayPort = undefined;
@@ -337,12 +352,8 @@ const onWorkerExit = (unit: Unit, code: number): void => {
     return;
   }
   // Sockets still parked here were never adopted (the worker died before
-  // or without a hand-off) — destroy them so their clients fail fast
-  // instead of hanging on a socket nobody will ever read. Relayed sockets
-  // die with the worker's exit on their own.
-  for (const socket of unit.pending.splice(0)) {
-    socket.destroy();
-  }
+  // or without a hand-off) — destroyParked's exact case.
+  destroyParked(unit);
   if (unit.server === undefined) {
     // The dead worker owned the public port (transfer mode); re-bind it
     // immediately so the port answers during the backoff window. The
@@ -472,11 +483,10 @@ const stopThreadUnit = async (unit: Unit): Promise<void> => {
     );
     unit.worker = undefined;
   }
-  // Parked sockets must die before close(): a paused socket attached to
-  // the listener would hold the close callback open forever.
-  for (const socket of unit.pending.splice(0)) {
-    socket.destroy();
-  }
+  // Parked sockets must die before close() — destroyParked's reason: a
+  // paused socket attached to the listener would hold the close callback
+  // open forever.
+  destroyParked(unit);
   if (unit.server !== undefined) {
     await closeServer(unit.server);
     unit.server = undefined;

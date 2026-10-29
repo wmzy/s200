@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
-import { accepts } from '../src/accepts';
+import { accepts, parseRanges } from '../src/accepts';
 
 /** Captures what a handler picked from the request's Accept headers. */
 async function pick(header: string, provided: string[], which: 'type' | 'encoding' | 'language'): Promise<string | undefined> {
@@ -96,5 +96,23 @@ describe('accepts', () => {
   it('handles a q=0 ban for languages too', async () => {
     const picked = await pick('fr;q=0, *;q=0.9', ['fr', 'de'], 'language');
     picked!.should.equal('de');
+  });
+
+  it('parseRanges captures each entry\'s params for param-carrying consumers', () => {
+    parseRanges(
+      'application/vnd.api+json; q=0.9; version="2.0"; Charset=utf-8, text/html'
+    ).should.deep.equal([
+      {
+        value: 'application/vnd.api+json',
+        q: 0.9,
+        // q never lands in params; keys fold to lowercase, quoted values
+        // unquote, later occurrences of a name win.
+        params: new Map([
+          ['version', '2.0'],
+          ['charset', 'utf-8'],
+        ]),
+      },
+      { value: 'text/html', q: 1, params: new Map() },
+    ]);
   });
 });

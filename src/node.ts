@@ -30,7 +30,8 @@ import {
   type FileIo,
 } from './fs-containment';
 import { runFinish } from './finish';
-import { rawHeaderPairs } from './raw-headers';
+import { drainHttpServer } from './drain';
+import { headerRecordOf, rawHeaderPairs } from './raw-headers';
 import { isSafeHost } from './safe-host';
 
 
@@ -327,13 +328,6 @@ export async function serve(
 /** Graceful-close budget when `closeGraceMs` is omitted. */
 const DEFAULT_CLOSE_GRACE_MS = 10_000;
 
-/** Idle-socket reap cadence while draining — the same clamp `s200/lifecycle`
- * uses: fast enough that a response finishing mid-drain does not wait the
- * whole budget for its keep-alive socket to be noticed, slow enough to be
- * free. */
-const reapCadenceMs = (graceMs: number): number =>
-  Math.max(1, Math.min(250, Math.floor(graceMs / 20)));
-
 function closeServer(
   server: NodeServerKind,
   upgraded: Set<Duplex> | undefined,
@@ -343,7 +337,7 @@ function closeServer(
   // closeAllConnections() cannot reach sockets taken over by 'upgrade'
   // (websockets) and HTTP/2 has no such method — the hard-kill destroys
   // both registries, so the budget bounds http2 sessions too.
-  const hardKill = (): void => {
+  const destroyRegistries = (): void => {
     (server as { closeAllConnections?: () => void }).closeAllConnections?.();
     for (const session of sessions) {
       session.destroy();
@@ -357,56 +351,30 @@ function closeServer(
   // Graceful half for HTTP/2: a persistent session would otherwise hold
   // server.close() open until the client leaves — ask each one to go away
   // (GOAWAY; in-flight streams still finish, idle sessions end at once).
-  const closeSessions = (): void => {
+  const goAwaySessions = (): void => {
     for (const session of sessions) {
       session.close();
     }
   };
   // 0 = hard-kill immediately: in-flight responses die.
   if (graceMs <= 0) {
-    hardKill();
+    destroyRegistries();
     return new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
-  // The node drain pattern shared with s200/lifecycle and the shard
-  // executor: stop accepting, destroy idle keep-alive sockets now and
+  // The drain skeleton shared with s200/lifecycle and the shard executor
+  // (drain.ts): stop accepting, destroy idle keep-alive sockets now and
   // whenever they go idle mid-drain, hard-kill on the grace deadline.
   // server.close()'s callback fires once every connection has ended, so
   // the last in-flight response landing resolves the promise early.
   return new Promise((resolve, reject) => {
-    let settled = false;
-    let reaper: ReturnType<typeof setInterval> | undefined;
-    const closeIdle = (): void => {
-      (server as { closeIdleConnections?: () => void }).closeIdleConnections?.();
-    };
-    const finish = (error?: Error | null): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (reaper !== undefined) {
-        clearInterval(reaper);
-      }
-      clearTimeout(deadline);
-      if (error !== undefined && error !== null) {
-        reject(error);
-      } else {
-        resolve();
-      }
-    };
-    const deadline = setTimeout(hardKill, graceMs);
-    try {
-      server.close((error) => finish(error));
-      closeSessions();
-    } catch (error) {
-      // A server refusing a second close() is already drained.
-      finish(error as Error);
-    }
-    if (!settled) {
-      closeIdle();
-      reaper = setInterval(closeIdle, reapCadenceMs(graceMs));
-    }
+    drainHttpServer(server, {
+      budgetMs: graceMs,
+      onHardKill: destroyRegistries,
+      afterClose: goAwaySessions,
+      settle: (error) => (error !== undefined && error !== null ? reject(error) : resolve()),
+    });
   });
 }
 
@@ -542,13 +510,10 @@ async function writeResponse(
     // loop, skipping the generator + callback machinery of forEach.
     response.headers.fillRecord(headers);
   } else {
-    response.headers.forEach((value, key) => {
-      headers[key] = value;
-    });
-    // forEach would collapse repeated set-cookie into one comma-joined
-    // value, which is not a legal cookie list — keep them as an array.
-    const setCookies = response.headers.getSetCookie();
-    if (setCookies.length > 0) headers['set-cookie'] = setCookies;
+    // The shared Headers→writeHead-record mapping (raw-headers.ts):
+    // repeated set-cookie stays an array there — forEach would collapse
+    // it into one comma-joined value, which is not a legal cookie list.
+    headerRecordOf(response.headers, headers);
   }
   if (response instanceof LightResponse) {
     // Light fast path: byte-backed bodies skip the reader loop entirely —

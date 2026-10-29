@@ -689,13 +689,13 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "6.75 KB"
+      "limit": "6.82 KB"
     },
     {
       "name": "compress battery (min+gz)",
       "path": "dist/compress.mjs",
       "gzip": true,
-      "limit": "2.55 KB"
+      "limit": "2.61 KB"
     },
     {
       "name": "streaming battery (min+gz)",
@@ -749,7 +749,7 @@
       "name": "circuit-breaker battery (min+gz)",
       "path": "dist/circuit-breaker.mjs",
       "gzip": true,
-      "limit": "1.25 KB"
+      "limit": "1.26 KB"
     },
     {
       "name": "serialize battery (min+gz)",
@@ -834,7 +834,7 @@
       "name": "version battery (min+gz)",
       "path": "dist/version.mjs",
       "gzip": true,
-      "limit": "1 KB"
+      "limit": "1.14 KB"
     },
     {
       "name": "shard battery (min+gz)",
@@ -861,7 +861,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "9.36 KB"
+      "limit": "9.73 KB"
     },
     {
       "name": "unit-metrics battery (min+gz)",

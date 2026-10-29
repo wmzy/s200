@@ -96,7 +96,8 @@ const noopTracer: Tracer = {
  * unwind, so the recorded `http.response.status_code` is always the real
  * one.
  *
- * On the unwind the span gets `http.request.method`, `url.path`,
+ * On the unwind the span gets `http.request.method` (uppercased — the
+ * HTTP semconv form {@link metrics} already follows), `url.path`,
  * `http.response.status_code` (0 if somehow no response), and
  * `s200.duration_ms` (milliseconds, fractional). Status mapping follows the
  * OTel HTTP semantic conventions: `>= 500` → `{ code: 2 }` (ERROR),
@@ -131,7 +132,7 @@ export function trace(options: TraceOptions = {}): Middleware {
     const span = tracer.startSpan(name, { attributes, parentContext });
     try {
       await next();
-      span.setAttribute('http.request.method', ctx.req.method);
+      span.setAttribute('http.request.method', ctx.req.method.toUpperCase());
       span.setAttribute('url.path', ctx.url.pathname);
       span.setAttribute(
         'http.response.status_code',

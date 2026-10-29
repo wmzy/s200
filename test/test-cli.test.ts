@@ -256,6 +256,31 @@ describe('runDev', () => {
     error.message.should.contain(missing);
   });
 
+  it('rejects ports above 65535 from opts and $PORT with the usage error', async () => {
+    // Without the shared ceiling, a 70000 sails past the checks and dies
+    // inside server.listen on Node's opaque ERR_SOCKET_BAD_PORT instead.
+    const viaOpts = (await rejectionOf(
+      runDev([], { load: async () => appA, port: 70000, watch: stubWatch })
+    )) as Error;
+    viaOpts.message.should.contain('invalid port');
+    viaOpts.message.should.contain('70000');
+
+    const previous = process.env.PORT;
+    process.env.PORT = '70000';
+    try {
+      const viaEnv = (await rejectionOf(
+        runDev([], { load: async () => appA, watch: stubWatch })
+      )) as Error;
+      viaEnv.message.should.contain('invalid port');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PORT;
+      } else {
+        process.env.PORT = previous;
+      }
+    }
+  });
+
   it('forwards --host to serve: loopback serves, unresolvable host rejects', async () => {
     // A fresh app: earlier tests hot-swap the shared appA's table in place
     // (the createHotApp contract), so it no longer serves '/a'.

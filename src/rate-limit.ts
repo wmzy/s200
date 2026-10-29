@@ -18,8 +18,8 @@
 import type { Ctx, Middleware } from './types';
 
 import { assertPositive } from './assert';
-import { httpError } from './errors';
-import { pushSlidingTimestamps } from './map-limit';
+import { httpError, retryAfterSeconds } from './errors';
+import { pushSlidingTimestamps } from './bounded-collections';
 
 export type RateLimitOptions = {
   /** Window length in milliseconds; default 60_000. */
@@ -152,7 +152,7 @@ export function rateLimit(options: RateLimitOptions = {}): Middleware {
     const t = now();
     const { count, retryAt } = await store.hit(id, t, limit, windowMs);
     if (count > limit) {
-      const retryAfter = Math.max(1, Math.ceil((retryAt - t) / 1000));
+      const retryAfter = retryAfterSeconds(retryAt - t);
       // Into the error boundary (onError can take over): the default
       // mapping keeps the 429 envelope, now with the IETF RateLimit-*
       // fields alongside Retry-After (reset = the same remainder).

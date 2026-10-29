@@ -21,7 +21,7 @@ import { watch, type FSWatcher } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { newResponse, utf8Length } from './respond';
-import { createRoute } from './router';
+import { createRoute, methodCompatible } from './router';
 import { streamSSE } from './streaming';
 
 /** A stable app identity whose table can be swapped via `reload`. */
@@ -242,15 +242,21 @@ export type RouteHintsBody = {
   readonly routes?: string[];
 };
 
-/** Would this route have served `method` had the path matched? Mirrors the
- * router's own compat rule (`methodCompatible` in src/router.ts): exact,
- * `'ALL'`, and `GET` routes for `HEAD` requests. */
-function servesMethod(routeMethod: string, method: string): boolean {
-  return (
-    routeMethod === method ||
-    routeMethod === 'ALL' ||
-    (method === 'HEAD' && routeMethod === 'GET')
-  );
+/** Rebuilds a response around a rewritten body: a fresh response carrying
+ * the original status and headers, then a REPLACED `content-length` —
+ * `newResponse` does not recompute it, and the copied value still
+ * describes the old body, so the wire framing would lie (this is the
+ * hazard both the hints decoration and the overlay injection run into).
+ * Only ever replaces, never appends, so a shorter body shrinks it. */
+function rebuildWithBody(
+  ctx: Ctx,
+  body: string,
+  status: number,
+  headers: Headers
+): Response {
+  const rebuilt = newResponse(ctx, body, { status, headers });
+  rebuilt.headers.set('content-length', String(utf8Length(body)));
+  return rebuilt;
 }
 
 /** Splits a pathname into comparable segments: the leading `/` and one
@@ -359,7 +365,7 @@ export function routeHints(app: App, options: RouteHintsOptions = {}): Middlewar
       }
       overlapping.push({ route, score });
       // Strict `>` keeps the first registrant on a tie.
-      if (servesMethod(route.method, method) && (best === undefined || score > best.score)) {
+      if (methodCompatible(route.method, method) && (best === undefined || score > best.score)) {
         best = { route, score };
       }
     }
@@ -381,14 +387,10 @@ export function routeHints(app: App, options: RouteHintsOptions = {}): Middlewar
     }
     if (decorated !== undefined) {
       // The decorated body is larger than the default 404 the copied
-      // headers were stamped for, and `newResponse` does not recompute
-      // content-length (same hazard overlayMiddleware below handles):
-      // rebuild, then REPLACE the stale value so the wire framing matches
-      // the body. A shorter value is never appended to.
-      const body = JSON.stringify(decorated);
-      const rebuilt = newResponse(ctx, body, { status: 404, headers: res.headers });
-      rebuilt.headers.set('content-length', String(utf8Length(body)));
-      ctx.res = rebuilt;
+      // headers were stamped for — rebuildWithBody swaps the framing to
+      // the new body (replacing the stale content-length, never
+      // appending to it).
+      ctx.res = rebuildWithBody(ctx, JSON.stringify(decorated), 404, res.headers);
     }
   };
 }
@@ -522,7 +524,7 @@ const OVERLAY_SCRIPT = `<script>(function () {
     }
     (document.body || document.documentElement).appendChild(box);
   };
-  var source = new EventSource('/__s200/dev-events');
+  var source = new EventSource('${DEV_EVENTS_PATH}');
   source.addEventListener('reload', function () { location.reload(); });
   source.addEventListener('error', function (event) {
     if (!event.data) { return; }
@@ -567,9 +569,7 @@ function overlayMiddleware(): Middleware {
       return;
     }
     const injected = `${body.slice(0, at)}${OVERLAY_SCRIPT}${body.slice(at)}`;
-    const rebuilt = newResponse(ctx, injected, { status: res.status, headers: res.headers });
-    rebuilt.headers.set('content-length', String(utf8Length(injected)));
-    ctx.res = rebuilt;
+    ctx.res = rebuildWithBody(ctx, injected, res.status, res.headers);
   };
 }
 

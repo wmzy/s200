@@ -138,6 +138,7 @@ export type HttpError = { status: number; message: string; body?: unknown; heade
 httpError<S extends number, B>(status, message?, body?, headers?, cause?): HttpError & { status: S; body?: B };
 isHttpError(e): e is HttpError;          // duck typing — never instanceof
 toErrorResponse(error): Response;        // any thrown value → Response
+retryAfterSeconds(ms): number;           // ceil of remaining ms, floored at 1 — the shared Retry-After convention
 throws(401, 404);                        // declares error branches (type-level)
 throws<{ 401: { error: string } }>({ … });
 ```

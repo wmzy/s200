@@ -89,6 +89,22 @@ export type ServeStaticOptions = {
 const DEFAULT_INDEX = 'index.html';
 
 /**
+ * Percent-decodes one path segment and re-splits the decoded text on both
+ * separators: a decoded segment can pack a '/' (from `..%2F`) or a '\' in
+ * one URL segment, so literal checks on the raw path cannot see them —
+ * callers judge every decoded piece instead. Returns undefined when the
+ * segment carries a malformed escape: there is no safely decoded text to
+ * inspect (callers fail closed on it).
+ */
+function decodedPieces(segment: string): string[] | undefined {
+  try {
+    return decodeURIComponent(segment).split(/[/\\]/);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Normalizes `path` (percent-decoding each segment so '%2e%2e' cannot sneak
  * past the guard) and joins it under `root` POSIX-style. Returns undefined
  * when a '..' segment would climb out of root — callers fall through to
@@ -99,18 +115,9 @@ function resolveUnderRoot(root: string, path: string): string | undefined {
   const stack: string[] = [];
   for (const segment of path.split('/')) {
     if (segment === '' || segment === '.') continue;
-    let part: string;
-    try {
-      part = decodeURIComponent(segment);
-    } catch {
-      return undefined; // malformed escape — no safe file name to look up
-    }
-    // A decoded segment can still contain separators: '..%2F' packs a '/'
-    // (and '%5C' a '\') inside one segment, so the literal '..' check above
-    // cannot see it — and the reader's path.join would normalize those
-    // embedded '..'s into parent references outside the root. Re-split the
-    // decoded text and run every piece through the same stack check.
-    for (const piece of part.split(/[/\\]/)) {
+    const pieces = decodedPieces(segment);
+    if (pieces === undefined) return undefined; // malformed escape — no safe file name
+    for (const piece of pieces) {
       if (piece === '' || piece === '.') continue;
       if (piece === '..') {
         if (stack.length === 0) return undefined;
@@ -142,16 +149,11 @@ function stripPrefix(pathname: string, prefix: string): string | undefined {
 function hasDotfileSegment(path: string): boolean {
   for (const segment of path.split('/')) {
     if (segment === '' || segment === '.' || segment === '..') continue;
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(segment);
-    } catch {
-      return true;
-    }
-    // Same packed-separator trick as resolveUnderRoot: '.x%2F..' hides a
-    // dotfile segment ('..' or '.env') inside one URL segment — re-split
-    // after decoding so the policy sees every piece.
-    for (const piece of decoded.split(/[/\\]/)) {
+    const pieces = decodedPieces(segment);
+    // A malformed escape fails closed — reported as a dotfile so the deny
+    // policy blocks it before resolution ever runs.
+    if (pieces === undefined) return true;
+    for (const piece of pieces) {
       // '.'/'..' pieces are traversal, not dotfiles — resolveUnderRoot
       // decides them; the policy here only vetoes hidden names.
       if (piece === '' || piece === '.' || piece === '..') continue;
@@ -239,6 +241,21 @@ function ifRangeAllows(
 }
 
 /**
+ * The range request actually in effect: `If-Range` first (no authorization
+ * means the full body), then {@link parseByteRange} against the
+ * representation length. The bytes path and the streamed `readRange` path
+ * gate identically, so the pair lives here.
+ */
+function effectiveRange(
+  req: Request,
+  info: StaticFileInfo | undefined,
+  length: number
+): ByteRange | null | undefined {
+  if (!ifRangeAllows(req, info)) return undefined;
+  return parseByteRange(req.headers.get('range'), length);
+}
+
+/**
  * RFC 9110 §13.2.2: a validator match answers 304. `If-None-Match` takes
  * precedence over `If-Modified-Since`; the comparison is weak; `*` matches
  * any current representation. `If-Modified-Since` compares at the second
@@ -259,30 +276,21 @@ function isNotModified(req: Request, info: StaticFileInfo): boolean {
   return false;
 }
 
-function notModifiedHeaders(
-  info: StaticFileInfo,
+/** Adds ETag/Last-Modified when file metadata is available, plus the
+ * configured `cache-control` when set — every 200/206/304 response stamps
+ * the same pair, so the fold lives here rather than at each call site. */
+function withValidators(
+  headers: Record<string, string>,
+  info: StaticFileInfo | undefined,
   cacheControl: string | undefined
 ): Record<string, string> {
-  const headers: Record<string, string> = {
-    etag: etagFor(info),
-    'last-modified': new Date(info.mtimeMs).toUTCString(),
-  };
+  if (info !== undefined) {
+    headers.etag = etagFor(info);
+    headers['last-modified'] = new Date(info.mtimeMs).toUTCString();
+  }
   if (cacheControl !== undefined) {
     headers['cache-control'] = cacheControl;
   }
-  return headers;
-}
-
-/** Adds ETag/Last-Modified when file metadata is available. */
-function withValidators(
-  headers: Record<string, string>,
-  info: StaticFileInfo | undefined
-): Record<string, string> {
-  if (info === undefined) {
-    return headers;
-  }
-  headers.etag = etagFor(info);
-  headers['last-modified'] = new Date(info.mtimeMs).toUTCString();
   return headers;
 }
 
@@ -321,18 +329,14 @@ function serveBytes(
       // The length is known here; advertise it.
       'content-length': String(bytes.byteLength),
     },
-    info
+    info,
+    cacheControl
   );
-  if (cacheControl !== undefined) {
-    headers['cache-control'] = cacheControl;
-  }
   if (method === 'HEAD') {
     send(ctx, bytes, { headers });
     return;
   }
-  const range = ifRangeAllows(ctx.req, info)
-    ? parseByteRange(ctx.req.headers.get('range'), bytes.byteLength)
-    : undefined;
+  const range = effectiveRange(ctx.req, info, bytes.byteLength);
   if (range === undefined) {
     send(ctx, bytes, { headers });
     return;
@@ -369,13 +373,11 @@ function serveStream(
     {
       'content-type': contentTypeFor(path),
     },
-    info
+    info,
+    cacheControl
   );
   if (info !== undefined) {
     headers['content-length'] = String(info.size);
-  }
-  if (cacheControl !== undefined) {
-    headers['cache-control'] = cacheControl;
   }
   send(ctx, stream, { headers });
 }
@@ -398,11 +400,9 @@ function serveRange(
       'content-length': String(range.end - range.start + 1),
       'accept-ranges': 'bytes',
     },
-    info
+    info,
+    cacheControl
   );
-  if (cacheControl !== undefined) {
-    headers['cache-control'] = cacheControl;
-  }
   send(ctx, stream, { status: 206, headers });
 }
 
@@ -464,14 +464,12 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
       if (isNotModified(ctx.req, info)) {
         send(ctx, null, {
           status: 304,
-          headers: notModifiedHeaders(info, cacheControl),
+          headers: withValidators({}, info, cacheControl),
         });
         return;
       }
       if (method === 'GET' && readRange !== undefined) {
-        const range = ifRangeAllows(ctx.req, info)
-          ? parseByteRange(ctx.req.headers.get('range'), info.size)
-          : undefined;
+        const range = effectiveRange(ctx.req, info, info.size);
         if (range === null) {
           unsatisfiable(ctx, info.size);
           return;

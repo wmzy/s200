@@ -549,3 +549,21 @@ export class LightResponse {
     }) as unknown as Response;
   }
 }
+
+/**
+ * The synchronous whole-body bytes of a byte-backed light response, or
+ * `null` for platform responses and any body not already materialized
+ * bytes (bodyless, lazy, or streamed) — the caller falls back to
+ * `new Uint8Array(await res.arrayBuffer())`. Shared by the batteries
+ * that want the bytes in hand (etag's digest, compress's buffered
+ * encoders); the `ArrayBuffer` return is the data-flow truth (light
+ * sources are built over ArrayBuffers), so callers can feed
+ * `crypto.subtle` and friends without another cast.
+ *
+ * @internal
+ */
+export function byteBodyOf(res: Response): Uint8Array<ArrayBuffer> | null {
+  return res instanceof LightResponse
+    ? (res.bytesSync() as Uint8Array<ArrayBuffer> | null)
+    : null;
+}

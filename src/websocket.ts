@@ -25,6 +25,7 @@ import type { Ctx, Middleware, Params, Segment, State } from './types';
 import { mapError } from './error-map';
 import { compose } from './compose';
 import { toErrorResponse } from './errors';
+import { splitList } from './raw-headers';
 import { drainPendingHeaders } from './respond';
 import { createSegments, matchSegments } from './router';
 import { neverSignal, requestSignal } from './signal';
@@ -348,10 +349,9 @@ export function negotiateProtocol(
   if (offered === null || serverProtocols === undefined) {
     return undefined;
   }
-  const clientProtocols = offered
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item !== '');
+  // Case-preserving split (raw-headers.ts): the winning name is echoed
+  // back on the 101 exactly as the client offered it.
+  const clientProtocols = splitList(offered);
   for (const candidate of serverProtocols) {
     if (clientProtocols.includes(candidate)) {
       return candidate;

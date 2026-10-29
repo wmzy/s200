@@ -1,15 +1,14 @@
 /**
  * Shared crypto primitives for the batteries — the base64 codecs (both
  * alphabets), hex rendering, one constant-time byte comparison, the
- * LRU Map helpers, the shared HMAC-key import cache, and the random
- * token mint, instead of a hand-rolled copy per module
- * (cookies/csrf/jwt/oauth/etag each grew their own). Internal module:
- * not part of any package export entry.
+ * shared HMAC-key import cache, and the random token mint, instead of a
+ * hand-rolled copy per module (cookies/csrf/jwt/oauth/etag each grew
+ * their own). Internal module: not part of any package export entry.
  *
  * @internal
  */
 
-import { evictOldest } from './map-limit';
+import { lruStore } from './bounded-collections';
 
 /** Base64url alphabet and its decode table — built once at module load
  * so per-request token mint/verify paths allocate nothing for them. */
@@ -103,41 +102,29 @@ export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-/** LRU read over a plain Map: re-insertion bumps recency (insertion
- * order is recency order), zero dependencies. */
-export function lruGet<K, V>(cache: Map<K, V>, key: K): V | undefined {
-  const value = cache.get(key);
-  if (value !== undefined) {
-    cache.delete(key);
-    cache.set(key, value);
-  }
-  return value;
-}
-
-/** LRU write over a plain Map: one past the bound, the oldest entry goes. */
-export function lruSet<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
-  cache.set(key, value);
-  if (cache.size > limit) {
-    evictOldest(cache);
-  }
-}
-
-/** Hex of a SHA-256 digest of key material — import caches are keyed by
- * this, so a store that persists or logs its keys never sees the
- * material (an HMAC secret, a private signing JWK) in the clear. */
-export async function materialDigest(material: string): Promise<string> {
+/** Hex of a SHA-256 digest of key material (a string digests its UTF-8
+ * bytes, raw bytes digest themselves — equal material hashes equal, so
+ * a byte secret and the same bytes as a string share one cache entry) —
+ * import caches are keyed by this, so a store that persists or logs its
+ * keys never sees the material (an HMAC secret, a private signing JWK)
+ * in the clear. */
+export async function materialDigest(
+  material: string | Uint8Array
+): Promise<string> {
+  const bytes =
+    typeof material === 'string' ? new TextEncoder().encode(material) : material;
   const digest = new Uint8Array(
-    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material))
+    await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)
   );
   return toHex(digest);
 }
 
 /** The cache contract {@link getHmacKey} reads and writes through — the
- * method names pin the LRU behavior the default implements; an injected
- * cache keeps its own bounds and lifetime policy. */
+ * same `get`/`set` shape `lruStore` returns and jwt's `JwtKeyStore`
+ * speaks, so an injected store slots in without an adapter. */
 export type HmacKeyCache = {
-  lruGet(key: string): Promise<CryptoKey> | undefined;
-  lruSet(key: string, value: Promise<CryptoKey>): void;
+  get(key: string): Promise<CryptoKey> | undefined;
+  set(key: string, value: Promise<CryptoKey>): void;
 };
 
 /** Default HMAC-import cache bound: past this many distinct imports the
@@ -145,35 +132,35 @@ export type HmacKeyCache = {
  * attacker-shaped key material cannot grow the cache without bound. */
 const HMAC_KEY_CACHE_LIMIT = 100;
 
-const hmacKeyCache = new Map<string, Promise<CryptoKey>>();
-
-const defaultHmacCache: HmacKeyCache = {
-  lruGet: (key) => lruGet(hmacKeyCache, key),
-  lruSet: (key, value) => lruSet(hmacKeyCache, key, value, HMAC_KEY_CACHE_LIMIT),
-};
+const defaultHmacCache: HmacKeyCache = lruStore(HMAC_KEY_CACHE_LIMIT);
 
 /** One imported HMAC key per (secret digest, hash, usage) — importing per
- * signature would cost a key-derivation pass on every request. Cache
+ * signature would cost a key-derivation pass on every request. Byte
+ * secrets import as their exact raw bytes (string secrets as their
+ * UTF-8 bytes) and the cache key digests that same raw material, so a
+ * string secret and a byte secret never collide on one import. Cache
  * keys carry the SHA-256 digest of the secret, never the material
  * itself, so a cache that persists or logs its keys never sees the
  * secret in the clear. */
 export async function getHmacKey(
-  secret: string,
+  secret: string | Uint8Array,
   hash: string,
   usages: readonly KeyUsage[],
   store: HmacKeyCache = defaultHmacCache
 ): Promise<CryptoKey> {
-  const cacheKey = `${hash}:${usages.join('+')}:${await materialDigest(secret)}`;
-  let key = store.lruGet(cacheKey);
+  const bytes =
+    typeof secret === 'string' ? new TextEncoder().encode(secret) : secret;
+  const cacheKey = `${hash}:${usages.join('+')}:${await materialDigest(bytes)}`;
+  let key = store.get(cacheKey);
   if (key === undefined) {
     key = crypto.subtle.importKey(
       'raw',
-      new TextEncoder().encode(secret),
+      bytes as Uint8Array<ArrayBuffer>,
       { name: 'HMAC', hash },
       false,
       usages
     );
-    store.lruSet(cacheKey, key);
+    store.set(cacheKey, key);
   }
   return key;
 }

@@ -55,15 +55,20 @@ export function createDispatcher(
   fallback?: App
 ): (request: Request) => Promise<Response> {
   const specs = entries.map((entry) => entry.spec);
+  // The spec→app mapping is static at creation (the docblock's fixed
+  // artifact), so the join is built once instead of re-scanned per request.
+  // matchShard returns one of `specs` by identity, and Map keys compare by
+  // identity too — the honest join key back to the paired app.
+  const appOfSpec = new Map(
+    entries.map((entry) => [entry.spec, entry.app] as const)
+  );
   return (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url);
     const spec = matchShard(specs, pathname);
     if (spec !== undefined) {
-      // matchShard returns one of `specs` by identity, so identity is the
-      // honest join key back to the paired app.
-      const entry = entries.find((candidate) => candidate.spec === spec);
-      if (entry !== undefined) {
-        return handle(entry.app, request);
+      const app = appOfSpec.get(spec);
+      if (app !== undefined) {
+        return handle(app, request);
       }
     }
     if (fallback !== undefined) {

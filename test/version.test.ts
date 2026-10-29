@@ -97,7 +97,7 @@ describe('apiVersion (mediaType strategy)', function () {
     (res.headers.get('vary') ?? '').should.equal('Accept');
   });
 
-  it('matches a custom vendor subtype with interleaved params (q ignored)', async function () {
+  it('matches a custom vendor subtype with interleaved params (non-zero q ignored)', async function () {
     const app = createApp();
     use(app, apiVersion({ strategy: 'mediaType', mediaType: 'vnd.myapp', versions: ['1'] }));
     get(app, '/', (ctx) => json(ctx, { version: ctx.state.version as string }));
@@ -109,6 +109,25 @@ describe('apiVersion (mediaType strategy)', function () {
       })
     );
     (await res.json()).should.deep.equal({ version: '1' });
+  });
+
+  it('never lets a q=0-banned vendor type donate its version (RFC 9110 §12.4.2)', async function () {
+    const app = createApp();
+    use(app, apiVersion({ strategy: 'mediaType', versions: ['1', '2'] }));
+    get(app, '/', (ctx) => json(ctx, { version: ctx.state.version as string }));
+
+    const res = await handle(
+      app,
+      new Request('http://localhost/', {
+        headers: {
+          accept: 'application/vnd.api+json;version=2;q=0, application/json',
+        },
+      })
+    );
+    // The banned entry is skipped and no other entry carries a version,
+    // so the request is versionless — not version 2.
+    res.status.should.equal(404);
+    (await res.json()).should.deep.equal({ error: 'API version required' });
   });
 
   it('scans past non-vendor entries and unquotes quoted values, case-insensitively', async function () {

@@ -24,8 +24,7 @@
 import type { JsonResponse, StatusedResponse } from './respond';
 import type { Handler, Middleware, Params, State } from './types';
 
-import { performance } from 'node:perf_hooks';
-
+import { createEluReader } from './elu';
 import { json, text } from './respond';
 
 /**
@@ -86,7 +85,9 @@ export function createUnitMetrics(options: UnitMetricsOptions = {}): {
   let requests = 0;
   let warm = false;
   let startedAt = Date.now();
-  let lastElu = performance.eventLoopUtilization();
+  // Incremental ELU window: each snapshot consumes and rebaselines (the
+  // NaN→0 clamp for zero-elapsed reads lives in the reader).
+  const elu = createEluReader();
 
   const middleware: Middleware = (_ctx, next) => {
     inFlight += 1;
@@ -106,21 +107,6 @@ export function createUnitMetrics(options: UnitMetricsOptions = {}): {
     })();
   };
 
-  /**
-   * Event-loop busy ratio since the previous read, consumed and rebaselined:
-   * each snapshot stores its reading as the base of the next diff. Node
-   * returns `NaN` when zero loop time elapsed between reads (an idle unit
-   * scraped twice back-to-back) — that is 0% busy, not NaN.
-   */
-  const eluSinceLastRead = (): number => {
-    const current = performance.eventLoopUtilization();
-    const delta = performance.eventLoopUtilization(current, lastElu);
-    lastElu = current;
-    return Number.isFinite(delta.utilization)
-      ? Math.min(1, Math.max(0, delta.utilization))
-      : 0;
-  };
-
   const snapshot = (): UnitMetrics => {
     const memory = process.memoryUsage();
     return {
@@ -129,7 +115,7 @@ export function createUnitMetrics(options: UnitMetricsOptions = {}): {
       requests,
       queueDepth:
         maxConcurrency > 0 ? Math.max(0, inFlight - maxConcurrency) : 0,
-      eventLoopUtilization: eluSinceLastRead(),
+      eventLoopUtilization: elu.read(),
       rss: memory.rss,
       heapUsed: memory.heapUsed,
       // The flag is sticky (never un-sets mid-window); the fallback covers a
@@ -146,7 +132,7 @@ export function createUnitMetrics(options: UnitMetricsOptions = {}): {
     requests = 0;
     warm = false;
     startedAt = Date.now();
-    lastElu = performance.eventLoopUtilization();
+    elu.rebase();
   };
 
   return { middleware, snapshot, reset };

@@ -39,6 +39,7 @@ import { createHash } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 import { rawHeaderPairs, splitTokens } from './raw-headers';
+import { isSafeHost } from './safe-host';
 
 import {
   createWsSession,
@@ -115,10 +116,13 @@ function acceptUpgrade(
   socket.on('error', onDead);
   socket.once('close', onDead);
 
-  const url = new URL(
-    req.url ?? '/',
-    `http://${req.headers.host ?? 'localhost'}`
-  );
+  // The raw Host header must not reach the URL parser unvalidated: a
+  // crafted Host ('a b', '[') makes `new URL` throw inside the 'upgrade'
+  // event — an uncaught exception that kills the process. Same gate as
+  // `s200/node`'s request URLs (safe-host.ts): unsafe falls back to
+  // localhost, and the upgrade proceeds on the real path.
+  const host = isSafeHost(req.headers.host) ? req.headers.host : 'localhost';
+  const url = new URL(req.url ?? '/', `http://${host}`);
   const matched = matchWebSocket(app, url.pathname);
   if (matched === undefined) {
     socket.destroy();

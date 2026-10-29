@@ -23,6 +23,8 @@ import type { App } from './app';
 
 import type { Route } from './types';
 
+import { paramRequired } from './types';
+
 import { handle } from './app';
 import {
   getAppMeta,
@@ -161,7 +163,7 @@ function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['in
   for (const segment of route.segments) {
     if (segment._tag === 'static') continue;
     properties[segment.name] = { type: 'string' };
-    if (segment._tag === 'wildcard' || !segment.optional) required.add(segment.name);
+    if (paramRequired(segment)) required.add(segment.name);
   }
   if (meta?.query !== undefined) {
     for (const [name, entry] of Object.entries(meta.query)) {

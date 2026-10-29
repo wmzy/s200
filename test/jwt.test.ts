@@ -4,6 +4,7 @@ import { describe, it, vi } from 'vitest';
 
 import { createApp, get, use, handle  } from '../src/app';
 import { createJwksResolver, isJwtError, jwtAuth, signJwt, verifyJwt } from '../src/jwt';
+import { b64urlEncode } from '../src/crypto-util';
 import { json } from '../src/respond';
 
 // vitest's should chain has no chai-as-promised plugins (no `rejectedWith`),
@@ -68,6 +69,45 @@ describe('jwt', () => {
     await verifyJwt(token, SECRET, { audience: 'api', clockTolerance: 10 });
   });
 
+  it('signs HS256 with a Uint8Array secret over its exact raw bytes', async () => {
+    // Bytes that are not the UTF-8 of any tidy string — before the
+    // raw-bytes fix a byte secret was first base64url-encoded into a
+    // string, so the signing key was HMAC(UTF8(b64url(S))) and a manual
+    // HMAC over the raw bytes did NOT match the token's signature.
+    const secret = new Uint8Array([0, 137, 34, 255, 42, 1, 199, 3]);
+    const token = await signJwt({ sub: 'bytes' }, secret);
+    const [headerText, payloadText, sigText] = token.split('.');
+    // Manual HMAC-SHA256 over the signing input, keyed by the exact raw
+    // bytes — verified straight through crypto.subtle, not via s200.
+    const key = await crypto.subtle.importKey(
+      'raw',
+      secret,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    const expected = b64urlEncode(
+      new Uint8Array(
+        await crypto.subtle.sign(
+          'HMAC',
+          key,
+          new TextEncoder().encode(`${headerText}.${payloadText}`)
+        )
+      )
+    );
+    expected.should.equal(sigText);
+    // Round trip with the same bytes; a different byte secret rejects.
+    (await verifyJwt(token, secret)).sub?.should.equal('bytes');
+    ((await rejectionOf(
+      verifyJwt(token, new Uint8Array([0, 137, 34, 255, 42, 1, 199, 4]))
+    )) as Error).message.should.match(/signature/);
+    // And the byte secret is not the base64url TEXT of those bytes: the
+    // two spellings must not collide on one signing key (they did
+    // before the fix).
+    const asText = await signJwt({ sub: 'bytes' }, b64urlEncode(secret));
+    asText.should.not.equal(token);
+  });
+
   it('gates routes via the middleware and stores the payload on ctx.state', async () => {
     const app = createApp();
     use(app, jwtAuth({ secret: SECRET }));
@@ -85,6 +125,43 @@ describe('jwt', () => {
     );
     ok.status.should.equal(200);
     (await ok.json()).should.deep.equal({ sub: 'u1' });
+  });
+
+  it('extracts the bearer token leniently: lowercase scheme, wide separators, custom prefix', async () => {
+    const token = await signJwt({ sub: 'u1' }, SECRET);
+    const build = (options?: { prefix?: string }) => {
+      const app = createApp();
+      use(app, jwtAuth({ secret: SECRET, ...options }));
+      get(app, '/me', () => new Response('ok'));
+      return app;
+    };
+
+    // Lowercase scheme — the same case-insensitive extraction
+    // bearerAuth has always applied.
+    const lower = await handle(
+      build(),
+      new Request('http://localhost/me', { headers: { authorization: `bearer ${token}` } })
+    );
+    lower.status.should.equal(200);
+    // Any run of whitespace separates scheme from token.
+    const wide = await handle(
+      build(),
+      new Request('http://localhost/me', { headers: { authorization: `BEARER\t ${token}` } })
+    );
+    wide.status.should.equal(200);
+    // A custom prefix names the scheme; casing and separator stay lenient.
+    const custom = await handle(
+      build({ prefix: 'Token ' }),
+      new Request('http://localhost/me', { headers: { authorization: `token ${token}` } })
+    );
+    custom.status.should.equal(200);
+    // A header not matching the configured scheme still falls through to
+    // the cookie (or 401) rather than being treated as a token.
+    const mismatch = await handle(
+      build({ prefix: 'Token ' }),
+      new Request('http://localhost/me', { headers: { authorization: `Bearer ${token}` } })
+    );
+    mismatch.status.should.equal(401);
   });
 
   it('reads tokens from a cookie and answers 401 for invalid ones', async () => {

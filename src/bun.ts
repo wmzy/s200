@@ -1,6 +1,8 @@
 import type { App } from './app';
 import type { StaticFileInfo } from './static';
 
+import type { BunUpgrader, BunWsHandlers } from './websocket-bun';
+
 import { lstatSync, realpathSync, statSync } from 'node:fs';
 
 import {
@@ -14,6 +16,13 @@ import {
 } from './fs-containment';
 import { edgeFetch } from './finish';
 
+
+// Bun's upgrade authority and per-connection callbacks are declared once,
+// in the bridge module (`s200/websocket/bun`) — the shape both halves
+// actually use, including the `headers` the bridge passes on upgrade. The
+// import above is type-only: erased at runtime, so this adapter still
+// needs no @types/bun dependency.
+
 // Module-scoped ambient surface of the global Bun runtime — exactly the
 // members used, so tsc needs no @types/bun dependency (the real Bun global
 // provides them at runtime).
@@ -25,7 +34,7 @@ declare const Bun: {
       request: Request,
       server: BunUpgrader
     ) => Response | Promise<Response | undefined> | undefined;
-    websocket?: BunWebSocketHandlers;
+    websocket?: BunWsHandlers;
   }): { port: number; stop: (closeActiveConnections?: boolean) => void | Promise<void> };
   file(path: string): {
     exists(): Promise<boolean>;
@@ -35,21 +44,6 @@ declare const Bun: {
     readonly size: number;
     readonly lastModified: number;
   };
-};
-
-/** The server Bun hands its `fetch` handler — the WebSocket upgrade authority. */
-type BunUpgrader = {
-  upgrade(request: Request, options?: { data?: unknown }): boolean;
-};
-
-/** The `websocket` option Bun.serve accepts (per-connection callbacks).
- * Method syntax keeps the assignments bivariant, so bridges typing `ws`
- * narrowly (see `s200/websocket/bun`) stay assignable. */
-type BunWebSocketHandlers = {
-  open?(ws: unknown): void;
-  message?(ws: unknown, data: string | Uint8Array): void;
-  close?(ws: unknown, code: number, reason: string): void;
-  drain?(ws: unknown): void;
 };
 
 /**
@@ -86,7 +80,7 @@ export type BunServeOptions = {
       req: Request,
       server: BunUpgrader
     ) => boolean | Response | Promise<boolean | Response>;
-    readonly websocket: BunWebSocketHandlers;
+    readonly websocket: BunWsHandlers;
   };
 };
 

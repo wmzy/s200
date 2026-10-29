@@ -93,15 +93,14 @@ function runCheck(check: HealthCheck, ms: number, signal: AbortSignal): Promise<
       finish(error);
       return;
     }
-    const thenable = result as { then?: unknown } | undefined;
-    if (thenable !== undefined && typeof thenable.then === 'function') {
-      (result as Promise<void>).then(
-        () => finish(),
-        (error) => finish(error)
-      );
-    } else {
-      finish();
-    }
+    // `Promise.resolve` adopts any thenable shape the check returned —
+    // no manual cast-and-probe. A sync check settles one microtask later,
+    // and the settled flag still guards the double-finish against the
+    // timer/abort paths.
+    Promise.resolve(result).then(
+      () => finish(),
+      (error) => finish(error)
+    );
   });
 }
 

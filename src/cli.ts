@@ -144,12 +144,22 @@ function parseCommandArgs(
   return { entry: entry ?? './app.ts', values, lists, switches };
 }
 
+/**
+ * The port floor shared by the `--port` flag and the env/opts default:
+ * integral, 0–65535 (0 = free port). Without the ceiling here, a
+ * `PORT=70000` would reach `server.listen` and die on Node's opaque
+ * `ERR_SOCKET_BAD_PORT` instead of this usage error.
+ */
+function assertPort(port: number): void {
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`s200 dev: invalid port "${String(port)}"\n${USAGE}`);
+  }
+}
+
 /** The `s200 dev --port` value check: integral, 0–65535 (0 = free port). */
 const portOf = (raw: string): number => {
   const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
-    throw new Error(`s200 dev: invalid port "${raw}"\n${USAGE}`);
-  }
+  assertPort(parsed);
   return parsed;
 };
 
@@ -429,9 +439,7 @@ export async function runDev(
   loadEnvFiles(parsed.envFiles);
   assertTypeScriptEntrySupported(parsed.entry);
   const port = parsed.port ?? opts.port ?? Number(process.env.PORT ?? 3000);
-  if (!Number.isInteger(port) || port < 0) {
-    throw new Error(`s200 dev: invalid port "${String(port)}"\n${USAGE}`);
-  }
+  assertPort(port);
   const host = parsed.host ?? opts.host;
   const hints = parsed.hints ?? opts.hints ?? true;
   const overlay = parsed.overlay ?? opts.overlay ?? false;
@@ -617,11 +625,11 @@ export async function runCodegen(argv: readonly string[]): Promise<void> {
 }
 
 /** One fresh load of an entry: the TypeScript floor first (the remedy is
- * clearer than Node's module error), then `importFresh` + the export
- * convention. Shared by every non-dev command. */
+ * clearer than Node's module error), then the dev loader's exact body —
+ * one load path, so dev and non-dev commands can never drift apart. */
 const loadAppFromEntry = async (entry: string): Promise<App> => {
   assertTypeScriptEntrySupported(entry);
-  return appFromModule(entry, await importFresh(entry));
+  return loadFromEntry(entry)();
 };
 
 /**

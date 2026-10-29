@@ -128,7 +128,7 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });
 | `createBunWebSocketBridge(app)` | `{ upgrade, websocket }` — `upgrade(req, server)` decides inside the fetch handler whether the request becomes a WebSocket (the app + route middleware chain runs first; a rejecting middleware's `Response` is answered as plain HTTP); `websocket` carries the per-connection callbacks |
 | `BunWebSocketBridge` | `{ upgrade: (req, server: BunUpgrader) => Promise<boolean \| Response>; websocket: BunWsHandlers }` — `true` = upgraded, a `Response` = rejection, `false` = not a ws route |
 | `BunUpgrader` | The `server` Bun hands its fetch handler: `upgrade(request, options?) => boolean` |
-| `BunWs` / `BunWsHandlers` | Bun's per-connection socket and the `open`/`message`/`close`/`pong` callback set, narrowed to the members used |
+| `BunWs` / `BunWsHandlers` | Bun's per-connection socket and the `open`/`message`/`close`/`drain`/`pong` callback set, narrowed to the members used |
 
 ## Cloudflare (`s200/websocket/cloudflare`)
 

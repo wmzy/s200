@@ -12,12 +12,11 @@
 
 import type { Ctx } from './types';
 
+import { lruStore } from './bounded-collections';
 import {
   b64urlEncode,
   equalBytes,
   getHmacKey,
-  lruGet,
-  lruSet,
   type HmacKeyCache,
 } from './crypto-util';
 
@@ -116,12 +115,7 @@ export function setCookie(
  * recency, the least recently used entry goes. Module-level, so every
  * app instance in the process shares the cache. */
 const KEY_CACHE_LIMIT = 8;
-const keyCache = new Map<string, Promise<CryptoKey>>();
-
-const hmacCache: HmacKeyCache = {
-  lruGet: (key) => lruGet(keyCache, key),
-  lruSet: (key, value) => lruSet(keyCache, key, value, KEY_CACHE_LIMIT),
-};
+const hmacCache: HmacKeyCache = lruStore(KEY_CACHE_LIMIT);
 
 /** HMAC-SHA256 over `value`, base64url — the cookie-signature convention. */
 export async function signCookie(value: string, secret: string): Promise<string> {

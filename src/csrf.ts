@@ -27,7 +27,7 @@ import type { Ctx, Middleware } from './types';
 import { getCookie, setCookie } from './cookies';
 import { readForm } from './body';
 import { httpError } from './errors';
-import { b64urlDecode, b64urlEncode, equalBytes, randomToken } from './crypto-util';
+import { b64urlDecode, b64urlEncode, equalBytes, getHmacKey, randomToken } from './crypto-util';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -148,12 +148,17 @@ export function createCsrf(options: CsrfOptions): Csrf {
   const cookieName = options.cookie ?? 'csrf_token';
   const headerName = options.header ?? 'x-csrf-token';
   const formField = options.form ?? '_csrf';
-  const ttl = (options.ttl ?? 7 * 24 * 3600) * 1000;
-  const secretBytes =
+  // One seconds figure drives both the token expiry math and the cookie
+  // Max-Age — they must agree, so derive them from a single constant.
+  const ttlSeconds = options.ttl ?? 604_800;
+  const ttl = ttlSeconds * 1000;
+  // A byte secret is copied — the shared key cache digests the material
+  // on every use, so a caller mutating their array after createCsrf must
+  // not change what verifies. `TextEncoder().encode` is already fresh.
+  const secret =
     typeof options.secret === 'string'
       ? new TextEncoder().encode(options.secret)
-      : options.secret;
-  const secret = secretBytes.slice();
+      : options.secret.slice();
   // `undefined` means unbound (no `bind` option) and keeps the signed
   // message byte-identical to an unbound instance.
   const bindOf = options.bind;
@@ -164,25 +169,15 @@ export function createCsrf(options: CsrfOptions): Csrf {
     sameSite: options.sameSite ?? 'lax',
     httpOnly: options.httpOnly ?? true,
     secure: options.secure,
-    maxAge: options.ttl ?? 7 * 24 * 3600,
-  };
-
-  // Imported once per instance — importing a CryptoKey per request is a
-  // real per-request cost; HMAC is stateless so one key serves all.
-  let keyPromise: Promise<CryptoKey> | undefined;
-  const getKey = (): Promise<CryptoKey> => {
-    keyPromise ??= crypto.subtle.importKey(
-      'raw',
-      secret,
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    return keyPromise;
+    maxAge: ttlSeconds,
   };
 
   const createToken = async (bind: string | undefined): Promise<string> => {
-    const key = await getKey();
+    // The shared HMAC import cache (one imported key per distinct secret
+    // for the whole process, keyed by the secret's digest) — importing a
+    // CryptoKey per request is a real per-request cost; HMAC is stateless
+    // so one key serves all.
+    const key = await getHmacKey(secret, 'SHA-256', ['sign']);
     const now = Date.now();
     const exp = now + ttl;
     const nonceText = randomToken(16);
@@ -191,20 +186,15 @@ export function createCsrf(options: CsrfOptions): Csrf {
     return `${exp}.${nonceText}.${b64urlEncode(sig)}`;
   };
 
-  const token = async (ctx: Ctx): Promise<string> => {
-    const existing = ctx.state.csrfToken;
-    if (typeof existing === 'string') {
-      return existing;
-    }
+  const issueToken = async (ctx: Ctx): Promise<string> => {
     const fresh = await createToken(await currentBind(ctx));
     ctx.state.csrfToken = fresh;
     return fresh;
   };
 
-  const issueToken = async (ctx: Ctx): Promise<string> => {
-    const fresh = await createToken(await currentBind(ctx));
-    ctx.state.csrfToken = fresh;
-    return fresh;
+  const token = async (ctx: Ctx): Promise<string> => {
+    const existing = ctx.state.csrfToken;
+    return typeof existing === 'string' ? existing : issueToken(ctx);
   };
 
   const middleware: Middleware = async (ctx, next) => {
@@ -216,7 +206,12 @@ export function createCsrf(options: CsrfOptions): Csrf {
     const remaining =
       cookieToken === undefined
         ? null
-        : await verifyToken(cookieToken, await getKey(), Date.now(), bind);
+        : await verifyToken(
+            cookieToken,
+            await getHmacKey(secret, 'SHA-256', ['sign']),
+            Date.now(),
+            bind
+          );
     const installed =
       remaining !== null ? cookieToken : await createToken(bind);
     ctx.state.csrfToken = installed;
@@ -268,7 +263,12 @@ export function createCsrf(options: CsrfOptions): Csrf {
         throw httpError(403, 'CSRF token missing');
       }
       if (
-        (await verifyToken(presented, await getKey(), Date.now(), bind)) === null
+        (await verifyToken(
+          presented,
+          await getHmacKey(secret, 'SHA-256', ['sign']),
+          Date.now(),
+          bind
+        )) === null
       ) {
         throw httpError(403, 'CSRF token invalid or expired');
       }

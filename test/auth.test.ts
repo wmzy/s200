@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
-import { basicAuth, bearerAuth } from '../src/auth';
+import { basicAuth, bearerAuth, extractBearer } from '../src/auth';
 import { isHttpError } from '../src/errors';
 import { json } from '../src/respond';
 
@@ -120,6 +120,36 @@ describe('basicAuth', () => {
       err.status.should.equal(401);
       (err.headers?.['www-authenticate'] ?? '').should.equal('Basic realm="s200"');
     }
+  });
+});
+
+describe('extractBearer', () => {
+  it('extracts the token for any scheme casing and separator width', () => {
+    extractBearer('Bearer abc')!.should.equal('abc');
+    extractBearer('bearer abc')!.should.equal('abc');
+    extractBearer('BEARER abc')!.should.equal('abc');
+    extractBearer('Bearer\tabc')!.should.equal('abc');
+    extractBearer('Bearer   abc')!.should.equal('abc');
+    // Only the first separator run splits — the token itself keeps its
+    // internal whitespace.
+    extractBearer('Bearer a b')!.should.equal('a b');
+  });
+
+  it('returns undefined for absent or non-matching values', () => {
+    (extractBearer(null) === undefined).should.be.true;
+    (extractBearer('') === undefined).should.be.true;
+    (extractBearer('Basic dXNlcjpwYXNz') === undefined).should.be.true;
+    (extractBearer('Bearerabc') === undefined).should.be.true; // no separator
+    (extractBearer('Bearer ') === undefined).should.be.true; // empty token
+  });
+
+  it('honors a custom scheme, still case-insensitive and escaped', () => {
+    extractBearer('Token xyz', 'Token')!.should.equal('xyz');
+    extractBearer('token\txyz', 'Token')!.should.equal('xyz');
+    (extractBearer('Bearer xyz', 'Token') === undefined).should.be.true;
+    // Regex metacharacters in a custom scheme are matched literally.
+    extractBearer('Te.xen 1', 'Te.xen')!.should.equal('1');
+    (extractBearer('TeXen 1', 'Te.xen') === undefined).should.be.true;
   });
 });
 

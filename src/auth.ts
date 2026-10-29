@@ -68,6 +68,32 @@ export function basicAuth(
   };
 }
 
+/**
+ * Extracts the token from an `Authorization`-style header value: a
+ * case-insensitive `scheme` (default `Bearer`, as RFC 9110 §11.1
+ * requires schemes be matched case-insensitively) followed by one or
+ * more whitespace separators, then the credentials. `undefined` for a
+ * missing header or a non-matching value — the one extraction shared by
+ * `bearerAuth` and `jwtAuth` so the two gates cannot drift apart on
+ * casing or separator width. A custom `scheme` is regex-escaped, so any
+ * literal prefix works.
+ */
+export function extractBearer(
+  header: string | null,
+  scheme = 'Bearer'
+): string | undefined {
+  if (header === null) return undefined;
+  if (scheme === 'Bearer') {
+    return BEARER_TOKEN_RE.exec(header)?.[1];
+  }
+  const escaped = scheme.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped}\\s+(.+)$`, 'i').exec(header)?.[1];
+}
+
+/** The default-scheme matcher — a literal regex compiles once, keeping
+ * the `Bearer` fast path allocation-identical to a hand-written gate. */
+const BEARER_TOKEN_RE = /^Bearer\s+(.+)$/i;
+
 export type BearerAuthOptions = {
   /** Realm advertised in the 401 challenge; default `'s200'`. */
   readonly realm?: string;
@@ -84,9 +110,7 @@ export function bearerAuth(
 ): Middleware {
   const challenge = `Bearer realm="${options.realm ?? 's200'}"`;
   return async (ctx, next) => {
-    const header = ctx.req.headers.get('authorization');
-    const token =
-      header === null ? undefined : /^Bearer\s+(.+)$/i.exec(header)?.[1];
+    const token = extractBearer(ctx.req.headers.get('authorization'));
     if (token === undefined || !(await verify(token, ctx))) {
       throw httpError(
         401,

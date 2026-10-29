@@ -2,11 +2,15 @@
  * Internal header utilities shared across modules so no second copy
  * grows: `rawHeaderPairs` maps node rawHeaders → Web Standard
  * header-init pairs (`s200/node`'s toRequest and the node websocket
- * handshake); `splitTokens` splits a comma-separated header value into
- * lowercased tokens (the hop-by-hop `connection` parsing in
- * `s200/proxy` and the websocket handshake's upgrade check). NOT a
- * public entry — the barrel does not re-export this module; import it
- * relatively from within src.
+ * handshake); `splitList` splits a comma-separated header value into
+ * case-preserving tokens (websocket subprotocol negotiation and the
+ * trust-proxy forwarding hops), with `splitTokens` as its lowercased
+ * variant for token matching (the hop-by-hop `connection` parsing in
+ * `s200/proxy` and the websocket handshake's upgrade check);
+ * `headerRecordOf` maps a `Headers` object onto the record node's
+ * `writeHead` takes (`s200/node`'s plain write path and the shard
+ * executor's bridge). NOT a public entry — the barrel does not re-export
+ * this module; import it relatively from within src.
  *
  * @internal
  */
@@ -35,15 +39,53 @@ export function rawHeaderPairs(raw: readonly string[]): [string, string][] {
 }
 
 /**
+ * Case-preserving, trimmed, non-empty segments of a comma-separated
+ * header value. Subprotocol negotiation needs the original casing (the
+ * winning name is echoed back on the 101) and the trust-proxy hop picker
+ * must not mangle forwarded values; token matching instead uses
+ * {@link splitTokens}, the lowercased variant. Empty segments (a trailing
+ * comma) drop out.
+ *
+ * @internal
+ */
+export function splitList(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+}
+
+/**
  * Lowercased, trimmed, non-empty tokens of a comma-separated header
  * value — the `connection` header's token list (`'keep-alive, Upgrade'` →
- * both names, lowercased). Empty segments (a trailing comma) drop out.
+ * both names, lowercased), built on {@link splitList}. Empty segments (a
+ * trailing comma) drop out.
  *
  * @internal
  */
 export function splitTokens(value: string): string[] {
-  return value
-    .split(',')
-    .map((token) => token.trim().toLowerCase())
-    .filter((token) => token !== '');
+  return splitList(value).map((token) => token.toLowerCase());
+}
+
+/**
+ * `Headers` → the record node's `writeHead` takes: one entry per name,
+ * filling `into` when the caller already owns the record (`s200/node`'s
+ * write path) or a fresh one otherwise (the shard executor's bridge).
+ * Repeated `set-cookie` stays the array — forEach would collapse it into
+ * one comma-joined value, which is not a legal cookie list.
+ *
+ * @internal
+ */
+export function headerRecordOf(
+  headers: Headers,
+  into: Record<string, string | string[]> = {}
+): Record<string, string | string[]> {
+  headers.forEach((value, key) => {
+    into[key] = value;
+  });
+  const setCookies = headers.getSetCookie();
+  if (setCookies.length > 0) {
+    into['set-cookie'] = setCookies;
+  }
+  return into;
 }

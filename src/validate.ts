@@ -327,7 +327,12 @@ export type HeadersInput = Record<string, string | undefined>;
  * with `', '` (the `headers.get` semantics), allocation per request.
  */
 export function parseHeaders(ctx: Ctx): HeaderRecord {
-  const record: Record<string, string> = {};
+  // Null prototype, the parseQuery contract: a `__proto__` header must
+  // land as a plain own key (assigning it on `{}` silently hits the
+  // prototype accessor instead), and the `in` join check below reads
+  // own keys only — `constructor`/`toString` headers cannot shadow
+  // inherited members either.
+  const record = Object.create(null) as HeaderRecord;
   for (const [name, value] of ctx.req.headers) {
     record[name] = name in record ? `${record[name]}, ${value}` : value;
   }

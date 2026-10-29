@@ -1,5 +1,6 @@
 import { describe, it } from 'vitest';
 
+import { lruStore } from '../src/bounded-collections';
 import {
   b64Encode,
   b64urlDecode,
@@ -11,6 +12,24 @@ import {
   toHex,
   type HmacKeyCache,
 } from '../src/crypto-util';
+
+describe('lruStore', function () {
+  it('bounds a store: reads bump recency, writes evict past the limit', function () {
+    const store = lruStore<string, number>(2);
+    store.set('a', 1);
+    store.set('b', 2);
+    store.get('a')!.should.equal(1); // bump a past b in recency
+    store.set('c', 3); // past the bound — evicts b, not the read a
+    (store.get('b') === undefined).should.be.true;
+    store.get('a')!.should.equal(1);
+    store.get('c')!.should.equal(3);
+    // Unknown keys stay misses.
+    (store.get('nope') === undefined).should.be.true;
+    // Overwrites keep one entry per key.
+    store.set('a', 9);
+    store.get('a')!.should.equal(9);
+  });
+});
 
 describe('crypto-util', function () {
   it('encodes known vectors: partial and full 3-byte groups', function () {
@@ -96,6 +115,13 @@ describe('crypto-util', function () {
     (await materialDigest('')).should.equal(
       'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
     );
+    // Raw bytes digest as themselves: 'abc' UTF-8 is [97, 98, 99].
+    (await materialDigest(new Uint8Array([97, 98, 99]))).should.equal(
+      await materialDigest('abc')
+    );
+    (await materialDigest(new Uint8Array([102, 111, 111]))).should.not.equal(
+      await materialDigest('Zm9v') // the base64url TEXT of those bytes
+    );
   });
 
   it('imports one HMAC key per (secret, hash, usage), cached', async function () {
@@ -110,15 +136,29 @@ describe('crypto-util', function () {
     Array.from(verifyKey.usages).should.deep.equal(['sign', 'verify']);
   });
 
+  it('imports byte secrets as their raw bytes, never re-encoded text', async function () {
+    // 'foo' as raw bytes vs the base64url TEXT of those bytes are two
+    // different materials — before raw-byte keying they collided on one
+    // import (the bytes were first base64url-encoded into a string).
+    const bytes = new Uint8Array([102, 111, 111]); // 'foo', b64url 'Zm9v'
+    const byteKey = await getHmacKey(bytes, 'SHA-256', ['sign']);
+    // The same material spelled as a string shares one import.
+    (byteKey === (await getHmacKey('foo', 'SHA-256', ['sign']))).should.be
+      .true;
+    // The base64url text of the bytes is different material.
+    (byteKey === (await getHmacKey('Zm9v', 'SHA-256', ['sign']))).should.be
+      .false;
+  });
+
   it('hands the injected cache digest keys, never the secret', async function () {
     const seen: string[] = [];
     const store: HmacKeyCache = {
-      lruGet: () => undefined,
-      lruSet: (key) => seen.push(key),
+      get: () => undefined,
+      set: (key) => seen.push(key),
     };
     await getHmacKey('top-secret', 'SHA-256', ['sign'], store);
     await getHmacKey('top-secret', 'SHA-256', ['sign'], store);
-    seen.length.should.equal(2); // lruGet misses, so both calls import+set.
+    seen.length.should.equal(2); // get misses, so both calls import+set.
     seen[0]!.should.match(/^SHA-256:sign:[0-9a-f]{64}$/);
     seen[0]!.should.not.match(/top-secret/);
   });

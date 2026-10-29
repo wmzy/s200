@@ -1,7 +1,7 @@
 /**
  * Shared creation-time argument guards — one message format instead of a
  * hand-rolled `throw new Error(...)` block per battery (crypto-util.ts /
- * map-limit.ts precedent for internal modules): imported via relative
+ * bounded-collections.ts precedent for internal modules): imported via relative
  * paths, never re-exported from the barrel.
  *
  * @module

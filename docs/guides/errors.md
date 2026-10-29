@@ -25,6 +25,14 @@ throw httpError(401, 'Unauthorized', { error: 'Unauthorized' }, {
 });
 ```
 
+`Retry-After` values come from one convention: `retryAfterSeconds(ms)` — `ceil` of the remaining milliseconds, floored at `1` (a gate that just tripped never answers `0`). `s200/rate-limit`'s 429 and `s200/circuit-breaker`'s 503 both ship headers computed with it; use it for your own gates so every answer reads the same clock:
+
+```ts
+throw httpError(503, 'Cooling down', { error: 'Cooling down' }, {
+  'retry-after': String(retryAfterSeconds(cooldownLeftMs)),
+});
+```
+
 A fifth argument attaches a `cause` — the wrapped origin (the db error under a 502, the upstream failure under a gateway timeout). It is diagnostics, never payload: `toErrorResponse` does not serialize it, so the client body stays exactly what it would be without the cause. It flows to the error boundary untouched, where your `onError` reads it (`error.cause`) and the log sink surfaces it:
 
 ```ts
@@ -40,7 +48,7 @@ const app = createApp({
 
 One rule flip rides along: plain `HttpError`s are intentional client errors and stay unlogged, but one carrying a `cause` asked for it — the boundary routes it to `logError` (the default sink appends the cause to its `console.error` line) while still answering the client with the error's own status and body.
 
-The model is three functions and one rule: `httpError(status, message?, body?, headers?, cause?)` builds the tagged value (`status` an integer in `[400, 599]`, `body` riding through verbatim instead of the default `{ "error": message }` envelope, `cause` riding to the log sink instead), `isHttpError(error)` checks the tag structurally, and `toErrorResponse(error)` maps any thrown value to a `Response` — the same mapping the boundary applies, useful when you answer an error in place without a chain. The rule: **throw, don't hand-return** — a thrown `HttpError` reaches `onError` and stamps the unwind; a response you write yourself is just a response.
+The model is four functions and one rule: `httpError(status, message?, body?, headers?, cause?)` builds the tagged value (`status` an integer in `[400, 599]`, `body` riding through verbatim instead of the default `{ "error": message }` envelope, `cause` riding to the log sink instead), `isHttpError(error)` checks the tag structurally, `toErrorResponse(error)` maps any thrown value to a `Response` — the same mapping the boundary applies, useful when you answer an error in place without a chain — and `retryAfterSeconds(ms)` formats a remaining-millisecond budget as the shared `Retry-After` seconds value. The rule: **throw, don't hand-return** — a thrown `HttpError` reaches `onError` and stamps the unwind; a response you write yourself is just a response.
 
 ## Default mapping
 

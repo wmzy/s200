@@ -55,6 +55,8 @@ import type {
   State,
 } from './types';
 
+import { paramRequired } from './types';
+
 import { readJson } from './body';
 import {
   describeRoute,
@@ -169,7 +171,7 @@ function pathParameters(segments: readonly Segment[], meta: RouteMeta, sites: Sc
     const param: { name: string; in: string; required: boolean; schema: unknown } = {
       name: segment.name,
       in: 'path',
-      required: segment._tag === 'wildcard' ? true : !segment.optional,
+      required: paramRequired(segment),
       schema: entry === undefined ? { type: 'string' } : toJsonSchema(querySchemaOf(entry)),
     };
     if (entry !== undefined) {
@@ -245,7 +247,9 @@ function multipartEncoding(form: MultipartBody['form']): Record<string, unknown>
  * merged with the `throws` gates' error branches. Neither clobbers the
  * other — a status only one side declares is emitted; on conflict
  * `meta.responses` wins (its description and schema were written for the
- * spec, the gate's example is only an inference seed).
+ * spec, the gate's example is only an inference seed). Both branches
+ * register hoistable schema sites, so an inferred error schema occurring
+ * ≥2 times hoists to `components.schemas` exactly like a declared one.
  */
 function responsesOf(
   meta: RouteMeta | undefined,
@@ -273,17 +277,20 @@ function responsesOf(
   for (const [status, example] of Object.entries(gates)) {
     if (status in out) continue;
     // The one inference layer (`s200/serialize`), rendered through the
-    // same bridge every declared schema takes.
+    // same bridge every declared schema takes — and registered as a
+    // hoistable site like a declared one, so N routes throwing the same
+    // error shape reference one `components.schemas` entry instead of
+    // repeating it inline N times.
     const inferred = exampleToSchema(example);
+    if (inferred === undefined) {
+      out[status] = { description: 'Error response' };
+      continue;
+    }
+    const media: { schema: unknown } = { schema: toJsonSchema(inferred) };
+    sites.push({ json: JSON.stringify(media.schema), holder: media });
     out[status] = {
       description: 'Error response',
-      ...(inferred === undefined
-        ? {}
-        : {
-            content: {
-              'application/json': { schema: toJsonSchema(inferred) },
-            },
-          }),
+      content: { 'application/json': media },
     };
   }
   return out;
@@ -504,21 +511,19 @@ function validationGate(meta: RouteMeta): Middleware {
   // `uploadForm` — the gate never reads (and never JSON-parses) it.
   const jsonBody = isMultipartBody(meta.body) ? undefined : meta.body;
   const body = jsonBody !== undefined ? compileValidator(jsonBody) : undefined;
-  const query = Object.entries(meta.query ?? {}).map(
-    ([key, entry]) =>
-      [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
-  );
-  const params = Object.entries(meta.params ?? {}).map(
-    ([key, entry]) =>
-      [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
-  );
-  // Header entries gate exactly like query entries — one
-  // case-insensitive `headers.get` read, values in the string domain
-  // (repeated headers arrive comma-joined, the platform's own rule).
-  const headers = Object.entries(meta.headers ?? {}).map(
-    ([key, entry]) =>
-      [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
-  );
+  // All three located record families (query, params, headers) compile
+  // identically: one validator per key over its located schema, plus the
+  // `required` marker the gate enforces and the spec emits.
+  const gateEntries = (
+    entries: Record<string, QueryParam> | undefined
+  ): readonly GateEntry[] =>
+    Object.entries(entries ?? {}).map(
+      ([key, entry]) =>
+        [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
+    );
+  const query = gateEntries(meta.query);
+  const params = gateEntries(meta.params);
+  const headers = gateEntries(meta.headers);
   return async (ctx, next) => {
     if (body !== undefined) {
       const issues = body(await readJson(ctx));

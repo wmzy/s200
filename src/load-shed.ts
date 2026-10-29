@@ -25,9 +25,8 @@
 
 import type { Ctx, Middleware } from './types';
 
-import { performance } from 'node:perf_hooks';
-
 import { assertPositive } from './assert';
+import { createEluReader } from './elu';
 import { httpError } from './errors';
 
 /**
@@ -142,23 +141,14 @@ export function loadShed(options: LoadShedOptions = {}): Middleware {
   // The in-flight ledger: count requests in and out, never sample. An
   // injected sensor replaces the reading, not the bookkeeping.
   let inFlight = 0;
-  // ELU baseline for the incremental default: each read is diffed against
-  // the previous one, so the reading covers the inter-request gap and no
-  // timer ever wakes the loop.
-  let lastElu = performance.eventLoopUtilization();
+  // ELU reader for the incremental default: each reading is diffed
+  // against the previous one, so it covers the inter-request gap and no
+  // timer ever wakes the loop (NaN→0 clamp lives in the reader).
+  const elu = createEluReader();
 
   const readElu =
     sensors?.eventLoopUtilization ??
-    ((): number => {
-      const current = performance.eventLoopUtilization();
-      const delta = performance.eventLoopUtilization(current, lastElu);
-      lastElu = current;
-      // Node reports NaN when zero loop time elapsed between reads (two
-      // checks back-to-back): that is 0% busy, not NaN.
-      return Number.isFinite(delta.utilization)
-        ? Math.min(1, Math.max(0, delta.utilization))
-        : 0;
-    });
+    ((): number => elu.read());
   const readRssBytes =
     sensors?.rssBytes ?? ((): number => process.memoryUsage().rss);
   const readInFlight = sensors?.inFlight ?? ((): number => inFlight);

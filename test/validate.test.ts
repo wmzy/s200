@@ -454,6 +454,35 @@ describe('validateHeaders', function () {
     res.status.should.equal(200);
     (await res.json()).should.deep.equal({ tags: ['a', 'b'] });
   });
+
+  it('keeps __proto__ and constructor headers as plain own keys', async function () {
+    // A literal `{ __proto__: 'x' }` would set the literal's prototype,
+    // not an entry — the names must ride a Headers instance to reach the
+    // record at all.
+    const headers = new Headers();
+    headers.append('__proto__', 'x');
+    headers.append('constructor', 'y');
+    let seen: Record<string, string> | undefined;
+    const app = createApp();
+    get(
+      app,
+      '/x',
+      validateHeaders((h: Record<string, string>) => {
+        seen = h;
+        return true;
+      }),
+      () => new Response('ok')
+    );
+    const res = await handle(app, new Request('http://localhost/x', { headers }));
+    res.status.should.equal(200);
+    // Object spread copies own enumerable keys with CreateDataProperty,
+    // so both survive — on a plain `{}` record the __proto__ assignment
+    // was silently swallowed by the prototype setter (its `in` check
+    // even saw the inherited accessor and produced a bogus join).
+    JSON.stringify({ ...seen }).should.equal(
+      '{"__proto__":"x","constructor":"y"}'
+    );
+  });
 });
 
 describe('the 422 envelope is one shape across gates', function () {

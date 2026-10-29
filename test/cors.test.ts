@@ -1,6 +1,7 @@
 import { describe, it } from 'vitest';
 
 import { createApp, get, handle, post, use } from '../src/app';
+import { compress } from '../src/compress';
 import { cors } from '../src/cors';
 import { serve } from '../src/node';
 import { send, text } from '../src/respond';
@@ -86,6 +87,25 @@ describe('cors', function () {
     );
     (res.headers.get('access-control-allow-credentials') ?? '').should.equal('true');
     (res.headers.get('vary') ?? '').should.equal('origin');
+  });
+
+  it('appends Vary: origin instead of clobbering compress\'s accept-encoding', async function () {
+    // cors unwinds after compress (it is registered first), so its Vary
+    // stamp must merge, not replace: a replaced Vary would let a shared
+    // cache serve a compressed body to a client that never asked for one.
+    const app = createApp();
+    use(app, cors({ origin: 'https://app.example' }));
+    use(app, compress());
+    get(app, '/x', () => new Response('hello vary merge, '.repeat(64)));
+    const res = await handle(
+      app,
+      new Request('http://localhost/x', {
+        headers: { origin: 'https://app.example', 'accept-encoding': 'gzip' },
+      })
+    );
+    const vary = res.headers.get('vary') ?? '';
+    vary.should.contain('accept-encoding');
+    vary.should.contain('origin');
   });
 
   it('reflects allowlisted origins and omits headers otherwise', async function () {

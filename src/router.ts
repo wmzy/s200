@@ -403,8 +403,13 @@ export function matchSegments(
  * A route's method matches `m` directly, or via `'ALL'`; `HEAD` requests
  * also match `GET` routes (web convention), so a server gets HEAD support
  * for free unless it registers an exact `HEAD` route.
+ *
+ * @internal Exported for `s200/dev`'s route hints — the 404 decorator
+ * must answer "would this route have served the method had the path
+ * matched?" with the router's own rule, and a private copy would drift
+ * from the matching it mirrors.
  */
-function methodCompatible(routeMethod: string, method: string): boolean {
+export function methodCompatible(routeMethod: string, method: string): boolean {
   return (
     routeMethod === method ||
     routeMethod === 'ALL' ||

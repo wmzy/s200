@@ -114,6 +114,7 @@ written `Response`. The surrounding contracts:
 httpError(422, 'Invalid article');          // → HttpError (tagged data)
 isHttpError(e);                              // structural check, no instanceof
 toErrorResponse(e);                          // → the default-mapped Response
+retryAfterSeconds(ms);                       // ceil of remaining ms, floored at 1 (Retry-After)
 throws(401, 404);                            // client-facing error-branch gate
 throws({ 422: { issues: string[] } });       // with structured body shapes
 ```

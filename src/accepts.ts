@@ -10,22 +10,38 @@
 import type { Ctx } from './types';
 
 /**
- * One parsed Accept-family entry: the lowercased value plus its
- * quality. Exported only because {@link parseRanges} mentions it in its
- * signature (declaration emit); it is not battery surface.
+ * One parsed Accept-family entry: the lowercased value, its quality, and
+ * its other parameters. Exported only because {@link parseRanges}
+ * mentions it in its signature (declaration emit); it is not battery
+ * surface.
  *
  * @internal
  */
 export type Range = {
   readonly value: string;
   readonly q: number;
+  /**
+   * The entry's non-q parameters (`;k=v`), lowercased-keyed; a quoted
+   * value is unquoted with backslash escapes unfolded. Later occurrences
+   * of a name win, matching `pickEncoding`'s per-name assignment rule.
+   * Version negotiation is the consumer: it reads the `version`
+   * parameter off vendor media types. Empty when the entry carries none.
+   */
+  readonly params: ReadonlyMap<string, string>;
 };
 
+/** Unfolds one parameter value: a quoted string drops its quotes and
+ * unfolds backslash escapes (`\"` → `"`); a bare token passes through. */
+function unfoldParam(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  return raw.slice(1, -1).replace(/\\(.)/g, '$1');
+}
+
 /**
- * Parses an Accept-family header into `{ value, q }` ranges in header
- * order (order matters: at equal specificity, the earlier range wins).
- * q is clamped to [0, 1]; q=0 ranges stay — they ban candidates; an
- * unparseable q parameter is ignored (q stays 1). Shared by every
+ * Parses an Accept-family header into `{ value, q, params }` ranges in
+ * header order (order matters: at equal specificity, the earlier range
+ * wins). q is clamped to [0, 1]; q=0 ranges stay — they ban candidates;
+ * an unparseable q parameter is ignored (q stays 1). Shared by every
  * Accept-header consumer (compress's pickEncoding rides it too), so the
  * grammar is defined exactly once.
  *
@@ -41,14 +57,22 @@ export function parseRanges(header: string | null): Range[] {
     const value = (pieces[0] ?? '').trim().toLowerCase();
     if (value === '') continue;
     let q = 1;
+    const params = new Map<string, string>();
     for (const param of pieces.slice(1)) {
       const kv = param.trim();
       if (kv.toLowerCase().startsWith('q=')) {
         const parsed = Number(kv.slice(2));
         q = Number.isNaN(parsed) ? 1 : Math.min(1, Math.max(0, parsed));
+        continue;
       }
+      const eq = kv.indexOf('=');
+      if (eq === -1) continue;
+      params.set(
+        kv.slice(0, eq).trim().toLowerCase(),
+        unfoldParam(kv.slice(eq + 1).trim())
+      );
     }
-    ranges.push({ value, q });
+    ranges.push({ value, q, params });
   }
   return ranges;
 }

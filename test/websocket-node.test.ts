@@ -273,6 +273,33 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     socket.destroy();
   });
 
+  it('survives crafted Host headers instead of crashing on the upgrade', async () => {
+    // A malformed Host ('a b', '[') must never reach `new URL` inside the
+    // 'upgrade' event: the TypeError there is an uncaught exception that
+    // kills the process. The safe-host gate falls back to localhost, so
+    // the handshake on the real path still completes.
+    for (const badHost of ['a b', '[', 'evil.com/x', 'u@h']) {
+      const socket = connect(server.port, HOST);
+      socket.write(
+        'GET /echo HTTP/1.1\r\n' +
+          `Host: ${badHost}\r\n` +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          `Sec-WebSocket-Key: ${KEY}\r\n` +
+          'Sec-WebSocket-Version: 13\r\n' +
+          '\r\n'
+      );
+      const { head } = await readHead(socket);
+      head.should.contain('101 Switching Protocols');
+      socket.destroy();
+    }
+    // The process being alive here is the point: any crafted Host that
+    // once threw has failed the test already via an uncaught exception.
+    const followUp = openSocket(server.port, '/echo');
+    (await readHead(followUp)).head.should.contain('101 Switching Protocols');
+    followUp.destroy();
+  });
+
   it('echoes text frames', async () => {
     const socket = openSocket(server.port, '/echo');
     const { rest } = await readHead(socket);

@@ -138,6 +138,7 @@ export type HttpError = { status: number; message: string; body?: unknown; heade
 httpError<S extends number, B>(status, message?, body?, headers?, cause?): HttpError & { status: S; body?: B };
 isHttpError(e): e is HttpError;          // 鸭子类型 —— 绝不用 instanceof
 toErrorResponse(error): Response;        // 任意抛出的值 → Response
+retryAfterSeconds(ms): number;           // 剩余毫秒向上取整、下限 1 —— 共享的 Retry-After 秒数约定
 throws(401, 404);                        // 声明错误分支（类型层）
 throws<{ 401: { error: string } }>({ … });
 ```

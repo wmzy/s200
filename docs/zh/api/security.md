@@ -62,6 +62,7 @@ use(app, bearerAuth(async (token) => token === API_TOKEN));
 | --- | --- |
 | `basicAuth(verify, options?)` | `verify(username, password, ctx) => boolean \| Promise<boolean>` |
 | `bearerAuth(verify, options?)` | `verify(token, ctx) => boolean \| Promise<boolean>` |
+| `extractBearer(header, scheme?)` | `(header: string \| null, scheme?: string) => string \| undefined` —— `bearerAuth`/`jwtAuth` 共用的 Bearer 提取：方案大小写不敏感（默认 `Bearer`），与令牌之间为一或多个空白分隔；头缺失或不匹配返回 `undefined` |
 
 `BasicAuthOptions` / `BearerAuthOptions`：`{ realm?: string }` —— 401 挑战的 realm，默认 `'s200'`。
 
@@ -106,7 +107,7 @@ HS256/384/512、RS256/384/512、PS256/384/512、ES256/384/512 与 EdDSA（Ed2551
 | `clockTolerance` | `0` | `exp`/`nbf`/`iat` 的时钟偏移容忍（秒） |
 | `requireExpiry` | `false` | 拒绝不携带数字 `exp` 声明的令牌 |
 | `header` | `'authorization'` | 承载令牌的头 |
-| `prefix` | `'Bearer '` | 从头值中剥离的方案前缀 |
+| `prefix` | `'Bearer '` | 头值中命名令牌的方案前缀 —— 大小写不敏感匹配、任意空白串作分隔（与 `bearerAuth` 同一提取逻辑）；空前缀表示整个头值即令牌 |
 | `cookie` | — | 头缺失时回退的 cookie 名 |
 | `verify` | — | 自定义校验（另一个库、奇异令牌）—— 返回值存入 `ctx.state.jwt` |
 | `keyStore` | — | 转发给 `verifyJwt` 的密钥导入 store；绕过默认的进程内缓存（摘要键、进程内 `CryptoKey` 值） |

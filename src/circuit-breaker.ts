@@ -30,8 +30,8 @@
  */
 
 import { assertPositive } from './assert';
-import { httpError, isHttpError } from './errors';
-import { pushSlidingTimestamps } from './map-limit';
+import { httpError, isHttpError, retryAfterSeconds } from './errors';
+import { pushSlidingTimestamps } from './bounded-collections';
 
 /** Phase of the state machine: `closed` → `open` → `half-open` → … */
 export type CircuitPhase = 'closed' | 'open' | 'half-open';
@@ -323,7 +323,7 @@ export async function breakerCall<T>(
         ? breaker.options.cooldownMs -
           (breaker.options.now() - breaker.openedAt)
         : 0;
-    const retryAfter = Math.max(1, Math.ceil(remaining / 1000));
+    const retryAfter = retryAfterSeconds(remaining);
     throw httpError(
       503,
       'Service Unavailable',

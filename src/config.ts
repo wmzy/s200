@@ -17,6 +17,8 @@
 
 import type { OutputOf, StandardIssue, StandardSchema } from './validate';
 
+import { formatIssuePath } from './validate';
+
 /** The product of {@link createConfig}: `valid` is the schema's parsed,
  * typed output — the only handle callers get, and only after the
  * fail-fast gate has passed. */
@@ -170,10 +172,12 @@ export function parseEnv(
 }
 
 /** Formats every issue into the single message {@link createConfig}
- * throws: one line each, dotted path first when the issue carries one. */
+ * throws: one line each, {@link formatIssuePath}-formatted path first
+ * when the issue carries one (object keys dotted, array indices
+ * bracketed). */
 function formatIssues(issues: readonly StandardIssue[]): string {
   const lines = issues.map((issue) => {
-    const path = (issue.path ?? []).map(String).join('.');
+    const path = formatIssuePath(issue.path);
     return path === '' ? issue.message : `${path}: ${issue.message}`;
   });
   return `config invalid:\n  ${lines.join('\n  ')}`;

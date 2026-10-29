@@ -19,6 +19,8 @@
 
 import type { Ctx, Middleware } from './types';
 
+import { splitList } from './raw-headers';
+
 export type TrustProxyInfo = {
   /** Public scheme as the client saw it (`https` when the proxy terminates TLS). */
   readonly proto?: string;
@@ -57,10 +59,9 @@ export function trustProxy(options: TrustProxyOptions = {}): Middleware {
       if (value === null) {
         return undefined;
       }
-      const list = value
-        .split(',')
-        .map((item) => item.trim())
-        .filter((item) => item !== '');
+      // Case-preserving split (raw-headers.ts) — forwarded values must
+      // not be mangled on their way into ctx.url/state.
+      const list = splitList(value);
       if (list.length === 0) {
         return undefined;
       }

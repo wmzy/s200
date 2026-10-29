@@ -103,6 +103,7 @@ type Ctx = { req, url, params, query, state, signal, route, res };
 httpError(422, 'Invalid article');          // → HttpError（带标签的数据）
 isHttpError(e);                              // 结构检查，不用 instanceof
 toErrorResponse(e);                          // → 默认映射后的 Response
+retryAfterSeconds(ms);                       // 剩余毫秒向上取整、下限 1（Retry-After）
 throws(401, 404);                            // 面向客户端的错误分支门
 throws({ 422: { issues: string[] } });       // 附带结构化 body 形状
 ```

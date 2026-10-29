@@ -128,43 +128,6 @@ export function cspNonce(): string {
  */
 export function secureHeaders(options: SecureHeadersOptions = {}): Middleware {
   const wanted = new Map<string, string>();
-  if (options.xContentTypeOptions !== false) {
-    wanted.set('x-content-type-options', options.xContentTypeOptions ?? 'nosniff');
-  }
-  if (options.xFrameOptions !== false) {
-    wanted.set('x-frame-options', options.xFrameOptions ?? 'DENY');
-  }
-  if (options.referrerPolicy !== false) {
-    wanted.set('referrer-policy', options.referrerPolicy ?? 'strict-origin-when-cross-origin');
-  }
-  if (
-    options.strictTransportSecurity !== undefined &&
-    options.strictTransportSecurity !== false
-  ) {
-    wanted.set('strict-transport-security', options.strictTransportSecurity);
-  }
-  if (
-    options.crossOriginOpenerPolicy !== false
-  ) {
-    wanted.set('cross-origin-opener-policy', options.crossOriginOpenerPolicy ?? 'same-origin');
-  }
-  if (
-    options.crossOriginResourcePolicy !== false
-  ) {
-    wanted.set('cross-origin-resource-policy', options.crossOriginResourcePolicy ?? 'same-origin');
-  }
-  if (
-    options.crossOriginEmbedderPolicy !== undefined &&
-    options.crossOriginEmbedderPolicy !== false
-  ) {
-    wanted.set('cross-origin-embedder-policy', options.crossOriginEmbedderPolicy);
-  }
-  if (
-    options.xDnsPrefetchControl !== undefined &&
-    options.xDnsPrefetchControl !== false
-  ) {
-    wanted.set('x-dns-prefetch-control', options.xDnsPrefetchControl);
-  }
   const addDirectives = (
     name: string,
     value: Directives | string | false | undefined
@@ -175,6 +138,28 @@ export function secureHeaders(options: SecureHeadersOptions = {}): Middleware {
       typeof value === 'string' ? value : serializeDirectives(value)
     );
   };
+  if (options.xContentTypeOptions !== false) {
+    wanted.set('x-content-type-options', options.xContentTypeOptions ?? 'nosniff');
+  }
+  if (options.xFrameOptions !== false) {
+    wanted.set('x-frame-options', options.xFrameOptions ?? 'DENY');
+  }
+  if (options.referrerPolicy !== false) {
+    wanted.set('referrer-policy', options.referrerPolicy ?? 'strict-origin-when-cross-origin');
+  }
+  addDirectives('strict-transport-security', options.strictTransportSecurity);
+  if (
+    options.crossOriginOpenerPolicy !== false
+  ) {
+    wanted.set('cross-origin-opener-policy', options.crossOriginOpenerPolicy ?? 'same-origin');
+  }
+  if (
+    options.crossOriginResourcePolicy !== false
+  ) {
+    wanted.set('cross-origin-resource-policy', options.crossOriginResourcePolicy ?? 'same-origin');
+  }
+  addDirectives('cross-origin-embedder-policy', options.crossOriginEmbedderPolicy);
+  addDirectives('x-dns-prefetch-control', options.xDnsPrefetchControl);
   // The nonce shape is per-request (the placeholder is spliced in on the
   // unwind), so it never enters the static `wanted` map; every other
   // shape serializes once here.

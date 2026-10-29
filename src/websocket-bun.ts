@@ -51,11 +51,20 @@ export type BunWs = {
   getBufferedAmount(): number;
 };
 
-/** The `websocket` option Bun.serve accepts, narrowed to the members used. */
+/**
+ * Bun's per-connection callbacks — the `websocket` option Bun.serve
+ * accepts, narrowed to the members s200 uses. This is the canonical
+ * declaration: `s200/bun`'s ambient Bun surface types against it (a
+ * type-only import, so no @types/bun dependency sneaks in there either).
+ */
 export type BunWsHandlers = {
   open?: (ws: BunWs) => void;
   message?: (ws: BunWs, data: string | Uint8Array) => void;
   close?: (ws: BunWs, code: number, reason: string) => void;
+  /** Bun's send-queue-drained signal (backpressure relief). The bridge
+   * itself registers none; the slot exists because Bun.serve accepts it
+   * and the canonical shape must cover what any consumer can pass. */
+  drain?: (ws: BunWs) => void;
   pong?: (ws: BunWs) => void;
 };
 

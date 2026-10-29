@@ -148,12 +148,22 @@ describe('openapi (spec emission)', () => {
     const bare = (spec.paths['/bare']?.get as { responses: Record<string, unknown> }).responses;
     // No meta.responses: the bare 200 stays, the gate adds its statuses.
     Object.keys(bare).should.deep.equal(['200', '401', '404']);
+    // 401 and 404 share the envelope example, so the inferred schema
+    // occurs twice and hoists — the same dedup a declared schema takes.
     const envelope = (
       (bare[401] as { content: { 'application/json': { schema: unknown } } }).content[
         'application/json'
       ] as { schema: unknown }
     ).schema as Record<string, unknown>;
-    envelope.should.deep.equal({
+    envelope.should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    (
+      (bare[404] as { content: { 'application/json': { schema: unknown } } }).content[
+        'application/json'
+      ] as { schema: Record<string, unknown> }
+    ).schema.should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    (
+      (spec.components?.schemas as Record<string, unknown>).Schema1 as Record<string, unknown>
+    ).should.deep.equal({
       type: 'object',
       properties: { error: { type: 'string' } },
       // exampleToSchema marks every shown key required — the one
@@ -169,11 +179,31 @@ describe('openapi (spec emission)', () => {
         'application/json'
       ] as { schema: unknown }
     ).schema as Record<string, unknown>;
+    // Single occurrence: stays inline, and the spec carries only the
+    // hoisted envelope from `/bare`.
     schema.should.deep.equal({
       type: 'object',
       properties: { issues: { type: 'array', items: { type: 'string' } } },
       required: ['issues'],
     });
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+  });
+
+  it('hoists repeated inferred throws schemas across routes — one ref, not N inline copies', () => {
+    const app = createApp();
+    get(app, '/a', throws(401), (ctx) => json(ctx, { ok: true }));
+    get(app, '/b', throws(401), (ctx) => json(ctx, { ok: true }));
+    const spec = openapiSpec(app, { title: 't', version: '1' });
+
+    Object.keys(spec.components?.schemas ?? {}).should.deep.equal(['Schema1']);
+    const schemaOf = (path: string): Record<string, unknown> =>
+      (
+        (spec.paths[path]?.get as { responses: Record<string, unknown> }).responses[401] as {
+          content: { 'application/json': { schema: Record<string, unknown> } };
+        }
+      ).content['application/json'].schema;
+    schemaOf('/a').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
+    schemaOf('/b').should.deep.equal({ $ref: '#/components/schemas/Schema1' });
   });
 
   it('merges throws branches with meta.responses — meta wins a status both declare', () => {

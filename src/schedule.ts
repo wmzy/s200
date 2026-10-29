@@ -19,10 +19,12 @@
  * concurrency-1: a tick landing while the previous run is still going is
  * skipped, not queued, and the next tick lands on the next grid point after
  * the run settles. A throwing or rejecting job is routed to `onError`
- * (default: `console.error`) without ever breaking the loop.
+ * `console.error`) without ever breaking the loop.
  *
  * @module
  */
+
+import { assertPositive } from './assert';
 
 /** A job body: sync or async; failures go to `onError`, never the caller. */
 export type JobFn = () => void | Promise<void>;
@@ -363,9 +365,7 @@ export function createScheduler(options: SchedulerOptions = {}): Scheduler {
     }
   }
   function interval(ms: number, fn: JobFn): void {
-    if (!Number.isFinite(ms) || ms <= 0) {
-      throw new Error(`Invalid interval ${String(ms)}ms: must be positive`);
-    }
+    assertPositive('schedule', 'interval', ms);
     if (state.phase === 'stopped') {
       throw new Error('Cannot register an interval job on a stopped scheduler');
     }

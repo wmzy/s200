@@ -11,7 +11,8 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
-import { newResponse, setHeaders } from './respond';
+import { withVary } from './compress';
+import { newResponse, resOf, setHeaders } from './respond';
 
 /**
  * Options for {@link cors}. The default `'*'` origin emits the literal
@@ -76,10 +77,17 @@ export function cors(options: CorsOptions = {}): Middleware {
       corsHeaders['access-control-allow-credentials'] = 'true';
     }
     // Responses vary per origin whenever the origin is not the literal
-    // wildcard — shared caches must be partitioned.
-    if (resolved !== '*') {
-      corsHeaders.vary = 'origin';
-    }
+    // wildcard — shared caches must be partitioned. The Vary is appended
+    // through withVary, NEVER baked into corsHeaders: the record is
+    // stamped via setHeaders, whose set() replaces, and on the unwind a
+    // replace would clobber a Vary another middleware already wrote
+    // (compress's accept-encoding) — a shared cache could then serve a
+    // compressed body to a client that never asked for one.
+    const stampVary = (headers: Headers): void => {
+      if (resolved !== '*') {
+        withVary(headers, 'origin');
+      }
+    };
 
     // Preflight: OPTIONS + Access-Control-Request-Method. Answered in
     // place; the handler (and any 405) must not run.
@@ -96,15 +104,20 @@ export function cors(options: CorsOptions = {}): Middleware {
       }
       // newResponse keeps the light path light (a LightResponse instead of
       // a platform one) and never advertises content-length on the null
-      // body — RFC 9110 §8.6 forbids it on 204.
+      // body — RFC 9110 §8.6 forbids it on 204. The Vary append happens
+      // on the built response for one uniform rule — the fresh response
+      // has no prior Vary, so the append degrades to a plain set.
       ctx.res = newResponse(ctx, null, { status: 204, headers: corsHeaders });
+      stampVary(ctx.res.headers);
       return;
     }
 
     return next().then(() => {
       // Actual response: stamp on the unwind — setHeaders writes straight
-      // onto the materialized response (always present by then).
+      // onto the materialized response (always present by then) — then
+      // append the Vary so a prior unwind's entry survives.
       setHeaders(ctx, corsHeaders);
+      stampVary(resOf(ctx).headers);
     });
   };
 }

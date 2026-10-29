@@ -113,6 +113,20 @@ export type Segment =
   | { readonly _tag: 'wildcard'; name: string };
 
 /**
+ * @internal Whether a segment's capture must be present: a wildcard
+ * always captures, a `:param` unless declared optional (`:param?`), and a
+ * static segment never captures at all. The one home for the rule
+ * `s200/openapi`'s path `parameters[].required` and `s200/mcp`'s
+ * tool-input `required` both emit — beside the segment shape it reads,
+ * so the spec view and the tool view cannot drift on which segments are
+ * optional.
+ */
+export function paramRequired(segment: Segment): boolean {
+  if (segment._tag === 'static') return false;
+  return segment._tag === 'wildcard' || !segment.optional;
+}
+
+/**
  * One registered route's compile-time signature: normalized method plus the
  * pattern literal, and — when the terminal handler returned a branded
  * {@link JsonResponse} — the response body type (`out`). Carried by

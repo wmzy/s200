@@ -100,6 +100,18 @@ export function httpError<S extends number = number, B = undefined>(
   };
 }
 
+/**
+ * The shared `Retry-After` seconds convention: `ceil` of the remaining
+ * milliseconds, floored at `1` — a gate that just tripped owes the client
+ * a nonzero wait even when the remainder rounds to zero seconds.
+ * `s200/rate-limit`'s 429 and `s200/circuit-breaker`'s 503 both compute
+ * their header with this; a custom gate that stamps `retry-after` should
+ * too, so every s200 answer reads the same clock.
+ */
+export function retryAfterSeconds(ms: number): number {
+  return Math.max(1, Math.ceil(ms / 1000));
+}
+
 /** Shape predicate — duck typing is the only safe check for tagged data. */
 export function isHttpError(e: unknown): e is HttpError {
   return (

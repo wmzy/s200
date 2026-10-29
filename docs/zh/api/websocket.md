@@ -128,7 +128,7 @@ serve(app, { port: 3000, websocket: createBunWebSocketBridge(app) });
 | `createBunWebSocketBridge(app)` | `{ upgrade, websocket }` —— `upgrade(req, server)` 在 fetch handler 内决定请求是否升级（先运行应用 + 路由中间件链；拒绝中间件的 `Response` 以普通 HTTP 应答）；`websocket` 携带每连接回调 |
 | `BunWebSocketBridge` | `{ upgrade: (req, server: BunUpgrader) => Promise<boolean \| Response>; websocket: BunWsHandlers }` —— `true` = 已升级，`Response` = 拒绝，`false` = 非 ws 路由 |
 | `BunUpgrader` | Bun 交给 fetch handler 的 `server`：`upgrade(request, options?) => boolean` |
-| `BunWs` / `BunWsHandlers` | Bun 的每连接 socket 与 `open`/`message`/`close`/`pong` 回调集，收窄到用到的成员 |
+| `BunWs` / `BunWsHandlers` | Bun 的每连接 socket 与 `open`/`message`/`close`/`drain`/`pong` 回调集，收窄到用到的成员 |
 
 ## Cloudflare（`s200/websocket/cloudflare`）{#cloudflare-s200-websocket-cloudflare}
 

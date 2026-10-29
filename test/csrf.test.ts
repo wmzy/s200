@@ -26,14 +26,45 @@ describe('csrf', () => {
   }
 
   it('sets a cookie on safe responses and echoes the same token to the page', async () => {
-    const { app, csrf } = build();
+    const { app } = build();
     const res = await handle(app, new Request('http://localhost/form'));
     res.status.should.equal(200);
     const cookieToken = await readSetCookie(res);
     const pageToken = ((await res.json()) as { token: string }).token;
     pageToken.should.equal(cookieToken);
-    // token(ctx) reuses the middleware's per-request token.
-    void csrf;
+  });
+
+  it('token(ctx) reuses the middleware-installed token instead of minting', async () => {
+    const app = createApp();
+    const csrf = createCsrf({ secret: SECRET });
+    use(app, csrf.middleware);
+    // The handler runs after the middleware, so the per-request token is
+    // already installed — token() must echo it, not mint a second one.
+    get(app, '/page', async (ctx) => json(ctx, { token: await csrf.token(ctx) }));
+
+    const res = await handle(app, new Request('http://localhost/page'));
+    ((await res.json()) as { token: string }).token.should.equal(
+      await readSetCookie(res)
+    );
+  });
+
+  it('signs and verifies with a Uint8Array secret', async () => {
+    const app = createApp();
+    const csrf = createCsrf({ secret: new Uint8Array([7, 0, 255, 1, 99, 200, 3, 3]) });
+    use(app, csrf.middleware);
+    get(app, '/form', (ctx) => json(ctx, { token: ctx.state.csrfToken }));
+    post(app, '/submit', () => new Response('saved', { status: 200 }));
+
+    const form = await handle(app, new Request('http://localhost/form'));
+    const token = await readSetCookie(form);
+    const ok = await handle(
+      app,
+      new Request('http://localhost/submit', {
+        method: 'POST',
+        headers: { 'x-csrf-token': token },
+      })
+    );
+    ok.status.should.equal(200);
   });
 
   it('rejects unsafe requests without a token, then accepts the cookie token', async () => {

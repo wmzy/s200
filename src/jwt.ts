@@ -6,8 +6,9 @@
  *
  * Algorithm/key pairing is enforced by family — the `alg` header picks
  * the family, and the supplied key must match it (HMAC requires a secret
- * string; RS/PS require an RSA key; ES requires an EC key; EdDSA
- * requires an Ed25519 OKP key — JWK `kty:'OKP'` with `crv:'Ed25519'`).
+ * — a string or raw bytes; RS/PS require an RSA key; ES requires an EC
+ * key; EdDSA requires an Ed25519 OKP key — JWK `kty:'OKP'` with
+ * `crv:'Ed25519'`).
  * This closes the HS/RSA algorithm-confusion attack without a
  * caller-maintained allowlist (an allowlist can still narrow the
  * default "everything").
@@ -22,6 +23,7 @@
 
 import type { Ctx, Middleware, State } from './types';
 
+import { extractBearer } from './auth';
 import { getCookie } from './cookies';
 import { httpError } from './errors';
 import {
@@ -29,11 +31,9 @@ import {
   b64urlEncode,
   equalBytes,
   getHmacKey,
-  lruGet,
-  lruSet,
   materialDigest,
-  type HmacKeyCache,
 } from './crypto-util';
+import { lruStore } from './bounded-collections';
 
 /** Decoding that keeps this module's throw-site contract: any invalid
  * input (padding, out-of-alphabet char, impossible length) surfaces as
@@ -151,21 +151,7 @@ export type JwtKeyStore = {
  * shaped key material cannot grow the cache without bound. */
 const KEY_CACHE_LIMIT = 100;
 
-const keyCache = new Map<string, Promise<CryptoKey>>();
-
-const defaultKeyStore: JwtKeyStore = {
-  get: (key) => lruGet(keyCache, key),
-  set: (key, value) => lruSet(keyCache, key, value, KEY_CACHE_LIMIT),
-};
-
-/** Adapts a {@link JwtKeyStore} to the shared HMAC import cache contract —
- * the store keeps its own bounds and lifetime policy. */
-function hmacCacheOf(store: JwtKeyStore): HmacKeyCache {
-  return {
-    lruGet: (key) => store.get(key),
-    lruSet: (key, value) => store.set(key, value),
-  };
-}
+const defaultKeyStore: JwtKeyStore = lruStore(KEY_CACHE_LIMIT);
 
 /** One imported asymmetric key per (alg, JWK digest, usage). */
 async function importAsymKey(
@@ -204,10 +190,6 @@ async function importAsymKey(
     store.set(cacheKey, key);
   }
   return key;
-}
-
-function secretText(secret: string | Uint8Array): string {
-  return typeof secret === 'string' ? secret : b64urlEncode(secret);
 }
 
 function isSecretKey(key: JwtKey): key is string | Uint8Array {
@@ -279,7 +261,9 @@ async function resolveKey(
     const hmacUsages: readonly KeyUsage[] = usages.includes('verify')
       ? ['sign', 'verify']
       : usages;
-    return getHmacKey(secretText(key), info.hash, hmacUsages, hmacCacheOf(store));
+    // The store passes through as-is — `JwtKeyStore` and the shared
+    // HMAC cache contract speak the same get/set shape.
+    return getHmacKey(key, info.hash, hmacUsages, store);
   }
   if (key instanceof CryptoKey) {
     if (!keyMatches(key, info)) {
@@ -413,14 +397,20 @@ export type JwtVerifyOptions = {
   readonly keyStore?: JwtKeyStore;
 };
 
-function hasValue<T>(list: readonly T[] | undefined, value: unknown, what: string): void {
-  if (list === undefined) {
+/** Throws unless the token's claim intersects the allowed set — a
+ * scalar option widens to a one-element list, and the claim itself may
+ * be an array (RFC 7519 §4.1.3 `aud`). */
+function hasValue(
+  allowed: string | readonly string[] | undefined,
+  value: unknown,
+  what: string
+): void {
+  if (allowed === undefined) {
     return;
   }
+  const list = typeof allowed === 'string' ? [allowed] : allowed;
   const values = Array.isArray(value) ? value : [value];
-  const ok = values.some((item) =>
-    list.some((expected) => expected === item)
-  );
+  const ok = values.some((item) => list.some((expected) => expected === item));
   if (!ok) {
     throw jwtError(`token ${what} '${String(values[0])}' not allowed`);
   }
@@ -507,24 +497,8 @@ export async function verifyJwt<T = Record<string, unknown>>(
   if (typeof payload.iat === 'number' && payload.iat > now + tolerance) {
     throw jwtError('token issued in the future');
   }
-  hasValue(
-    options.issuer === undefined
-      ? undefined
-      : Array.isArray(options.issuer)
-        ? options.issuer
-        : [options.issuer],
-    payload.iss,
-    'issuer'
-  );
-  hasValue(
-    options.audience === undefined
-      ? undefined
-      : Array.isArray(options.audience)
-        ? options.audience
-        : [options.audience],
-    payload.aud,
-    'audience'
-  );
+  hasValue(options.issuer, payload.iss, 'issuer');
+  hasValue(options.audience, payload.aud, 'audience');
   return payload;
 }
 
@@ -571,12 +545,7 @@ export type JwksStore = {
  * tenant issuer allowlist cannot grow the cache without bound. */
 const JWKS_CACHE_LIMIT = 50;
 
-const jwksCache = new Map<string, JwksEntry>();
-
-const defaultJwksStore: JwksStore = {
-  get: (url) => lruGet(jwksCache, url),
-  set: (url, entry) => lruSet(jwksCache, url, entry, JWKS_CACHE_LIMIT),
-};
+const defaultJwksStore: JwksStore = lruStore(JWKS_CACHE_LIMIT);
 
 /** Upper bound on the forced-refetch cooldown: the window between two
  * refetches triggered by an unknown `kid`. A shorter `ttlMs` wins, since
@@ -700,7 +669,11 @@ export type JwtAuthOptions = {
   readonly requireExpiry?: boolean;
   /** Header carrying the token; default `authorization`. */
   readonly header?: string;
-  /** Scheme prefix stripped from the header value; default `'Bearer '`. */
+  /** Scheme prefix naming the token in the header value; default
+   * `'Bearer '`. The scheme matches case-insensitively and any run of
+   * whitespace separates it from the token — the same extraction
+   * `bearerAuth` uses. An empty prefix means the whole header is the
+   * token. */
   readonly prefix?: string;
   /** Cookie name to fall back to when the header is absent. */
   readonly cookie?: string;
@@ -747,7 +720,10 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
     );
   }
   const headerName = options.header ?? 'authorization';
-  const prefix = options.prefix ?? 'Bearer ';
+  // The prefix names the scheme; its trailing separator is lenient —
+  // `extractBearer` (shared with bearerAuth) takes any whitespace run,
+  // either casing. An empty prefix means the whole header is the token.
+  const scheme = (options.prefix ?? 'Bearer ').trimEnd();
   const cookieName = options.cookie;
   const verify = options.verify;
   const staticKey: JwtKey | undefined = options.key ?? options.secret;
@@ -772,9 +748,13 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
   return async (ctx: Ctx, next) => {
     let token: string | undefined;
     const headerValue = ctx.req.headers.get(headerName);
-    if (headerValue !== null && headerValue.startsWith(prefix)) {
-      token = headerValue.slice(prefix.length);
-    } else if (cookieName !== undefined) {
+    if (headerValue !== null) {
+      token =
+        scheme === ''
+          ? (headerValue === '' ? undefined : headerValue)
+          : extractBearer(headerValue, scheme);
+    }
+    if (token === undefined && cookieName !== undefined) {
       token = getCookie(ctx, cookieName);
     }
     if (token === undefined || token === '') {

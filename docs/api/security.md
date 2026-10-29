@@ -62,6 +62,7 @@ use(app, bearerAuth(async (token) => token === API_TOKEN));
 | --- | --- |
 | `basicAuth(verify, options?)` | `verify(username, password, ctx) => boolean \| Promise<boolean>` |
 | `bearerAuth(verify, options?)` | `verify(token, ctx) => boolean \| Promise<boolean>` |
+| `extractBearer(header, scheme?)` | `(header: string \| null, scheme?: string) => string \| undefined` — the bearer extraction `bearerAuth`/`jwtAuth` share: a case-insensitive scheme (default `Bearer`), one-or-more whitespace separators before the token, `undefined` for a missing or non-matching header |
 
 `BasicAuthOptions` / `BearerAuthOptions`: `{ realm?: string }` — the 401 challenge realm, default `'s200'`.
 
@@ -106,7 +107,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, ES256/384/512, and EdDSA (Ed25519) 
 | `clockTolerance` | `0` | Clock skew tolerance in seconds for `exp`/`nbf`/`iat` |
 | `requireExpiry` | `false` | Reject tokens carrying no numeric `exp` claim |
 | `header` | `'authorization'` | Header carrying the token |
-| `prefix` | `'Bearer '` | Scheme prefix stripped from the header value |
+| `prefix` | `'Bearer '` | Scheme prefix naming the token in the header value — matched case-insensitively with any run of whitespace as the separator (the same extraction `bearerAuth` uses); an empty prefix means the whole header is the token |
 | `cookie` | — | Cookie name to fall back to when the header is absent |
 | `verify` | — | Custom verification (another library, exotic tokens) — the returned value lands on `ctx.state.jwt` |
 | `keyStore` | — | Key-import store forwarded to `verifyJwt`; bypasses the default in-process cache (digest keys, process-local `CryptoKey` values) |

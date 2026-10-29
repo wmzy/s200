@@ -258,8 +258,12 @@ describe('createScheduler', () => {
 
   it('validates expressions and intervals at registration', () => {
     const scheduler = createScheduler();
-    (() => scheduler.interval(0, () => undefined)).should.throw(/must be positive/);
-    (() => scheduler.interval(Number.NaN, () => undefined)).should.throw(/must be positive/);
+    (() => scheduler.interval(0, () => undefined)).should.throw(
+      /Invalid schedule interval 0: must be positive/
+    );
+    (() => scheduler.interval(Number.NaN, () => undefined)).should.throw(
+      /Invalid schedule interval NaN: must be positive/
+    );
     (() => scheduler.cron('nope', () => undefined)).should.throw(/nope/);
     (() => scheduler.cron('0 0 31 2 *', () => undefined)).should.throw(/never match/);
   });

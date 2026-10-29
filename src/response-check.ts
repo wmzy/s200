@@ -38,6 +38,7 @@ import { httpError } from './errors';
 import { getRouteMeta } from './meta';
 import { newResponse } from './respond';
 import { checkSchema } from './serialize';
+import { formatIssuePath } from './validate';
 
 /** The `'fail'` mode's message and envelope key. */
 const MISMATCH = 'Response schema mismatch';
@@ -64,9 +65,10 @@ function checkJson(
   }
 }
 
-/** The `details` payload shape: dot-joined path (the root is `''`). */
+/** The `details` payload shape: the {@link formatIssuePath} string (the
+ * root is `''`). */
 function view(issue: SchemaIssue): { path: string; message: string } {
-  return { path: issue.path.map(String).join('.'), message: issue.message };
+  return { path: formatIssuePath(issue.path), message: issue.message };
 }
 
 export type ResponseCheckOptions = {

@@ -32,16 +32,10 @@ import type { QueryRecord } from './query';
 import type { Ctx } from './types';
 import type { FormPart } from './multipart';
 
-import { streamForm } from './multipart';
+import { DEFAULT_MAX_PART_SIZE, streamForm } from './multipart';
 import { httpError } from './errors';
 
 const decoder = new TextDecoder();
-
-/** `streamForm`'s default per-part bound, mirrored here to keep the
- * streaming cap from dropping below it — the part cap is shared by field
- * and file parts, so `maxFileSize` must never shrink it. Kept in sync with
- * `multipart.ts`'s `DEFAULT_MAX_PART_SIZE`. */
-const DEFAULT_PART_SIZE = 8 * 1024 * 1024;
 
 /** Default bytes of head handed to the `sniff` hook per file part —
  * comfortably past every common content signature. */
@@ -322,7 +316,7 @@ export async function uploadForm(
     // `maxFileSize` cannot simply become `streamForm`'s per-part cap: that
     // cap applies to every part, so a small file cap would also reject
     // large text fields. The streaming bound is instead the larger of the
-    // file cap and `streamForm`'s 8 MiB default (undefined = default); the
+    // file cap and `streamForm`'s own default (undefined = default); the
     // file cap itself is enforced in `onPart` above. Field parts stay
     // bounded by `limit` and that per-part default.
     {
@@ -330,7 +324,7 @@ export async function uploadForm(
       maxParts,
       ...(maxFileSize === undefined
         ? {}
-        : { maxPartSize: Math.max(maxFileSize, DEFAULT_PART_SIZE) }),
+        : { maxPartSize: Math.max(maxFileSize, DEFAULT_MAX_PART_SIZE) }),
     }
   );
   return { files, fields };

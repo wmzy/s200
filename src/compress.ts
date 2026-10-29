@@ -12,7 +12,7 @@ import type { Ctx, Middleware } from './types';
 
 import { parseRanges } from './accepts';
 import { collectStream } from './bytes';
-import { LightResponse } from './light';
+import { byteBodyOf } from './light';
 import { newResponse } from './respond';
 
 export type CompressOptions = {
@@ -170,7 +170,7 @@ export function compress(options: CompressOptions = {}): Middleware {
     // writes it straight to the socket — no reader loop, no stream-wrapped
     // source. Brotli always buffers (whole bytes); streamed light bodies
     // and platform responses take the pipeThrough path below unchanged.
-    const fastBytes = res instanceof LightResponse ? res.bytesSync() : null;
+    const fastBytes = byteBodyOf(res);
     const buffered =
       encoding === 'br' || fastBytes !== null
         ? (fastBytes ?? new Uint8Array(await res.arrayBuffer()))

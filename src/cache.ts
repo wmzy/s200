@@ -16,7 +16,7 @@
 import type { Ctx, Middleware } from './types';
 
 import { newResponse } from './respond';
-import { evictOldest } from './map-limit';
+import { evictOldest } from './bounded-collections';
 
 export type CacheOptions = {
   /** Entry lifetime in seconds; default 60. */

@@ -18,6 +18,7 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
+import { parseRanges } from './accepts';
 import { withVary } from './compress';
 import { httpError } from './errors';
 
@@ -55,36 +56,21 @@ function headerVersion(ctx: Ctx, header: string): string | undefined {
 }
 
 /**
- * The `version` parameter of the first `fullType` entry in Accept that
- * carries one. Entries may interleave params (`;q=0.9;version=2` — q is
- * not consulted), values may be quoted (`version="2"`), and matching is
- * case-insensitive on the type. A vendor entry without a `version`
- * parameter reads as versionless, not as an error.
+ * The `version` parameter of the first acceptable `fullType` entry in
+ * Accept that carries one — parsed by the shared Accept grammar
+ * (`parseRanges`), so entries may interleave params (`;q=0.9;version=2`),
+ * values may be quoted (`version="2"`), and matching is case-insensitive
+ * on the type. A q=0 entry is a ban, not a preference (RFC 9110 §12.4.2,
+ * the same semantics `accepts` keeps): a banned vendor type never donates
+ * its version — it is skipped, so a later acceptable entry (or none)
+ * decides. A vendor entry without a `version` parameter reads as
+ * versionless, not as an error.
  */
 function mediaTypeVersion(accept: string, fullType: string): string | undefined {
-  for (const entry of accept.split(',')) {
-    const parts = entry.split(';');
-    const type = parts[0];
-    if (type === undefined || type.trim().toLowerCase() !== fullType) {
-      continue;
-    }
-    for (const param of parts.slice(1)) {
-      const eq = param.indexOf('=');
-      if (eq === -1) {
-        continue;
-      }
-      if (param.slice(0, eq).trim().toLowerCase() !== 'version') {
-        continue;
-      }
-      const raw = param.slice(eq + 1).trim();
-      const value =
-        raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')
-          ? raw.slice(1, -1)
-          : raw;
-      if (value !== '') {
-        return value;
-      }
-    }
+  for (const { value, q, params } of parseRanges(accept)) {
+    if (value !== fullType || q === 0) continue;
+    const version = params.get('version');
+    if (version !== undefined && version !== '') return version;
   }
   return undefined;
 }
