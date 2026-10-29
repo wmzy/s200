@@ -283,8 +283,12 @@ async function resolveKey(
 }
 
 /** Resolves signing key material for an algorithm, rejecting mismatches. */
-function getSignKey(key: JwtKey, alg: JwtAlgorithm): Promise<CryptoKey> {
-  return resolveKey(key, alg, ['sign'], defaultKeyStore, '');
+function getSignKey(
+  key: JwtKey,
+  alg: JwtAlgorithm,
+  store: JwtKeyStore
+): Promise<CryptoKey> {
+  return resolveKey(key, alg, ['sign'], store, '');
 }
 
 /** Resolves verification key material, rejecting family mismatches (this
@@ -312,6 +316,17 @@ export type JwtSignOptions = {
   readonly issuer?: string;
   readonly subject?: string;
   readonly jwtId?: string;
+  /** Clock override (tests, deterministic replays); default `Date.now`.
+   * Milliseconds epoch — `iat`/`exp`/`nbf` derive from it exactly as
+   * they do from the real clock. */
+  readonly now?: () => number;
+  /**
+   * Key-import cache — the signing twin of `verifyJwt`'s option. The
+   * default is an in-process LRU bounded at 100 entries; injecting a
+   * store bypasses it entirely. Keys are SHA-256 digests of the key
+   * material (never the raw secret).
+   */
+  readonly keyStore?: JwtKeyStore;
 };
 
 /** The standard registered claims — present when the options set them. */
@@ -339,7 +354,7 @@ export async function signJwt(
   }
   const alg = options.alg ?? 'HS256';
   const info = ALG_INFO[alg];
-  const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor((options.now ?? Date.now)() / 1000);
   const claims: Record<string, unknown> = { ...payload };
   if (options.issuedAt !== false) {
     claims.iat = options.issuedAt ?? now;
@@ -365,7 +380,7 @@ export async function signJwt(
   const encoder = new TextEncoder();
   const headerText = b64urlEncode(encoder.encode(JSON.stringify({ alg, typ: 'JWT' })));
   const payloadText = b64urlEncode(encoder.encode(JSON.stringify(claims)));
-  const signingKey = await getSignKey(key, alg);
+  const signingKey = await getSignKey(key, alg, options.keyStore ?? defaultKeyStore);
   const data = encoder.encode(`${headerText}.${payloadText}`);
   const sig = new Uint8Array(
     await crypto.subtle.sign(signatureParams(info), signingKey, data)
@@ -395,6 +410,10 @@ export type JwtVerifyOptions = {
    * this process rather than sharing them across instances.
    */
   readonly keyStore?: JwtKeyStore;
+  /** Clock override (tests, deterministic replays); default `Date.now`.
+   * Milliseconds epoch — the `exp`/`nbf`/`iat` checks run against it
+   * exactly as they do against the real clock. */
+  readonly now?: () => number;
 };
 
 /** Throws unless the token's claim intersects the allowed set — a
@@ -429,19 +448,10 @@ export async function verifyJwt<T = Record<string, unknown>>(
   options: JwtVerifyOptions = {}
 ): Promise<T & RegisteredClaims> {
   const parts = token.split('.');
-  if (parts.length !== 3 || parts.some((part) => part === '')) {
-    throw jwtError('malformed token');
-  }
+  const header = headerFromParts(parts);
   const [headerText, payloadText, sigText] = parts;
-  const headerBytes = b64urlDecode(headerText ?? '');
   const sigBytes = b64urlDecode(sigText ?? '');
   const encoder = new TextEncoder();
-  let header: { alg?: unknown };
-  try {
-    header = JSON.parse(new TextDecoder().decode(headerBytes));
-  } catch {
-    throw jwtError('malformed token header');
-  }
   if (
     typeof header.alg !== 'string' ||
     !(header.alg in ALG_INFO) ||
@@ -483,7 +493,7 @@ export async function verifyJwt<T = Record<string, unknown>>(
   } catch {
     throw jwtError('malformed token payload');
   }
-  const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor((options.now ?? Date.now)() / 1000);
   const tolerance = options.clockTolerance ?? 0;
   if (options.requireExpiry === true && typeof payload.exp !== 'number') {
     throw jwtError('token missing exp');
@@ -522,6 +532,10 @@ export type JwksOptions = {
    * the `{ exp, keys }` shape, so TTL refresh applies to any store.
    */
   readonly store?: JwksStore;
+  /** Clock override (tests, deterministic replays); default `Date.now`.
+   * Milliseconds epoch — drives document expiry and the forced-refetch
+   * cooldown. */
+  readonly now?: () => number;
 };
 
 /** One cached JWKS document: `exp` is the ms-epoch refresh deadline. */
@@ -574,10 +588,11 @@ export function createJwksResolver(
   const cooldown = Math.max(0, Math.min(ttl, JWKS_FORCED_REFETCH_COOLDOWN_MS));
   const fetchFn = options.fetchFn ?? globalThis.fetch;
   const store = options.store ?? defaultJwksStore;
+  const clock = options.now ?? Date.now;
   // `-Infinity`: the first unknown `kid` may always force one refetch.
   let lastForcedRefetch = Number.NEGATIVE_INFINITY;
   const fetchKeys = async (): Promise<JwksEntry> => {
-    const fetchedAt = Date.now();
+    const fetchedAt = clock();
     const res = await fetchFn(url);
     if (!res.ok) {
       throw jwtError(`jwks fetch failed: HTTP ${res.status}`);
@@ -599,7 +614,7 @@ export function createJwksResolver(
     return candidates[0];
   };
   return async (header) => {
-    const now = Date.now();
+    const now = clock();
     let cached = store.get(url);
     let fetchedThisCall = false;
     if (cached === undefined || cached.exp <= now) {
@@ -648,6 +663,7 @@ export type JwtAuthOptions = {
     readonly url: string;
     readonly ttlMs?: number;
     readonly store?: JwksStore;
+    readonly now?: () => number;
   };
   /**
    * Key-import cache forwarded to `verifyJwt`. The default is an
@@ -677,27 +693,41 @@ export type JwtAuthOptions = {
   readonly prefix?: string;
   /** Cookie name to fall back to when the header is absent. */
   readonly cookie?: string;
+  /** Clock override (tests, deterministic replays); default `Date.now`.
+   * Forwarded to `verifyJwt` and the JWKS resolver. */
+  readonly now?: () => number;
   /** Custom verification (another library, exotic tokens) — the returned
    * value lands on `ctx.state.jwt`. */
   readonly verify?: (token: string) => unknown | Promise<unknown>;
 };
 
-function parseHeaderOf(token: string): JwtHeader {
-  const parts = token.split('.');
-  if (parts.length !== 3) {
+/** Splits-tolerant header parse — the single implementation `verifyJwt`
+ * and the resolver path (`parseHeaderOf`) share: a token without three
+ * non-empty segments throws `malformed token`, a header segment that
+ * fails base64url decoding or JSON parsing `malformed token header`, in
+ * that order. `alg`/`kid` stay exactly as the token carried them —
+ * verifyJwt's unsupported-algorithm message quotes the raw value. */
+function headerFromParts(
+  parts: readonly string[]
+): { alg?: unknown; kid?: unknown } {
+  if (parts.length !== 3 || parts.some((part) => part === '')) {
     throw jwtError('malformed token');
   }
   try {
-    const header = JSON.parse(
+    return JSON.parse(
       new TextDecoder().decode(b64urlDecode(parts[0] ?? ''))
     ) as { alg?: unknown; kid?: unknown };
-    return {
-      alg: typeof header.alg === 'string' ? header.alg : '',
-      kid: typeof header.kid === 'string' ? header.kid : undefined,
-    };
   } catch {
     throw jwtError('malformed token header');
   }
+}
+
+function parseHeaderOf(token: string): JwtHeader {
+  const { alg, kid } = headerFromParts(token.split('.'));
+  return {
+    alg: typeof alg === 'string' ? alg : '',
+    kid: typeof kid === 'string' ? kid : undefined,
+  };
 }
 
 /**
@@ -734,6 +764,7 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
     clockTolerance: options.clockTolerance,
     requireExpiry: options.requireExpiry,
     keyStore: options.keyStore,
+    now: options.now,
   };
   const resolver: KeyResolver | undefined =
     options.keyResolver ??
@@ -741,8 +772,12 @@ export function jwtAuth(options: JwtAuthOptions): Middleware<State> {
       ? createJwksResolver(
           typeof options.jwks === 'string' ? options.jwks : options.jwks.url,
           typeof options.jwks === 'string'
-            ? undefined
-            : { ttlMs: options.jwks.ttlMs, store: options.jwks.store }
+            ? { now: options.now }
+            : {
+                ttlMs: options.jwks.ttlMs,
+                store: options.jwks.store,
+                now: options.jwks.now ?? options.now,
+              }
         )
       : undefined);
   return async (ctx: Ctx, next) => {

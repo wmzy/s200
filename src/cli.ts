@@ -24,6 +24,7 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  appendQueryPair,
   createDevEventBus,
   createHotApp,
   importFresh,
@@ -35,6 +36,7 @@ import { serve } from './node';
 import { generateClient } from './codegen';
 import { parseEnv } from './config';
 import { createRouteTable, formatRouteTable } from './route-table';
+import { selfUrlOf } from './self-url';
 
 const USAGE = `usage: s200 <command> [args]
 
@@ -322,7 +324,7 @@ export function stampGraphUrl(
   ) {
     return undefined;
   }
-  return `${url}${url.includes('?') ? '&' : '?'}${EPOCH_KEY}=${reloadEpoch}`;
+  return appendQueryPair(url, EPOCH_KEY, reloadEpoch);
 }
 
 if (canBustGraph) {
@@ -658,11 +660,11 @@ export async function main(argv: readonly string[]): Promise<void> {
   );
 }
 
-// Self-run when executed as the bin (`s200 dev …`). Same dual-format
-// guard as executor-child: the CJS bundle replaces `import.meta` with
-// `{}`, so fall back to `__filename` there. argv[1] is realpath'd before
-// comparing because npm exposes the bin through a symlink while Node
-// resolves this module to its real location.
+// Self-run when executed as the bin (`s200 dev …`). The dual-format
+// self-location guard is self-url.ts's (the canonical shape
+// executor-child inlines); argv[1] is realpath'd before comparing
+// because npm exposes the bin through a symlink while Node resolves this
+// module to its real location.
 declare const __filename: string | undefined;
 
 /** True when this module is the process entry — the bin-execute guard. */
@@ -679,8 +681,10 @@ export function isMainEntry(argv1: string | undefined, selfUrl: string): boolean
   return pathToFileURL(real).href === selfUrl;
 }
 
-const SELF_URL: string =
-  typeof __filename === 'string' ? pathToFileURL(__filename).href : import.meta.url;
+const SELF_URL: string = selfUrlOf(
+  typeof __filename === 'string' ? __filename : undefined,
+  import.meta.url
+);
 
 if (isMainEntry(process.argv[1], SELF_URL)) {
   main(process.argv.slice(2)).catch((error: unknown) => {

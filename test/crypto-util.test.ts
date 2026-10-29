@@ -1,4 +1,4 @@
-import { describe, it } from 'vitest';
+import { describe, it, vi } from 'vitest';
 
 import { lruStore } from '../src/bounded-collections';
 import {
@@ -161,6 +161,53 @@ describe('crypto-util', function () {
     seen.length.should.equal(2); // get misses, so both calls import+set.
     seen[0]!.should.match(/^SHA-256:sign:[0-9a-f]{64}$/);
     seen[0]!.should.not.match(/top-secret/);
+  });
+
+  it('digests a secret once, however many calls read the key cache', async function () {
+    // Before the per-secret digest memo every getHmacKey call — key-cache
+    // hit included — paid a full SHA-256 pass rebuilding its cache key.
+    const digest = vi.spyOn(crypto.subtle, 'digest');
+    try {
+      await getHmacKey('memo-me', 'SHA-256', ['sign']);
+      await getHmacKey('memo-me', 'SHA-256', ['sign']); // key-cache hit
+      await getHmacKey('memo-me', 'SHA-384', ['sign']); // new row, same secret
+      digest.mock.calls.length.should.equal(1);
+      // A distinct secret digests on its own.
+      await getHmacKey('memo-me-2', 'SHA-256', ['sign']);
+      digest.mock.calls.length.should.equal(2);
+      // Byte secrets memo by object identity: the same array never
+      // re-digests, whatever the hash or usage row.
+      const bytes = new Uint8Array([9, 9, 9]);
+      await getHmacKey(bytes, 'SHA-256', ['sign']);
+      await getHmacKey(bytes, 'SHA-512', ['sign']);
+      digest.mock.calls.length.should.equal(3);
+      // The string memo is FIFO-bounded: 64 newer secrets push 'memo-me'
+      // out, so its next use digests again.
+      for (let i = 0; i < 64; i += 1) {
+        await getHmacKey(`memo-overflow-${i}`, 'SHA-256', ['sign']);
+      }
+      await getHmacKey('memo-me', 'SHA-256', ['sign']);
+      digest.mock.calls.length.should.equal(3 + 64 + 1);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it('imports through an injected store once per secret (set once)', async function () {
+    const backing = new Map<string, Promise<CryptoKey>>();
+    let sets = 0;
+    const store: HmacKeyCache = {
+      get: (key) => backing.get(key),
+      set: (key, value) => {
+        sets += 1;
+        backing.set(key, value);
+      },
+    };
+    await getHmacKey('set-once', 'SHA-256', ['sign'], store);
+    await getHmacKey('set-once', 'SHA-256', ['sign'], store);
+    // The second call is a get hit through the injected store — the
+    // digest memo must not change the passthrough contract.
+    sets.should.equal(1);
   });
 
   it('mints random url-safe tokens of the requested entropy (randomToken)', function () {

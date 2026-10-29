@@ -65,7 +65,15 @@ export function trustProxy(options: TrustProxyOptions = {}): Middleware {
       if (list.length === 0) {
         return undefined;
       }
-      return list[Math.max(0, list.length - hops)];
+      const index = list.length - hops;
+      // More hops declared than entries forwarded: nothing on the list
+      // is at a trusted depth. Clamping to 0 would silently return the
+      // OLDEST (least trustworthy) address, so the header reads as
+      // absent instead of being corrected.
+      if (index < 0) {
+        return undefined;
+      }
+      return list[index];
     };
     const proto = take(protoHeader);
     const host = take(hostHeader);

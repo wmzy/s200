@@ -66,6 +66,21 @@ export function createHotApp<S extends State = State>(initial: App<S>): HotApp<S
 let freshSeq = 0;
 
 /**
+ * Appends one `key=value` pair to a URL's query string, picking `?` or
+ * `&` by whether a query is already present — the cache-bust shape
+ * shared by {@link importFresh} (`?t=…` bust-through-import) and the CLI
+ * dev watcher's whole-graph epoch stamping (`stampGraphUrl` in cli.ts,
+ * which imports it from here — the one dev↔cli direction that cannot
+ * cycle). A module URL's query never changes which file resolves, only
+ * the module-map identity — same file, fresh evaluation.
+ *
+ * @internal
+ */
+export function appendQueryPair(url: string, key: string, value: string | number): string {
+  return `${url}${url.includes('?') ? '&' : '?'}${key}=${value}`;
+}
+
+/**
  * Imports a module bypassing the ESM cache by stamping a `?t=` query onto
  * its file URL. Relative specifiers resolve against `process.cwd()`. This
  * is the loader half of hot reload: `await importFresh('./app.mjs')` on
@@ -75,7 +90,7 @@ export async function importFresh(specifier: string): Promise<unknown> {
   // pathToFileURL resolves the path absolutely (cwd-relative) and
   // percent-encodes characters that would corrupt the query we append.
   const href = pathToFileURL(specifier).href;
-  return import(/* @vite-ignore */ `${href}${href.includes('?') ? '&' : '?'}t=${Date.now()}-${++freshSeq}`);
+  return import(/* @vite-ignore */ appendQueryPair(href, 't', `${Date.now()}-${++freshSeq}`));
 }
 
 /** Options for {@link watchAndReload}. */

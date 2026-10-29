@@ -42,6 +42,9 @@ export type CsrfOptions = {
   readonly form?: string;
   /** Token lifetime in seconds; default 7 days. */
   readonly ttl?: number;
+  /** Clock override (tests, deterministic replays); default `Date.now`.
+   * Milliseconds epoch — drives token expiry at mint and verify. */
+  readonly now?: () => number;
   /** Cookie path; default `/`. */
   readonly path?: string;
   /** Cookie sameSite; default `lax`. */
@@ -90,15 +93,9 @@ async function verifyToken(
   if (parts.length !== 3 || parts.some((part) => part === '')) {
     return null;
   }
-  const [expPart, nonce, sig] = parts;
+  const [expPart = '', nonce = '', sig = ''] = parts;
   const exp = Number(expPart);
-  if (
-    !Number.isFinite(exp) ||
-    exp <= now ||
-    expPart === undefined ||
-    nonce === undefined ||
-    sig === undefined
-  ) {
+  if (!Number.isFinite(exp) || exp <= now) {
     return null;
   }
   // Appending the bind value is unambiguous — see {@link tokenMessage}.
@@ -162,6 +159,7 @@ export function createCsrf(options: CsrfOptions): Csrf {
   // `undefined` means unbound (no `bind` option) and keeps the signed
   // message byte-identical to an unbound instance.
   const bindOf = options.bind;
+  const now = options.now ?? Date.now;
   const currentBind = async (ctx: Ctx): Promise<string | undefined> =>
     bindOf === undefined ? undefined : await bindOf(ctx);
   const cookieOptions = {
@@ -178,8 +176,7 @@ export function createCsrf(options: CsrfOptions): Csrf {
     // CryptoKey per request is a real per-request cost; HMAC is stateless
     // so one key serves all.
     const key = await getHmacKey(secret, 'SHA-256', ['sign']);
-    const now = Date.now();
-    const exp = now + ttl;
+    const exp = now() + ttl;
     const nonceText = randomToken(16);
     const message = tokenMessage(String(exp), nonceText, bind);
     const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
@@ -209,7 +206,7 @@ export function createCsrf(options: CsrfOptions): Csrf {
         : await verifyToken(
             cookieToken,
             await getHmacKey(secret, 'SHA-256', ['sign']),
-            Date.now(),
+            now(),
             bind
           );
     const installed =
@@ -266,7 +263,7 @@ export function createCsrf(options: CsrfOptions): Csrf {
         (await verifyToken(
           presented,
           await getHmacKey(secret, 'SHA-256', ['sign']),
-          Date.now(),
+          now(),
           bind
         )) === null
       ) {

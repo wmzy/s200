@@ -9,7 +9,9 @@
  * `s200/proxy` and the websocket handshake's upgrade check);
  * `headerRecordOf` maps a `Headers` object onto the record node's
  * `writeHead` takes (`s200/node`'s plain write path and the shard
- * executor's bridge). NOT a public entry — the barrel does not re-export
+ * executor's bridge); `withVary` appends a cache-varying header name
+ * without duplicating it (compress, cors, and the version gate's Vary
+ * stamps). NOT a public entry — the barrel does not re-export
  * this module; import it relatively from within src.
  *
  * @internal
@@ -88,4 +90,28 @@ export function headerRecordOf(
     into['set-cookie'] = setCookies;
   }
   return into;
+}
+
+/**
+ * Appends `value` to the Vary header without duplicating it. The
+ * comparison lowercases both sides — the entry already in Vary may be
+ * any case (`Vary: X-Api-Version` vs the appended `x-api-version`), and
+ * a cache-varying header listed twice is still just one key. Shared by
+ * compress (`accept-encoding`), cors (`origin`), and the version gate's
+ * negotiated header.
+ *
+ * @internal
+ */
+export function withVary(headers: Headers, value: string): void {
+  const vary = headers.get('vary');
+  if (vary === null) {
+    headers.set('vary', value);
+    return;
+  }
+  const lowered = value.toLowerCase();
+  if (
+    !vary.split(',').some((entry) => entry.trim().toLowerCase() === lowered)
+  ) {
+    headers.set('vary', `${vary}, ${value}`);
+  }
 }

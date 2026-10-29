@@ -37,6 +37,28 @@ describe('cache', () => {
     runs.should.equal(2);
   });
 
+  it('expires entries by the injected clock', async () => {
+    let ms = 0;
+    let runs = 0;
+    const app = createApp();
+    use(app, cache({ ttl: 60, now: () => ms }));
+    get(app, '/data', () => {
+      runs += 1;
+      return new Response('ok');
+    });
+
+    await handle(app, new Request('http://localhost/data'));
+    // Mid-TTL on the injected clock: the cached copy still serves.
+    ms = 30_000;
+    await handle(app, new Request('http://localhost/data'));
+    runs.should.equal(1);
+    // exp (0 + 60_000) <= now: the entry is swept and the handler reruns,
+    // deterministically, without fake timers.
+    ms = 60_000;
+    await handle(app, new Request('http://localhost/data'));
+    runs.should.equal(2);
+  });
+
   it('keys by method + path + query', async () => {
     let runs = 0;
     const app = createApp();

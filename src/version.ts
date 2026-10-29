@@ -19,8 +19,8 @@
 import type { Ctx, Middleware, Next } from './types';
 
 import { parseRanges } from './accepts';
-import { withVary } from './compress';
 import { httpError } from './errors';
+import { withVary } from './raw-headers';
 
 export type ApiVersionOptions = {
   /** Where the request carries its version; default `'header'`. */

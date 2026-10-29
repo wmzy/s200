@@ -24,6 +24,7 @@ Safe by default: only `GET` responses with status 200 and a body are stored; res
 | `key` | `` `${method} ${pathname}${search}` `` | Custom cache key `(ctx) => string` |
 | `skip` | — | Extra skip predicate (runs before every lookup and store) |
 | `store` | bounded in-memory Map, refresh-on-hit | `CacheStore` (below) — shared cache across instances |
+| `now` | `Date.now` | Clock override (tests, deterministic replays) — ms epoch, drives the expiry check on every read and the stored refresh deadline |
 
 `CacheStore`: `get(key)`, `set(key, entry)`, `delete(key)` — `get`/`delete` may be async (a networked store is); `set` stores the whole entry atomically. `CacheEntry`: `{ exp, status, headers: [string, string][], body: Uint8Array }`. Expiry is checked by the middleware on every read; the store may also evict early.
 

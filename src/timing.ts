@@ -61,9 +61,10 @@ export function startTiming(ctx: Ctx, name: string): () => void {
   };
 }
 
-/** Milliseconds with sub-ms precision — one fractional digit, the same
- * format the logger's duration column uses. */
-function ms(dur: number): string {
+/** Milliseconds with sub-ms precision — one fractional digit. The one
+ * formatter the Server-Timing entries and the logger's duration column
+ * share (`s200/logger` imports it), so the two can never drift. */
+export function formatMs(dur: number): string {
   return dur.toFixed(1);
 }
 
@@ -87,10 +88,10 @@ export function timing(options: TimingOptions = {}): Middleware {
     const parts: string[] = [];
     if (list !== undefined) {
       for (const span of list) {
-        parts.push(`${span.name};dur=${ms(span.dur ?? end - span.start)}`);
+        parts.push(`${span.name};dur=${formatMs(span.dur ?? end - span.start)}`);
       }
     }
-    parts.push(`${total};dur=${ms(end - start)}`);
+    parts.push(`${total};dur=${formatMs(end - start)}`);
     setHeader(ctx, 'server-timing', parts.join(', '));
   };
 }

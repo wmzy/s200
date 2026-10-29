@@ -67,6 +67,40 @@ describe('csrf', () => {
     ok.status.should.equal(200);
   });
 
+  it('expires tokens by the injected clock', async () => {
+    let ms = 1_700_000_000_000;
+    const app = createApp();
+    const csrf = createCsrf({ secret: SECRET, ttl: 60, now: () => ms });
+    use(app, csrf.middleware);
+    get(app, '/form', (ctx) => json(ctx, { token: ctx.state.csrfToken }));
+    post(app, '/submit', () => new Response('saved', { status: 200 }));
+
+    const form = await handle(app, new Request('http://localhost/form'));
+    const token = await readSetCookie(form);
+
+    // Mid-TTL on the same clock: accepted.
+    ms += 30_000;
+    const ok = await handle(
+      app,
+      new Request('http://localhost/submit', {
+        method: 'POST',
+        headers: { 'x-csrf-token': token },
+      })
+    );
+    ok.status.should.equal(200);
+
+    // Past the TTL: deterministically rejected, no fake timers.
+    ms += 31_000;
+    const stale = await handle(
+      app,
+      new Request('http://localhost/submit', {
+        method: 'POST',
+        headers: { 'x-csrf-token': token },
+      })
+    );
+    stale.status.should.equal(403);
+  });
+
   it('rejects unsafe requests without a token, then accepts the cookie token', async () => {
     const { app } = build();
     const form = await handle(app, new Request('http://localhost/form'));

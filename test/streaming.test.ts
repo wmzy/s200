@@ -51,6 +51,61 @@ describe('stream', function () {
       },
     );
   });
+
+  it('keeps custom headers supplied as a Headers instance', async function () {
+    const app = createApp();
+    get(app, '/', (ctx) =>
+      stream(
+        ctx,
+        async (writer) => {
+          await writer.write('a');
+        },
+        {
+          status: 201,
+          headers: new Headers({
+            'content-type': 'application/custom',
+            'x-stream': 'yes',
+          }),
+        },
+      ),
+    );
+    const res = await handle(app, new Request('http://localhost/'));
+    res.status.should.equal(201);
+    res.headers.get('content-type')!.should.equal('application/custom');
+    res.headers.get('x-stream')!.should.equal('yes');
+  });
+
+  it('keeps custom headers supplied as a [name, value] pair list', async function () {
+    const app = createApp();
+    get(app, '/', (ctx) =>
+      stream(
+        ctx,
+        async (writer) => {
+          await writer.write('a');
+        },
+        { headers: [['content-type', 'application/pairs'], ['x-stream', 'yes']] },
+      ),
+    );
+    const res = await handle(app, new Request('http://localhost/'));
+    res.headers.get('content-type')!.should.equal('application/pairs');
+    res.headers.get('x-stream')!.should.equal('yes');
+  });
+
+  it('keeps plain-record headers and fills the default content-type only when absent', async function () {
+    const app = createApp();
+    get(app, '/', (ctx) =>
+      stream(
+        ctx,
+        async (writer) => {
+          await writer.write('a');
+        },
+        { headers: { 'x-stream': 'yes' } },
+      ),
+    );
+    const res = await handle(app, new Request('http://localhost/'));
+    res.headers.get('content-type')!.should.equal('application/octet-stream');
+    res.headers.get('x-stream')!.should.equal('yes');
+  });
 });
 
 describe('streamSSE', function () {
@@ -82,5 +137,27 @@ describe('streamSSE', function () {
     );
     const res = await handle(app, new Request('http://localhost/'));
     (await res.text()).should.equal('data: line1\ndata: line2\n\n');
+  });
+
+  it('accepts a Headers instance: explicit headers win, absent defaults fill', async function () {
+    const app = createApp();
+    get(app, '/', (ctx) =>
+      streamSSE(
+        ctx,
+        async (writer) => {
+          await writer.writeSSE({ data: 'hello' });
+        },
+        {
+          headers: new Headers({
+            'content-type': 'text/custom-stream',
+            'x-sse': 'yes',
+          }),
+        },
+      ),
+    );
+    const res = await handle(app, new Request('http://localhost/'));
+    res.headers.get('content-type')!.should.equal('text/custom-stream');
+    res.headers.get('cache-control')!.should.equal('no-cache');
+    res.headers.get('x-sse')!.should.equal('yes');
   });
 });

@@ -29,13 +29,11 @@ import type { App } from './app';
 
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import type { Server as NetServer, Socket } from 'node:net';
-import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import type { MessagePort } from 'node:worker_threads';
 
 import { createServer as createHttpServer } from 'node:http';
 import process from 'node:process';
 import { Readable } from 'node:stream';
-import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // `import.meta.url` survives the ESM bundle, but the CJS output replaces
@@ -44,6 +42,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // `__filename` is real at runtime and the typeof guard means the ESM
 // branch never evaluates; in ESM, `__filename` is an undeclared global
 // and `import.meta.url` is preserved. Either format resolves this module.
+// This is self-url.ts's dual-format guard inlined, not imported: this
+// module must evaluate under plain node (forked shim main) without
+// touching relative imports at link time, and these consts must exist
+// synchronously at module evaluation — see that module for why a shared
+// copy would name its own chunk, not the caller.
 declare const __filename: string | undefined;
 
 /** Where this module lives — child realms re-import it as their runtime. */
@@ -164,12 +167,13 @@ function loadCore(): Promise<typeof import('./app')> {
   return core;
 }
 
-// The shared drain skeleton (drain.ts) and the shared Headers→record
-// mapping (raw-headers.ts), each loaded lazily for the same link-time
-// reason as the core dispatcher: this module must evaluate under plain
-// node (as a forked shim main) without touching relative imports at link
-// time, and both only ever run long after installShardResolution() has
-// settled in this realm.
+// The shared drain skeleton (drain.ts) and the shared Response→node-res
+// writer (node-bridge.ts — the raw-headers header mapping rides inside
+// it), each loaded lazily for the same link-time reason as the core
+// dispatcher: this module must evaluate under plain node (as a forked
+// shim main) without touching relative imports at link time, and both
+// only ever run long after installShardResolution() has settled in this
+// realm.
 let drainKit: Promise<typeof import('./drain')> | undefined;
 
 function loadDrainKit(): Promise<typeof import('./drain')> {
@@ -177,11 +181,11 @@ function loadDrainKit(): Promise<typeof import('./drain')> {
   return drainKit;
 }
 
-let headerKit: Promise<typeof import('./raw-headers')> | undefined;
+let bridgeKit: Promise<typeof import('./node-bridge')> | undefined;
 
-function loadHeaderKit(): Promise<typeof import('./raw-headers')> {
-  headerKit ??= import('./raw-headers');
-  return headerKit;
+function loadBridgeKit(): Promise<typeof import('./node-bridge')> {
+  bridgeKit ??= import('./node-bridge');
+  return bridgeKit;
 }
 
 /**
@@ -206,9 +210,11 @@ export async function appFromEntry(entry: string): Promise<App> {
  * Minimal node-http bridge for child realms: web-standard `Request` in,
  * s200 `handle` dispatch, `Response` back out. `s200/node`'s full adapter
  * (light mode, static files, upgrades) cannot be reused here because the
- * child loads library code by URL under type stripping, so this carries
- * exactly what a shard's own routes need — headers, body streaming, and
- * backpressure — and nothing else.
+ * child loads library code by URL under type stripping, so the request
+ * half carries exactly what a shard's own routes need — headers and body
+ * streaming — while the write half delegates to the shared
+ * Response→node-res writer (node-bridge.ts, the same loop `s200/node`
+ * runs minus its light fast path).
  */
 export function createShardServer(app: App): HttpServer {
   return createHttpServer((req, res) => {
@@ -219,7 +225,6 @@ export function createShardServer(app: App): HttpServer {
 async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const { handle } = await loadCore();
-    const { headerRecordOf } = await loadHeaderKit();
     const headers = new Headers();
     for (const [name, value] of Object.entries(req.headers)) {
       if (value === undefined) {
@@ -246,21 +251,16 @@ async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResp
         : {}),
     });
     const response = await handle(app, request);
-    // The shared mapping (raw-headers.ts): repeated set-cookie stays an
-    // array — forEach would collapse it into one comma-joined value,
-    // which is not a legal cookie list.
-    const head = headerRecordOf(response.headers);
-    res.writeHead(response.status, head);
-    if (response.body === null) {
-      res.end();
-      return;
-    }
-    for await (const chunk of Readable.fromWeb(response.body as unknown as NodeWebReadableStream)) {
-      if (!res.write(chunk)) {
-        await once(res, 'drain');
-      }
-    }
-    res.end();
+    // The shared write-back (node-bridge.ts — the same writer
+    // `s200/node`'s writeResponse uses, minus its light fast path): the
+    // header record through the shared raw-headers mapping (repeated
+    // set-cookie stays an array) and the direct reader loop with drain
+    // backpressure, replacing this bridge's former Readable.fromWeb
+    // for-await — the conversion copy node.ts retired. No disconnect
+    // signal here: the child realm's plain backpressure loop predates
+    // this and keeps its posture.
+    const { writeWebResponseToNode } = await loadBridgeKit();
+    await writeWebResponseToNode(res, response, undefined);
   } catch (error) {
     if (!res.headersSent) {
       res.writeHead(500, { 'content-type': 'application/json' });

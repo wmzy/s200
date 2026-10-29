@@ -43,7 +43,7 @@ const rows = await query(sql);
 stop(); // Server-Timing: db;dur=5.2, total;dur=18.3
 ```
 
-`startTiming(ctx, name)` works anywhere holding the `ctx` — handlers and downstream middlewares alike. A span whose stop function never runs is closed when the header is stamped (its duration then covers up to the unwind); calling stop twice records the first duration only. Span names must be RFC 7230 tokens (no spaces, commas, or semicolons). Calling `startTiming` without the middleware installed is harmless — the per-request span list is weakly keyed and dies with the request. Durations are milliseconds with one fractional digit (sub-ms precision).
+`startTiming(ctx, name)` works anywhere holding the `ctx` — handlers and downstream middlewares alike. A span whose stop function never runs is closed when the header is stamped (its duration then covers up to the unwind); calling stop twice records the first duration only. Span names must be RFC 7230 tokens (no spaces, commas, or semicolons). Calling `startTiming` without the middleware installed is harmless — the per-request span list is weakly keyed and dies with the request. Durations are milliseconds with one fractional digit (sub-ms precision), formatted by `formatMs(dur)` — the same export the logger's duration column uses, so custom `format` callbacks and the header can never drift apart.
 
 `TimingOptions`:
 

@@ -11,7 +11,7 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
-import { withVary } from './compress';
+import { withVary } from './raw-headers';
 import { newResponse, resOf, setHeaders } from './respond';
 
 /**

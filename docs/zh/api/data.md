@@ -24,6 +24,7 @@ use(app, cache({ store: redisCacheStore }));   // 跨实例共享
 | `key` | `` `${method} ${pathname}${search}` `` | 自定义缓存键 `(ctx) => string` |
 | `skip` | — | 额外跳过谓词（每次查找与存储前运行） |
 | `store` | 有界进程内 Map，命中时刷新 | `CacheStore`（见下） —— 跨实例共享缓存 |
+| `now` | `Date.now` | 时钟覆盖（测试、确定性重放）—— 毫秒 epoch，驱动每次读取的过期判定与存储的刷新截止时间 |
 
 `CacheStore`：`get(key)`、`set(key, entry)`、`delete(key)` —— `get`/`delete` 可异步（网络化存储）；`set` 原子存储整个条目。`CacheEntry`：`{ exp, status, headers: [string, string][], body: Uint8Array }`。过期由中间件每次读取时检查；存储亦可提前驱逐。
 

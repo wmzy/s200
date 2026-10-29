@@ -122,4 +122,4 @@ get(app, '/events', (ctx) => streamSSE(ctx, async (sse) => {
 | `SseWriter` | `StreamWriter & { writeSSE(event): Promise<void>; heartbeat(message?): Promise<void> }` |
 | `SseEvent` | `{ id?, event?, data: string \| unknown, retry? }` —— `data` 对象会被 JSON 序列化 |
 
-泵的完成关闭流；泵的失败中止流。
+泵的完成关闭流；泵的失败中止流。`init.headers` 接受所有合法的 `HeadersInit` 形态 —— 普通记录、`Headers` 实例、`[name, value]` 键值对数组 —— 且显式头始终优先：助手的默认 `content-type`（以及 `streamSSE` 的 `cache-control`）只补齐你未设置的名称。

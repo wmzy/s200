@@ -42,6 +42,7 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 | `header` | `'x-csrf-token'` | 提交令牌的头名 |
 | `form` | `'_csrf'` | 提交令牌的表单字段名 |
 | `ttl` | 7 天 | 令牌寿命（秒） |
+| `now` | `Date.now` | 时钟覆盖（测试、确定性重放）—— 毫秒 epoch，驱动铸造与校验时的令牌过期 |
 | `bind` | — | 返回请求级绑定值（如会话 id）的回调，铸造**与**校验时都折进令牌 HMAC —— 为其他会话/用户铸造的令牌不再通过校验 |
 | `path` / `sameSite` / `httpOnly` / `secure` | `'/'` / `'lax'` / `true` / — | cookie 属性；保持 `httpOnly` 并经端点或服务端渲染表单传递令牌 |
 
@@ -82,16 +83,16 @@ HS256/384/512、RS256/384/512、PS256/384/512、ES256/384/512 与 EdDSA（Ed2551
 | --- | --- |
 | `JwtAlgorithm` | `'HS256' \| … \| 'ES512' \| 'EdDSA'` |
 | `JwtKey` | `string \| Uint8Array \| CryptoKey \| JsonWebKey` |
-| `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId? }` —— 用 `CryptoKey`/JWK 签名时 `alg` 必填 |
-| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, keyStore? }` —— `alg:none` 无条件拒绝 |
+| `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId?, now?, keyStore? }` —— 用 `CryptoKey`/JWK 签名时 `alg` 必填；`now` 覆盖时钟（毫秒 epoch，默认 `Date.now`），驱动 `iat`/`exp`/`nbf`；`keyStore` 为密钥导入缓存（`verifyJwt` 同名选项的签名侧对应） |
+| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, keyStore?, now? }` —— `alg:none` 无条件拒绝；`now` 覆盖时钟（毫秒 epoch，默认 `Date.now`），驱动 `exp`/`nbf`/`iat` 检查 |
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` —— `KeyResolver` 所见 |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
 | `JwtKeyStore` | `{ get(key), set(key, promise) }` —— 密钥导入缓存；默认进程内 LRU，上限 100 条。键是密钥材料的 SHA-256 十六进制摘要（绝不含原始密钥）；值是进程内、不可导出的 `CryptoKey` |
-| `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
+| `JwksOptions` | `{ ttlMs?, fetchFn?, store?, now? }` —— `now` 覆盖时钟（毫秒 epoch，默认 `Date.now`），驱动文档过期与强制重取的冷却窗 |
 | `JwksStore` | `{ get(url), set(url, entry) }` —— JWKS 文档缓存；默认进程内 LRU，上限 50 个 URL |
 | `JwksEntry` | `{ exp, keys }` —— 一份缓存文档；`exp` 为 ms 纪元的刷新截止时间 |
-| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, header?, prefix?, cookie?, verify? }` —— `jwtAuth` 闸门的选项（见下表） |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, header?, prefix?, cookie?, now?, verify? }` —— `jwtAuth` 闸门的选项（见下表） |
 
 `JwtAuthOptions`（`jwtAuth` 闸门）：
 
@@ -100,7 +101,7 @@ HS256/384/512、RS256/384/512、PS256/384/512、ES256/384/512 与 EdDSA（Ed2551
 | `secret` | — | HMAC 密钥（`string` 或字节）—— 未提供 `verify` 时，`secret`/`key`/`keyResolver`/`jwks` 之一必填 |
 | `key` | — | 静态密钥材料（RS/PS/ES 用 `CryptoKey`/JWK，HS 用密钥） |
 | `keyResolver` | — | 逐令牌密钥解析（轮换、多发行方） |
-| `jwks` | — | JWKS 端点 —— `string` 或 `{ url, ttlMs?, store? }`；`createJwksResolver` 的简写 |
+| `jwks` | — | JWKS 端点 —— `string` 或 `{ url, ttlMs?, store?, now? }`；`createJwksResolver` 的简写 |
 | `algorithms` | 全部支持 | 闸门接受的算法 |
 | `audience` | — | 要求的受众 —— 令牌的 `aud` 必须与之相交 |
 | `issuer` | — | 要求的发行方 |
@@ -109,10 +110,11 @@ HS256/384/512、RS256/384/512、PS256/384/512、ES256/384/512 与 EdDSA（Ed2551
 | `header` | `'authorization'` | 承载令牌的头 |
 | `prefix` | `'Bearer '` | 头值中命名令牌的方案前缀 —— 大小写不敏感匹配、任意空白串作分隔（与 `bearerAuth` 同一提取逻辑）；空前缀表示整个头值即令牌 |
 | `cookie` | — | 头缺失时回退的 cookie 名 |
+| `now` | `Date.now` | 时钟覆盖（测试、确定性重放）—— 转发给 `verifyJwt` 与 JWKS resolver；`jwks` 对象上的 `now` 优先 |
 | `verify` | — | 自定义校验（另一个库、奇异令牌）—— 返回值存入 `ctx.state.jwt` |
 | `keyStore` | — | 转发给 `verifyJwt` 的密钥导入 store；绕过默认的进程内缓存（摘要键、进程内 `CryptoKey` 值） |
 
-密钥族必须与头部算法匹配（HS 需要密钥，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥，EdDSA 需要 Ed25519 OKP 密钥 —— 即 `kty:'OKP'` 且 `crv:'Ed25519'` 的 JWK —— 混淆攻击在结构上被封死）。EdDSA 在 WebCrypto 实现 Ed25519 的运行时可用（Node ≥ 20 起稳定、现行浏览器均支持）；不支持的运行时会经一次性的能力探测得到清晰的 `JwtError`，而非平台晦涩的 `NotSupportedError`。`jwtAuth` 的密钥来源：`secret`、`key`、`keyResolver`、`jwks`（`string` 或 `{ url, ttlMs?, store? }`），或自定义 `verify`（另一个库、奇异令牌 —— 返回值落到 `ctx.state.jwt`）。
+密钥族必须与头部算法匹配（HS 需要密钥，RS/PS 需要 RSA 密钥，ES 需要 EC 密钥，EdDSA 需要 Ed25519 OKP 密钥 —— 即 `kty:'OKP'` 且 `crv:'Ed25519'` 的 JWK —— 混淆攻击在结构上被封死）。EdDSA 在 WebCrypto 实现 Ed25519 的运行时可用（Node ≥ 20 起稳定、现行浏览器均支持）；不支持的运行时会经一次性的能力探测得到清晰的 `JwtError`，而非平台晦涩的 `NotSupportedError`。`jwtAuth` 的密钥来源：`secret`、`key`、`keyResolver`、`jwks`（`string` 或 `{ url, ttlMs?, store?, now? }`），或自定义 `verify`（另一个库、奇异令牌 —— 返回值落到 `ctx.state.jwt`）。
 
 两个模块级缓存都是有界 LRU —— **导入密钥 100 条**、**JWKS 端点 50 个**。越过上限即淘汰最久未用的条目（被淘汰的密钥按需重新导入、文档按需重新拉取），攻击者可控的密钥材料或 issuer URL 集合无法让内存无限增长。可信 issuer 超过 50 个的多租户部署 —— 或希望跨实例共享 JWKS 文档缓存的集群 —— 应注入自己的 store：`createJwksResolver` 与 `jwks` 简写接收按 `{ exp, keys }` 条目存取的 `JwksStore`（读取时 TTL 刷新语义不变），这些条目是纯 JSON，因此 Redis 支撑的 `JwksStore` 确实能跨进程共享文档。`JwtKeyStore` 不同：它的值是 `Promise<CryptoKey>` —— 进程内、不可导出的句柄，无法序列化、无法送进 Redis —— 所以 `verifyJwt` 的 `keyStore`（以及转发它的 `jwtAuth` 同名选项）定制的是进程内的导入缓存（它的上限、淘汰策略，或由进程自行导入的 id→密钥材料映射）。缓存键是密钥材料的 SHA-256 十六进制摘要，绝不含原始密钥，因此持久化或记录键的 store 不会泄露密钥。注入的 store 完全绕过进程内默认缓存并自管上限 —— 与 rate-limit/session 的 store 一样可以用 Redis 支撑。
 

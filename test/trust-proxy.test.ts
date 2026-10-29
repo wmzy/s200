@@ -51,6 +51,26 @@ describe('trust-proxy', () => {
     (await direct.text()).should.equal('none');
   });
 
+  it('yields no address when hops exceed the forwarded entries', async () => {
+    const app = createApp();
+    use(app, trustProxy({ hops: 3 }));
+    get(app, '/ip', (ctx) => {
+      const info = (ctx.state as { proxy?: { clientIp?: string } }).proxy;
+      return new Response(info?.clientIp ?? 'none');
+    });
+
+    // Two entries, three trusted hops: nothing on the list is at a
+    // trusted depth. Clamping to index 0 would silently trust the
+    // OLDEST (least trustworthy) address, so the field stays unset.
+    const res = await handle(
+      app,
+      new Request('http://localhost/ip', {
+        headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' },
+      })
+    );
+    (await res.text()).should.equal('none');
+  });
+
   it('gives handlers the corrected origin for absolute URL building', async () => {
     const app = createApp();
     use(app, trustProxy());

@@ -134,14 +134,57 @@ const HMAC_KEY_CACHE_LIMIT = 100;
 
 const defaultHmacCache: HmacKeyCache = lruStore(HMAC_KEY_CACHE_LIMIT);
 
+/** String-secret digest-memo bound: past this many distinct secrets the
+ * oldest memo entry drops (its digest recomputes on demand). Secrets are
+ * configuration sources, not request input, so a small FIFO is honest —
+ * it bounds memory, it does not defend. */
+const SECRET_DIGEST_MEMO_LIMIT = 64;
+
+const stringSecretDigests = new Map<string, Promise<string>>();
+const byteSecretDigests = new WeakMap<Uint8Array, Promise<string>>();
+
+/** One digest per secret — {@link getHmacKey} reads the memo on every
+ * call, cache hit included, so a request never pays a SHA-256 pass to
+ * rebuild a cache key it already built. Strings memo in the bounded FIFO
+ * above; byte secrets memo by object identity in a `WeakMap` (holding a
+ * digest alive must not hold the caller's buffer alive). A rejection
+ * evicts itself, so a transient failure never sticks. */
+function secretDigest(secret: string | Uint8Array): Promise<string> {
+  if (typeof secret !== 'string') {
+    let digest = byteSecretDigests.get(secret);
+    if (digest === undefined) {
+      digest = materialDigest(secret).catch((error: unknown) => {
+        byteSecretDigests.delete(secret);
+        throw error;
+      });
+      byteSecretDigests.set(secret, digest);
+    }
+    return digest;
+  }
+  let digest = stringSecretDigests.get(secret);
+  if (digest === undefined) {
+    digest = materialDigest(secret).catch((error: unknown) => {
+      stringSecretDigests.delete(secret);
+      throw error;
+    });
+    stringSecretDigests.set(secret, digest);
+    while (stringSecretDigests.size > SECRET_DIGEST_MEMO_LIMIT) {
+      const oldest = stringSecretDigests.keys().next().value;
+      if (oldest === undefined) break;
+      stringSecretDigests.delete(oldest);
+    }
+  }
+  return digest;
+}
+
 /** One imported HMAC key per (secret digest, hash, usage) — importing per
  * signature would cost a key-derivation pass on every request. Byte
  * secrets import as their exact raw bytes (string secrets as their
  * UTF-8 bytes) and the cache key digests that same raw material, so a
  * string secret and a byte secret never collide on one import. Cache
- * keys carry the SHA-256 digest of the secret, never the material
- * itself, so a cache that persists or logs its keys never sees the
- * secret in the clear. */
+ * keys carry the SHA-256 digest of the secret (memoized per secret — see
+ * {@link secretDigest}), never the material itself, so a cache that
+ * persists or logs its keys never sees the secret in the clear. */
 export async function getHmacKey(
   secret: string | Uint8Array,
   hash: string,
@@ -150,7 +193,7 @@ export async function getHmacKey(
 ): Promise<CryptoKey> {
   const bytes =
     typeof secret === 'string' ? new TextEncoder().encode(secret) : secret;
-  const cacheKey = `${hash}:${usages.join('+')}:${await materialDigest(bytes)}`;
+  const cacheKey = `${hash}:${usages.join('+')}:${await secretDigest(secret)}`;
   let key = store.get(cacheKey);
   if (key === undefined) {
     key = crypto.subtle.importKey(

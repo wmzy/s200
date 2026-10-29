@@ -43,7 +43,7 @@ const rows = await query(sql);
 stop(); // Server-Timing: db;dur=5.2, total;dur=18.3
 ```
 
-`startTiming(ctx, name)` 在任何持有 `ctx` 的地方可用 —— handler 与下游中间件皆可。stop 函数从未运行的 span 在头刻写时闭合（其时长覆盖到 unwind）；stop 调用两次只记录第一次的时长。span 名必须是 RFC 7230 token（不含空格、逗号、分号）。未安装该中间件时调用 `startTiming` 无害 —— 每请求的 span 列表弱键引用，随请求消亡。时长为毫秒、一位小数（亚毫秒精度）。
+`startTiming(ctx, name)` 在任何持有 `ctx` 的地方可用 —— handler 与下游中间件皆可。stop 函数从未运行的 span 在头刻写时闭合（其时长覆盖到 unwind）；stop 调用两次只记录第一次的时长。span 名必须是 RFC 7230 token（不含空格、逗号、分号）。未安装该中间件时调用 `startTiming` 无害 —— 每请求的 span 列表弱键引用，随请求消亡。时长为毫秒、一位小数（亚毫秒精度），由 `formatMs(dur)` 格式化 —— logger 的耗时列用的同一导出，自定义 `format` 回调与响应头因此不会漂移。
 
 `TimingOptions`：
 

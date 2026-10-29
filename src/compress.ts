@@ -12,8 +12,9 @@ import type { Ctx, Middleware } from './types';
 
 import { parseRanges } from './accepts';
 import { collectStream } from './bytes';
-import { byteBodyOf } from './light';
-import { newResponse } from './respond';
+import { byteBodyOf, bytesOf } from './light';
+import { withVary } from './raw-headers';
+import { rebuild } from './respond';
 
 export type CompressOptions = {
   /**
@@ -85,29 +86,6 @@ function pickEncoding(
   return best;
 }
 
-/**
- * Appends `value` to the Vary header without duplicating it. The
- * comparison lowercases both sides — the entry already in Vary may be
- * any case (`Vary: X-Api-Version` vs the appended `x-api-version`), and
- * a cache-varying header listed twice is still just one key. Shared by
- * compress (`accept-encoding`) and the version gate's negotiated header.
- *
- * @internal
- */
-export function withVary(headers: Headers, value: string): void {
-  const vary = headers.get('vary');
-  if (vary === null) {
-    headers.set('vary', value);
-    return;
-  }
-  const lowered = value.toLowerCase();
-  if (
-    !vary.split(',').some((entry) => entry.trim().toLowerCase() === lowered)
-  ) {
-    headers.set('vary', `${vary}, ${value}`);
-  }
-}
-
 /** One-shot compression of buffered bytes through the platform
  * `CompressionStream` — the light write path wants bytes, not a stream,
  * so the rebuilt response stays byte-backed and the node adapter can
@@ -173,18 +151,14 @@ export function compress(options: CompressOptions = {}): Middleware {
     const fastBytes = byteBodyOf(res);
     const buffered =
       encoding === 'br' || fastBytes !== null
-        ? (fastBytes ?? new Uint8Array(await res.arrayBuffer()))
+        ? await bytesOf(res)
         : null;
     if (buffered !== null) {
       const compressed =
         encoding === 'br'
           ? await brotli!(buffered)
           : await deflateBytes(encoding, buffered);
-      ctx.res = newResponse(ctx, compressed, {
-        status: res.status,
-        statusText: res.statusText,
-        headers,
-      });
+      ctx.res = rebuild(ctx, res, compressed, headers);
       return;
     }
     // Streamed path: `buffered === null` implies encoding is not 'br' (br
@@ -193,10 +167,6 @@ export function compress(options: CompressOptions = {}): Middleware {
     const compressed = res.body.pipeThrough(
       new CompressionStream(encoding as 'gzip' | 'deflate')
     );
-    ctx.res = newResponse(ctx, compressed, {
-      status: res.status,
-      statusText: res.statusText,
-      headers,
-    });
+    ctx.res = rebuild(ctx, res, compressed, headers);
   };
 }

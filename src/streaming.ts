@@ -14,7 +14,7 @@
 
 import type { Ctx } from './types';
 
-import { newResponse } from './respond';
+import { headersFor, newResponse } from './respond';
 
 /** Chunk writer handed to a `stream` pump. */
 export type StreamWriter = {
@@ -131,6 +131,24 @@ function formatSse(event: SseEvent): string {
   return `${out}\n`;
 }
 
+/** Merges the caller's `init.headers` over the helper's defaults. Built on
+ * {@link headersFor}, so every legal `HeadersInit` shape — a `Headers`
+ * instance, a `[name, value]` pair list, a plain record — survives, and
+ * the light path keeps its zero-copy view. A default only fills a name
+ * the caller did not set, exactly like the respond helpers' fallback
+ * content-type: explicit headers always win. */
+function streamedHeaders(
+  ctx: Ctx,
+  init: ResponseInit | undefined,
+  defaults: Readonly<Record<string, string>>
+): Headers {
+  const headers = headersFor(ctx, init?.headers);
+  for (const [name, value] of Object.entries(defaults)) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  return headers;
+}
+
 /**
  * Starts a chunked streaming response (`application/octet-stream` by
  * default — override via `init`). The pump receives a writer; await its
@@ -144,10 +162,9 @@ export function stream(
   const body = runPump<StreamWriter>((base) => base, pump);
   ctx.res = newResponse(ctx, body, {
     ...init,
-    headers: {
+    headers: streamedHeaders(ctx, init, {
       'content-type': 'application/octet-stream',
-      ...(init?.headers as Record<string, string> | undefined),
-    },
+    }),
   });
   return ctx.res;
 }
@@ -171,11 +188,10 @@ export function streamSSE(
   }), pump);
   ctx.res = newResponse(ctx, body, {
     ...init,
-    headers: {
+    headers: streamedHeaders(ctx, init, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
-      ...(init?.headers as Record<string, string> | undefined),
-    },
+    }),
   });
   return ctx.res;
 }

@@ -39,6 +39,10 @@ export type CacheOptions = {
    * The default is a bounded in-memory Map with LRU-ish refresh on hit.
    */
   readonly store?: CacheStore;
+  /** Clock override (tests, deterministic replays); default `Date.now`.
+   * Drives the expiry check on every read and the stored refresh
+   * deadline. */
+  readonly now?: () => number;
 };
 
 export type CacheEntry = {
@@ -97,6 +101,7 @@ export function cache(options: CacheOptions = {}): Middleware {
   const methods = new Set(options.methods ?? DEFAULT_METHODS);
   const memory = options.store === undefined ? createMemoryStore(max) : undefined;
   const store: CacheStore = options.store ?? (memory as CacheStore);
+  const now = options.now ?? Date.now;
 
   const shouldSkip = (ctx: Ctx): boolean => {
     if (options.skip?.(ctx) === true) {
@@ -119,10 +124,10 @@ export function cache(options: CacheOptions = {}): Middleware {
       return next();
     }
     const key = options.key?.(ctx) ?? `${method} ${ctx.url.pathname}${ctx.url.search}`;
-    const now = Date.now();
+    const nowMs = now();
     const entry = await store.get(key);
     if (entry !== undefined) {
-      if (entry.exp > now) {
+      if (entry.exp > nowMs) {
         // Refresh recency (LRU-ish) — the default store's concern only.
         memory?.refresh(key, entry);
         ctx.res = newResponse(ctx, method === 'HEAD' ? null : entry.body, {
@@ -174,7 +179,7 @@ export function cache(options: CacheOptions = {}): Middleware {
       // set it — this covers bare `new Response(...)` bodies).
       headers.push(['content-length', String(bytes.byteLength)]);
     }
-    await store.set(key, { exp: now + ttl, status: res.status, headers, body: bytes });
+    await store.set(key, { exp: nowMs + ttl, status: res.status, headers, body: bytes });
   };
 }
 

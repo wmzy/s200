@@ -4,6 +4,11 @@ import { concatBytes } from './bytes';
 import { httpError } from './errors';
 import { neverSignal } from './signal';
 
+// Shared whole-buffer decoder — every decode() here reads a complete
+// ArrayBuffer (no `stream: true`), so one stateless instance serves every
+// readText instead of a fresh allocation per request.
+const textDecoder = new TextDecoder();
+
 /**
  * Request bodies are single-read. All parse results are cached per ctx so
  * the same body can be read again (double `readJson`, or a handler that
@@ -177,7 +182,7 @@ export async function readText(
   // the post-hoc size check, and that rejection must surface here.
   await cache.raw;
   if (cache.text === undefined) {
-    cache.text = new TextDecoder().decode(await cache.raw);
+    cache.text = textDecoder.decode(await cache.raw);
   }
   return cache.text;
 }

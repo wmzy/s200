@@ -16,8 +16,8 @@
 
 import type { Ctx, Middleware } from './types';
 
-import { byteBodyOf } from './light';
-import { newResponse } from './respond';
+import { bytesOf } from './light';
+import { newResponse, rebuild } from './respond';
 import { toHex } from './crypto-util';
 
 export type EtagOptions = {
@@ -58,7 +58,7 @@ export function etag(options: EtagOptions = {}): Middleware {
     // synchronously — no platform body read, no defensive copy. Streamed
     // and lazy light bodies fall through to the async read, exactly like a
     // platform response.
-    const bytes = byteBodyOf(res) ?? new Uint8Array(await res.arrayBuffer());
+    const bytes = await bytesOf(res);
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', bytes));
     const tag = `${prefix}"${toHex(digest)}"`;
     const headers = new Headers(res.headers);
@@ -66,7 +66,9 @@ export function etag(options: EtagOptions = {}): Middleware {
     const ifNoneMatch = ctx.req.headers.get('if-none-match');
     if (ifNoneMatch !== null && etagMatches(ifNoneMatch, tag)) {
       // RFC 9110 §15.4.5: the 304 omits content-length — the copied header
-      // carries the would-be size, and s200's contract is omission.
+      // carries the would-be size, and s200's contract is omission. The
+      // status differs from a plain rebuild, so the 304 stays an explicit
+      // newResponse.
       headers.delete('content-length');
       ctx.res = newResponse(ctx, null, {
         status: 304,
@@ -75,10 +77,6 @@ export function etag(options: EtagOptions = {}): Middleware {
       });
       return;
     }
-    ctx.res = newResponse(ctx, bytes, {
-      status: res.status,
-      statusText: res.statusText,
-      headers,
-    });
+    ctx.res = rebuild(ctx, res, bytes, headers);
   };
 }

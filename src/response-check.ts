@@ -36,7 +36,7 @@ import type { SchemaIssue, SerializeSchema } from './serialize';
 
 import { httpError } from './errors';
 import { getRouteMeta } from './meta';
-import { newResponse } from './respond';
+import { rebuild } from './respond';
 import { checkSchema } from './serialize';
 import { formatIssuePath } from './validate';
 
@@ -156,10 +156,6 @@ export function responseCheck(
     }
     // The read consumed the body — rebuild verbatim so the same bytes,
     // status, and headers (content-length included) ship.
-    ctx.res = newResponse(ctx, body, {
-      status: res.status,
-      statusText: res.statusText,
-      headers: res.headers,
-    });
+    ctx.res = rebuild(ctx, res, body);
   };
 }

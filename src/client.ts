@@ -320,6 +320,13 @@ type MethodCalls<
   RouteCall<Extract<R[number], { readonly method: M | 'ALL' }>>
 >;
 
+/** The wire methods a client serves — the ONE list the {@link Client}
+ * type's keys, the `ALL`-route fanout, and the runtime object all derive
+ * from. `DELETE`'s alias key (`del`, the registrar's name) is the one
+ * spelling the derivation cannot express, so it rides along explicitly
+ * everywhere it is needed. */
+const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const;
+
 /**
  * A typed view of the app's route table. Each method is an overloaded
  * call: the first argument is a registered pattern literal, and params
@@ -332,18 +339,11 @@ type MethodCalls<
  * unhandled rejections; only the fetch itself is asynchronous.
  */
 export type Client<R extends readonly RouteDef[]> = {
-  get: MethodCalls<R, 'GET'>;
-  post: MethodCalls<R, 'POST'>;
-  put: MethodCalls<R, 'PUT'>;
-  patch: MethodCalls<R, 'PATCH'>;
-  delete: MethodCalls<R, 'DELETE'>;
+  [M in (typeof METHODS)[number] as Lowercase<M>]: MethodCalls<R, M>;
+} & {
   /** Alias of {@link Client.delete} — matches the `del` registrar's name. */
   del: MethodCalls<R, 'DELETE'>;
-  head: MethodCalls<R, 'HEAD'>;
-  options: MethodCalls<R, 'OPTIONS'>;
 };
-
-const ALL_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const;
 
 type PathFn = (args: Params | undefined, init: ClientInit | undefined) => Promise<Response>;
 
@@ -587,7 +587,7 @@ export function createClient<
   };
   for (const route of app.routes) {
     if (route.method === 'ALL') {
-      for (const method of ALL_METHODS) {
+      for (const method of METHODS) {
         compile(method, route.pattern, route.segments);
       }
       continue;
@@ -609,17 +609,16 @@ export function createClient<
     };
   };
   // The phantom R exists only at compile time; the runtime object is
-  // pattern-keyed maps. The casts are honest erasure, not narrowing.
-  const client: Client<R> = {
-    get: call('GET') as unknown as Client<R>['get'],
-    post: call('POST') as unknown as Client<R>['post'],
-    put: call('PUT') as unknown as Client<R>['put'],
-    patch: call('PATCH') as unknown as Client<R>['patch'],
-    delete: call('DELETE') as unknown as Client<R>['delete'],
-    del: call('DELETE') as unknown as Client<R>['del'],
-    head: call('HEAD') as unknown as Client<R>['head'],
-    options: call('OPTIONS') as unknown as Client<R>['options'],
-  };
+  // pattern-keyed maps. The casts are honest erasure, not narrowing —
+  // every key but `del` is derived from METHODS, whose lowercase is the
+  // Client type's own key mapping.
+  const client = {
+    ...Object.fromEntries(
+      METHODS.map((method) => [method.toLowerCase(), call(method)] as const)
+    ),
+    // The registrar's `del` spelling — the eighth key.
+    del: call('DELETE'),
+  } as unknown as Client<R>;
   return client;
 }
 

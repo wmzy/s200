@@ -124,4 +124,4 @@ get(app, '/events', (ctx) => streamSSE(ctx, async (sse) => {
 | `SseWriter` | `StreamWriter & { writeSSE(event): Promise<void>; heartbeat(message?): Promise<void> }` |
 | `SseEvent` | `{ id?, event?, data: string \| unknown, retry? }` — `data` objects are JSON-stringified |
 
-The pump's completion closes the stream; its failure aborts it.
+The pump's completion closes the stream; its failure aborts it. `init.headers` accepts every legal `HeadersInit` form — a plain record, a `Headers` instance, or a `[name, value]` pair list — and explicit headers always win: the helper's default `content-type` (and `cache-control` for `streamSSE`) fills in only the names you did not set.

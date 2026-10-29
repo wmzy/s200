@@ -69,6 +69,49 @@ describe('jwt', () => {
     await verifyJwt(token, SECRET, { audience: 'api', clockTolerance: 10 });
   });
 
+  it('signs and verifies against an injected clock', async () => {
+    let ms = 1_700_000_000_000;
+    const now = () => ms;
+    const token = await signJwt({ sub: 'clock' }, SECRET, {
+      now,
+      expiresIn: 10,
+    });
+    // iat/exp pin to the injected instant (ms → seconds).
+    const atMint = await verifyJwt(token, SECRET, { now });
+    atMint.iat?.should.equal(1_700_000_000);
+    atMint.exp?.should.equal(1_700_000_010);
+    // Fast-forward past exp: the same clock rejects deterministically,
+    // no fake timers involved.
+    ms += 11_000;
+    const expired = (await rejectionOf(verifyJwt(token, SECRET, { now }))) as Error;
+    expired.message.should.match(/expired/);
+    isJwtError(expired).should.be.true;
+    // The default clock is untouched: the 2023 token fails on Date.now.
+    isJwtError((await rejectionOf(verifyJwt(token, SECRET))) as Error).should.be
+      .true;
+  });
+
+  it('honors an injected key store when signing', async () => {
+    const seen: string[] = [];
+    const backing = new Map<string, Promise<CryptoKey>>();
+    const store: JwtKeyStore = {
+      get: (key) => backing.get(key),
+      set: (key, value) => {
+        seen.push(key);
+        backing.set(key, value);
+      },
+    };
+    const token = await signJwt({ k: 1 }, SECRET, { keyStore: store });
+    await signJwt({ k: 2 }, SECRET, { keyStore: store });
+    // One import per secret through the injected store — the second sign
+    // is a get hit, and the store sees digest keys, never the secret.
+    seen.length.should.equal(1);
+    // HMAC secrets key the store by hash name + usage, never the alg alias.
+    seen[0]!.should.match(/^SHA-256:sign:[0-9a-f]{64}$/);
+    seen[0]!.should.not.match(/super-secret/);
+    (await verifyJwt<{ k: number }>(token, SECRET)).k.should.equal(1);
+  });
+
   it('signs HS256 with a Uint8Array secret over its exact raw bytes', async () => {
     // Bytes that are not the UTF-8 of any tidy string — before the
     // raw-bytes fix a byte secret was first base64url-encoded into a
@@ -360,6 +403,49 @@ describe('jwt', () => {
       Promise.resolve().then(() => resolver({ alg: 'ES256', kid: 'C' }))
     )) as Error;
     unknown.message.should.match(/no jwks key for kid 'C'/);
+    fetches.should.equal(2);
+  });
+
+  it('expires jwks documents by the injected clock', async () => {
+    const pairA = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const pairB = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify']
+    );
+    const jwkA = await crypto.subtle.exportKey('jwk', pairA.publicKey);
+    const jwkB = await crypto.subtle.exportKey('jwk', pairB.publicKey);
+    let served = JSON.stringify({ keys: [{ ...jwkA, kid: 'A' }] });
+    let fetches = 0;
+    const fetchFn = async () => {
+      fetches += 1;
+      return new Response(served, { status: 200 });
+    };
+    let ms = 0;
+    const resolver = createJwksResolver('https://idp-clock.test/jwks', {
+      ttlMs: 1000,
+      fetchFn,
+      now: () => ms,
+    });
+    const tokenA = await signJwt({ sub: 'a' }, pairA.privateKey, { alg: 'ES256' });
+    (await verifyJwt(tokenA, await resolver({ alg: 'ES256', kid: 'A' }))).sub
+      ?.should.equal('a');
+    fetches.should.equal(1);
+    // Mid-TTL on the same clock: the cached document still serves.
+    ms = 999;
+    await resolver({ alg: 'ES256', kid: 'A' });
+    fetches.should.equal(1);
+    // Past the TTL the injected clock expires the document — one refetch
+    // picks up the rotation, deterministically, without fake timers.
+    served = JSON.stringify({ keys: [{ ...jwkB, kid: 'B' }] });
+    ms = 1000;
+    const tokenB = await signJwt({ sub: 'b' }, pairB.privateKey, { alg: 'ES256' });
+    (await verifyJwt(tokenB, await resolver({ alg: 'ES256', kid: 'B' }))).sub
+      ?.should.equal('b');
     fetches.should.equal(2);
   });
 

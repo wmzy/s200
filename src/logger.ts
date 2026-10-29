@@ -6,6 +6,8 @@
 
 import type { Ctx, Middleware, Next } from './types';
 
+import { formatMs } from './timing';
+
 /**
  * Options for {@link logger}. The default format is
  * `ISO-time METHOD path status duration`; the status is always the real one
@@ -19,7 +21,7 @@ export type LoggerOptions = {
 
 function defaultFormat(ctx: Ctx, durationMs: number): string {
   const status = ctx.res === undefined ? '-' : String(ctx.res.status);
-  return `${new Date().toISOString()} ${ctx.req.method} ${ctx.url.pathname} ${status} ${durationMs.toFixed(1)}ms`;
+  return `${new Date().toISOString()} ${ctx.req.method} ${ctx.url.pathname} ${status} ${formatMs(durationMs)}ms`;
 }
 
 /**

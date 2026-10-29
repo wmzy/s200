@@ -31,6 +31,7 @@ import {
 } from './fs-containment';
 import { runFinish } from './finish';
 import { drainHttpServer } from './drain';
+import { writeWebResponseToNode } from './node-bridge';
 import { headerRecordOf, rawHeaderPairs } from './raw-headers';
 import { isSafeHost } from './safe-host';
 
@@ -501,25 +502,22 @@ async function writeResponse(
   response: Response,
   signal: AbortSignal | undefined
 ): Promise<void> {
-  const headers: Record<string, string | string[]> = {};
-  if (
-    response instanceof LightResponse &&
-    response.headers instanceof LightHeaders
-  ) {
-    // Direct slot fill — merged values plus the set-cookie array in one
-    // loop, skipping the generator + callback machinery of forEach.
-    response.headers.fillRecord(headers);
-  } else {
-    // The shared Headers→writeHead-record mapping (raw-headers.ts):
-    // repeated set-cookie stays an array there — forEach would collapse
-    // it into one comma-joined value, which is not a legal cookie list.
-    headerRecordOf(response.headers, headers);
-  }
   if (response instanceof LightResponse) {
+    const headers: Record<string, string | string[]> = {};
+    if (response.headers instanceof LightHeaders) {
+      // Direct slot fill — merged values plus the set-cookie array in one
+      // loop, skipping the generator + callback machinery of forEach.
+      response.headers.fillRecord(headers);
+    } else {
+      // The shared Headers→writeHead-record mapping (raw-headers.ts):
+      // repeated set-cookie stays an array there — forEach would collapse
+      // it into one comma-joined value, which is not a legal cookie list.
+      headerRecordOf(response.headers, headers);
+    }
     // Light fast path: byte-backed bodies skip the reader loop entirely —
     // write the bytes straight to the socket. A null body (204/304, a HEAD
-    // rebuild, an empty light response) falls through to the shared
-    // empty-body branch below.
+    // rebuild, an empty light response) or a streaming body falls through
+    // to the shared writer below with the record already assembled.
     const bytes = response.bytesSync();
     if (bytes !== null) {
       res.writeHead(response.status, response.statusText, headers);
@@ -533,54 +531,14 @@ async function writeResponse(
       res.end();
       return;
     }
-  }
-  // Null body on either path (light or plain): the header write alone
-  // completes the response.
-  if (response.body === null) {
-    res.writeHead(response.status, response.statusText, headers);
-    res.end();
+    await writeWebResponseToNode(res, response, signal, headers);
     return;
   }
-  // Direct reader loop instead of Readable.fromWeb + pipeline: the
-  // stream-to-node-stream conversion costs a real per-request allocation
-  // and two event loops — at keep-alive throughput it is measurable
-  // (hono's node adapter does the same reader loop). Backpressure is
-  // honored through the drain event; a socket death mid-write rejects and
-  // dispatch() destroys the response.
-  const reader = response.body.getReader();
-  // Disconnect propagation (signal = abortOnDisconnect's per-request
-  // signal): cancel the reader when the client vanishes — a pending read
-  // then resolves {done: true} and the source's cancel runs, so a
-  // handler-side generator receives its finally and a stalled body cannot
-  // outlive the socket. The drain waits below take the same signal: an
-  // abort rejects them instead of hanging on a dead socket. Without a
-  // signal (abortOnDisconnect: false) the loop rides plain backpressure.
-  const cancelOnAbort = (): void => {
-    void reader.cancel().catch(() => undefined);
-  };
-  if (signal !== undefined) {
-    signal.addEventListener('abort', cancelOnAbort, { once: true });
-  }
-  res.writeHead(response.status, response.statusText, headers);
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      // done also follows an abort-driven cancel — res.end() on a closed
-      // socket is a tolerated no-op (OutgoingMessage drops writes after
-      // destroy), and dispatch's 'close' trigger already finished as
-      // aborted.
-      res.end();
-      signal?.removeEventListener('abort', cancelOnAbort);
-      return;
-    }
-    if (!res.write(value)) {
-      await once(
-        res as unknown as import('node:events').EventEmitter,
-        'drain',
-        signal === undefined ? undefined : { signal }
-      );
-    }
-  }
+  // Plain responses: the shared writer (node-bridge.ts) assembles the
+  // header record through the same raw-headers mapping and runs the
+  // reader loop — the identical write path the shard executor's bridge
+  // uses.
+  await writeWebResponseToNode(res, response, signal);
 }
 
 /**

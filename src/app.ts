@@ -33,7 +33,7 @@ import { compose } from './compose';
 import { mapError, runOnError } from './error-map';
 import { cachedUrl, isLightRequest, isLightResponse, setCachedUrl } from './light';
 import { neverSignal } from './signal';
-import { adoptResponse, drainPendingHeaders, jsonFallback, newResponse } from './respond';
+import { adoptResponse, drainPendingHeaders, jsonFallback, rebuild } from './respond';
 import { createMatcher, createRoute, createSegments, matchSegments } from './router';
 
 /**
@@ -1013,11 +1013,7 @@ export async function handle<S extends State = State>(
     const res = ctx.res as Response;
     // HEAD must not carry a body, but content-length stays so the client can
     // learn the size a GET would have returned.
-    ctx.res = newResponse(ctx, null, {
-      status: res.status,
-      statusText: res.statusText,
-      headers: res.headers,
-    });
+    ctx.res = rebuild(ctx, res, null);
   }
   return ctx.res as Response;
 }

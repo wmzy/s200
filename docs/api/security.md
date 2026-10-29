@@ -42,6 +42,7 @@ get(app, '/form', (ctx) => html(ctx, `<input type="hidden" name="_csrf" value="$
 | `header` | `'x-csrf-token'` | Header presenting the token |
 | `form` | `'_csrf'` | Form field presenting the token |
 | `ttl` | 7 days | Token lifetime (seconds) |
+| `now` | `Date.now` | Clock override (tests, deterministic replays) — ms epoch, drives token expiry at mint and verify |
 | `bind` | — | Callback returning a request-scoped value (e.g. the session id) folded into the token's HMAC at mint **and** at verify, so a token minted for another session/user no longer verifies |
 | `path` / `sameSite` / `httpOnly` / `secure` | `'/'` / `'lax'` / `true` / — | Cookie attributes; keep `httpOnly` and deliver the token via an endpoint or server-rendered form |
 
@@ -82,16 +83,16 @@ HS256/384/512, RS256/384/512, PS256/384/512, ES256/384/512, and EdDSA (Ed25519) 
 | --- | --- |
 | `JwtAlgorithm` | `'HS256' \| … \| 'ES512' \| 'EdDSA'` |
 | `JwtKey` | `string \| Uint8Array \| CryptoKey \| JsonWebKey` |
-| `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId? }` — `alg` required when signing with a `CryptoKey`/JWK |
-| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, keyStore? }` — `alg:none` is rejected unconditionally |
+| `JwtSignOptions` | `{ alg?, expiresIn?, notBefore?, issuedAt? \| false, audience?, issuer?, subject?, jwtId?, now?, keyStore? }` — `alg` required when signing with a `CryptoKey`/JWK; `now` overrides the clock (ms epoch, default `Date.now`) for `iat`/`exp`/`nbf`, `keyStore` the key-import cache (the signing twin of `verifyJwt`'s option) |
+| `JwtVerifyOptions` | `{ algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, keyStore?, now? }` — `alg:none` is rejected unconditionally; `now` overrides the clock (ms epoch, default `Date.now`) for the `exp`/`nbf`/`iat` checks |
 | `RegisteredClaims` | `{ iat?, exp?, nbf?, iss?, sub?, aud?, jti? }` |
 | `JwtHeader` | `{ alg, kid? }` — what a `KeyResolver` sees |
 | `KeyResolver` | `(header: JwtHeader) => JwtKey \| Promise<JwtKey>` |
 | `JwtKeyStore` | `{ get(key), set(key, promise) }` — key-import cache; default in-process LRU, bounded at 100 entries. Keys are SHA-256 hex digests of the key material (never the raw secret); values are process-local, non-extractable `CryptoKey`s |
-| `JwksOptions` | `{ ttlMs?, fetchFn?, store? }` |
+| `JwksOptions` | `{ ttlMs?, fetchFn?, store?, now? }` — `now` overrides the clock (ms epoch, default `Date.now`) driving document expiry and the forced-refetch cooldown |
 | `JwksStore` | `{ get(url), set(url, entry) }` — JWKS document cache; default in-process LRU, bounded at 50 URLs |
 | `JwksEntry` | `{ exp, keys }` — one cached document; `exp` is the ms-epoch refresh deadline |
-| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, header?, prefix?, cookie?, verify? }` — the `jwtAuth` gate's options (table below) |
+| `JwtAuthOptions` | `{ secret?, key?, keyResolver?, jwks?, keyStore?, algorithms?, audience?, issuer?, clockTolerance?, requireExpiry?, header?, prefix?, cookie?, now?, verify? }` — the `jwtAuth` gate's options (table below) |
 
 `JwtAuthOptions` (the `jwtAuth` gate):
 
@@ -100,7 +101,7 @@ HS256/384/512, RS256/384/512, PS256/384/512, ES256/384/512, and EdDSA (Ed25519) 
 | `secret` | — | HMAC secret (`string` or bytes) — one of `secret`/`key`/`keyResolver`/`jwks` is required unless `verify` is given |
 | `key` | — | Static key material (`CryptoKey`/JWK for RS/PS/ES, a secret for HS) |
 | `keyResolver` | — | Per-token key resolution (rotation, multi-issuer) |
-| `jwks` | — | JWKS endpoint — `string` or `{ url, ttlMs?, store? }`; shorthand for `createJwksResolver` |
+| `jwks` | — | JWKS endpoint — `string` or `{ url, ttlMs?, store?, now? }`; shorthand for `createJwksResolver` |
 | `algorithms` | every supported one | Algorithms the gate accepts |
 | `audience` | — | Required audience(s) — the token's `aud` must intersect |
 | `issuer` | — | Required issuer(s) |
@@ -109,10 +110,11 @@ HS256/384/512, RS256/384/512, PS256/384/512, ES256/384/512, and EdDSA (Ed25519) 
 | `header` | `'authorization'` | Header carrying the token |
 | `prefix` | `'Bearer '` | Scheme prefix naming the token in the header value — matched case-insensitively with any run of whitespace as the separator (the same extraction `bearerAuth` uses); an empty prefix means the whole header is the token |
 | `cookie` | — | Cookie name to fall back to when the header is absent |
+| `now` | `Date.now` | Clock override (tests, deterministic replays) — forwarded to `verifyJwt` and the JWKS resolver; a `now` on the `jwks` object wins |
 | `verify` | — | Custom verification (another library, exotic tokens) — the returned value lands on `ctx.state.jwt` |
 | `keyStore` | — | Key-import store forwarded to `verifyJwt`; bypasses the default in-process cache (digest keys, process-local `CryptoKey` values) |
 
-Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key, EdDSA an Ed25519 OKP key — a JWK with `kty:'OKP'` and `crv:'Ed25519'` — the confusion attack is structurally closed). EdDSA runs wherever WebCrypto implements Ed25519 (stable in Node ≥ 20, current browsers); a runtime without it gets a clear `JwtError` from a one-time capability probe instead of the platform's opaque `NotSupportedError`. `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs?, store? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
+Key families must match the header algorithm (HS needs a secret, RS/PS an RSA key, ES an EC key, EdDSA an Ed25519 OKP key — a JWK with `kty:'OKP'` and `crv:'Ed25519'` — the confusion attack is structurally closed). EdDSA runs wherever WebCrypto implements Ed25519 (stable in Node ≥ 20, current browsers); a runtime without it gets a clear `JwtError` from a one-time capability probe instead of the platform's opaque `NotSupportedError`. `jwtAuth` key sources: `secret`, `key`, `keyResolver`, `jwks` (`string` or `{ url, ttlMs?, store?, now? }`), or a custom `verify` (another library, exotic tokens — the returned value lands on `ctx.state.jwt`).
 
 Both module-wide caches are bounded LRUs — **100 imported keys** and **50 JWKS endpoints**. Crossing a bound drops the least recently used entry (an evicted key is re-imported, an evicted document refetched, on demand), so attacker-shaped key material or issuer URL sets cannot grow memory without bound. Multi-tenant deployments with more than 50 trusted issuers — or fleets that want one shared JWKS document cache — should inject their own stores. `createJwksResolver` and the `jwks` shorthand take a `JwksStore` over `{ exp, keys }` entries (TTL refresh still applies on read); those entries are plain JSON, so a Redis-backed `JwksStore` genuinely shares documents across processes. A `JwtKeyStore` is different: its values are `Promise<CryptoKey>` — process-local, non-extractable handles that cannot be serialized or shipped to Redis — so `verifyJwt`'s `keyStore` (and `jwtAuth`'s, which forwards it) customizes the in-process import cache instead (its bounds, its eviction policy, or an id→secret-material mapping the process imports itself). Cache keys are SHA-256 hex digests of the key material, never the raw secret, so a store that persists or logs its keys does not leak secrets. An injected store bypasses the in-process default entirely and owns its own bounds — back a `JwksStore` with Redis the same way as the rate-limit/session stores.
 

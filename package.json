@@ -689,13 +689,13 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "6.82 KB"
+      "limit": "6.86 KB"
     },
     {
       "name": "compress battery (min+gz)",
       "path": "dist/compress.mjs",
       "gzip": true,
-      "limit": "2.61 KB"
+      "limit": "2.64 KB"
     },
     {
       "name": "streaming battery (min+gz)",
@@ -761,7 +761,7 @@
       "name": "response-check battery (min+gz)",
       "path": "dist/response-check.mjs",
       "gzip": true,
-      "limit": "2.95 KB"
+      "limit": "2.97 KB"
     },
     {
       "name": "aws-lambda adapter (min+gz)",
@@ -795,7 +795,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "5.18 KB"
+      "limit": "5.2 KB"
     },
     {
       "name": "lifecycle battery (min+gz)",

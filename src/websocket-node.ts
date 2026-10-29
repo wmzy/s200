@@ -430,9 +430,14 @@ function runConnection(
       } else if (len === 127) {
         if (pending.length < 10) return;
         const big = pending.readBigUInt64BE(2);
-        // §5.2: the most significant bit MUST be 0 — a negative length is
-        // invalid and would otherwise stall the parser waiting for bytes.
-        if (big < 0n || big > BigInt(Number.MAX_SAFE_INTEGER)) {
+        // §5.2: 64-bit lengths are unsigned and readBigUInt64BE reads them
+        // that way, so no sign bit exists to test. The real gate is the
+        // safe-number cap: lengths above MAX_SAFE_INTEGER (the §5.2
+        // MSB-set case included — it reads as ≥ 2^63) cannot be tracked
+        // as one JS number and could never arrive as a single frame, so
+        // waiting for them would stall the parser. Reject at header-parse
+        // time.
+        if (big > BigInt(Number.MAX_SAFE_INTEGER)) {
           failProtocol();
           return;
         }

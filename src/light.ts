@@ -567,3 +567,18 @@ export function byteBodyOf(res: Response): Uint8Array<ArrayBuffer> | null {
     ? (res.bytesSync() as Uint8Array<ArrayBuffer> | null)
     : null;
 }
+
+/**
+ * The whole-body bytes of any response: {@link byteBodyOf}'s synchronous
+ * fast path when a light body is already materialized bytes, the platform
+ * `arrayBuffer()` read otherwise — the shared tail of the batteries that
+ * want bytes in hand (etag's digest, compress's buffered encoders). Not
+ * named `bytes`: the undici Body mixin declares an async `bytes()`, so a
+ * method of that name would collide in structural positions — a
+ * module-level function does not.
+ *
+ * @internal
+ */
+export async function bytesOf(res: Response): Promise<Uint8Array<ArrayBuffer>> {
+  return byteBodyOf(res) ?? new Uint8Array(await res.arrayBuffer());
+}

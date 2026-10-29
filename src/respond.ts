@@ -5,8 +5,10 @@ import { isLightRequest, LightHeaders, LightResponse } from './light';
 /** Headers for a response under construction: the duck-typed light view on
  * the light path (no platform construction, and {@link LightResponse}
  * keeps it by reference — zero copies), the platform `Headers` everywhere
- * else. Callers only use the structural surface both implement. */
-function headersFor(ctx: Ctx, init: HeadersInit | undefined): Headers {
+ * else. Callers only use the structural surface both implement.
+ *
+ * @internal */
+export function headersFor(ctx: Ctx, init: HeadersInit | undefined): Headers {
   return isLightRequest(ctx.req)
     ? (new LightHeaders(init) as unknown as Headers)
     : new Headers(init);
@@ -82,6 +84,30 @@ export function newResponse(
   ) as Response;
   drainPendingHeaders(ctx, res);
   return res;
+}
+
+/**
+ * Rebuilds a materialized response with a replacement body: the tail
+ * every response-rewriting site shares — `s200/etag`'s restamp,
+ * `s200/compress`'s re-encode, `s200/response-check`'s verbatim rebuild,
+ * and the HEAD body-strip in `handle`. Keeps the original's status and
+ * statusText; ships `headers` when the rewriter built a mutated copy,
+ * otherwise a copy of the original's headers. Built on
+ * {@link newResponse}, so the light path stays light.
+ *
+ * @internal
+ */
+export function rebuild(
+  ctx: Ctx,
+  res: Response,
+  body: BodyInit | Uint8Array | null,
+  headers?: Headers
+): Response {
+  return newResponse(ctx, body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: headers ?? new Headers(res.headers),
+  });
 }
 
 /**
