@@ -18,7 +18,11 @@
  * @module
  */
 
-import { drainHttpServer, type DrainOptions } from './drain';
+import {
+  drainHttpServer,
+  type DrainedServer,
+  type DrainOptions,
+} from './drain';
 import { finishersIdle } from './finish';
 
 /**
@@ -93,13 +97,9 @@ export type LifecycleHandle = {
 /** Drain budget when `options.timeout` is omitted. */
 const DEFAULT_TIMEOUT = 10_000;
 
-/** The raw-server surface the graceful paths duck-type onto. */
-type RawServer = {
-  close?(callback?: (error?: Error) => void): unknown;
-  closeIdleConnections?(): void;
-  closeAllConnections?(): void;
-  stop?(force?: boolean): unknown;
-};
+/** The raw-server surface the graceful paths duck-type onto: the shared
+ * drain surface plus Bun's `stop` verb. */
+type RawServer = DrainedServer & { stop?(force?: boolean): unknown };
 
 /**
  * Graceful drain for an app's server: `lifecycle(server)` registers

@@ -140,17 +140,11 @@ export function parseEnv(
         ? line.slice(6).trimStart()
         : line;
     const eq = body.indexOf('=');
-    if (eq < 1) {
-      // -1: no separator at all; 0: nothing before it.
+    const key = eq < 1 ? undefined : body.slice(0, eq).trim();
+    // -1: no separator; 0: nothing before it; empty or whitespace key.
+    if (key === undefined || key === '' || /\s/.test(key)) {
       if (lenient) {
         continue; // dotenv-style: skip the malformed line, keep the rest
-      }
-      throw new Error(`invalid .env line ${String(i + 1)}: ${rawLine}`);
-    }
-    const key = body.slice(0, eq).trim();
-    if (key === '' || /\s/.test(key)) {
-      if (lenient) {
-        continue;
       }
       throw new Error(`invalid .env line ${String(i + 1)}: ${rawLine}`);
     }

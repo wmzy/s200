@@ -32,6 +32,12 @@ export type Range = {
   readonly params: ReadonlyMap<string, string>;
 };
 
+// Read-only, never written: the placeholder `params` for ranges that
+// carry none (the common case — plain Accept headers have no non-q
+// parameters), so the shared empty Map costs one allocation for all of
+// them instead of one per range.
+const EMPTY_PARAMS: ReadonlyMap<string, string> = new Map();
+
 /**
  * Parses an Accept-family header into `{ value, q, params }` ranges in
  * header order (order matters: at equal specificity, the earlier range
@@ -52,7 +58,10 @@ export function parseRanges(header: string | null): Range[] {
     const value = (pieces[0] ?? '').trim().toLowerCase();
     if (value === '') continue;
     let q = 1;
-    const params = new Map<string, string>();
+    // Lazy: only ranges that actually carry a non-q parameter pay for a
+    // Map — most headers never write here (pickEncoding rides this per
+    // request with plain media ranges).
+    let params: Map<string, string> | undefined;
     for (const param of pieces.slice(1)) {
       const kv = param.trim();
       if (kv.toLowerCase().startsWith('q=')) {
@@ -64,9 +73,9 @@ export function parseRanges(header: string | null): Range[] {
       }
       const eq = kv.indexOf('=');
       if (eq === -1) continue;
-      params.set(kv.slice(0, eq).trim().toLowerCase(), unquoteParam(kv.slice(eq + 1)));
+      (params ??= new Map<string, string>()).set(kv.slice(0, eq).trim().toLowerCase(), unquoteParam(kv.slice(eq + 1)));
     }
-    ranges.push({ value, q, params });
+    ranges.push({ value, q, params: params ?? EMPTY_PARAMS });
   }
   return ranges;
 }

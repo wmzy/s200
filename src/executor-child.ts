@@ -204,8 +204,10 @@ function loadHeadersKit(): Promise<typeof import('./raw-headers')> {
  * Resolves the shard app from a user entry: `app` export, then `default`,
  * then calling `createApp()` — the contract every executor realm uses.
  * cli.ts's `appFromModule` speaks the same convention for `s200 dev`
- * (USAGE promises "the same convention"); link-time isolation keeps this
- * copy local, so keep the two spellings in sync.
+ * (USAGE promises "the same convention"), including validating the
+ * candidate's shape (`routes` must be an array); link-time isolation
+ * keeps this copy local, so keep the two spellings — acceptance included
+ * — in sync.
  */
 export async function appFromEntry(entry: string): Promise<App> {
   const mod = (await import(entry)) as {
@@ -215,7 +217,12 @@ export async function appFromEntry(entry: string): Promise<App> {
   };
   const candidate =
     mod.app ?? mod.default ?? (typeof mod.createApp === 'function' ? await mod.createApp() : undefined);
-  if (candidate === undefined || candidate === null) {
+  if (
+    candidate === undefined ||
+    candidate === null ||
+    typeof candidate !== 'object' ||
+    !Array.isArray((candidate as { routes?: unknown }).routes)
+  ) {
     throw new Error('shard entry exports no app (app, default, or createApp): ' + entry);
   }
   return candidate as App;
@@ -366,6 +373,10 @@ export async function runThreadShard(
   parentPort: MessagePort,
   data: WorkerLaunch
 ): Promise<void> {
+  // Not redundant with startShardWorker's defensive install: appFromEntry
+  // imports the entry (whose transitive imports are extensionless in the
+  // source layout) BEFORE startShardWorker runs, so the hook must be
+  // registered here first.
   await installShardResolution();
   const app = await appFromEntry(entry);
   await startShardWorker(app, parentPort, data);

@@ -418,8 +418,7 @@ export function createMcpHandler(
           return rpcError(id, INVALID_PARAMS, 'Invalid params: params.arguments must be an object');
         }
         const args = (rawArguments ?? {}) as Record<string, unknown>;
-        const { routes } = compileTools(app, options);
-        const route = routes.get(params.name);
+        const route = routeIndex(app, options).get(params.name);
         if (route === undefined) {
           return rpcError(id, INVALID_PARAMS, `Unknown tool: ${params.name}`);
         }

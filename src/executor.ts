@@ -201,9 +201,10 @@ const bindThreadListener = (unit: Unit): Promise<void> =>
       ensureThreadWorker(unit);
     });
     server.on('error', (error: Error) => {
+      // Listen failures (EADDRINUSE) self-heal like worker death: markFailed
+      // arms the restart timer, whose unit.server===undefined branch rebinds.
       unit.server = undefined;
-      unit.state = 'failed';
-      unit.lastError = messageOf(error);
+      markFailed(unit, messageOf(error));
       resolve();
     });
     server.listen(unit.port ?? 0, '127.0.0.1', () => {

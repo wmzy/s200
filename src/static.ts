@@ -498,10 +498,8 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
         const probe =
           stat !== undefined
             ? await stat(dirIndex)
-            : (await read(dirIndex)) === null
-              ? undefined
-              : {};
-        if (probe !== undefined && probe !== null) {
+            : await read(dirIndex);
+        if (probe !== null) {
           const url = new URL(ctx.url.href);
           url.pathname = `${pathname}/`;
           redirect(ctx, url.href, 301);

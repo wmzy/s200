@@ -18,19 +18,17 @@ import type { Ctx, Middleware, Next } from './types';
 
 import { assertPositive } from './assert';
 import { httpError } from './errors';
+import { signalAny } from './signal';
 
-// `AbortSignal.any` composes the previous signal with the deadline's;
-// runtimes without it keep the old detached-loss semantics instead of
-// breaking the swap contract.
+// `signalAny` composes the previous signal with the deadline's
+// (`AbortSignal.any` under the hood); runtimes without it keep the old
+// detached-loss semantics instead of breaking the swap contract.
 export function timeout(ms: number): Middleware {
   assertPositive('timeout', 'ms', ms);
   return (ctx: Ctx, next: Next): Promise<void> => {
     const controller = new AbortController();
     const prev = ctx.signal;
-    const composed =
-      typeof AbortSignal.any === 'function'
-        ? AbortSignal.any([prev, controller.signal])
-        : undefined;
+    const composed = signalAny(prev, controller.signal);
     if (composed !== undefined) {
       ctx.signal = composed;
     }

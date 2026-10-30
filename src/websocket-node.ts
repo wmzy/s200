@@ -493,6 +493,7 @@ function runConnection(
       }
       pending = pending.subarray(offset + len);
 
+      // oversize is rejected at header-parse time above
       switch (opcode) {
         case 0x0: {
           // Continuation: only legal mid-fragmentation, and never with
@@ -502,10 +503,6 @@ function runConnection(
             return;
           }
           fragSize += len;
-          if (fragSize > maxPayload) {
-            failTooBig();
-            return;
-          }
           fragChunks.push(payload);
           if (fin) {
             const message = Buffer.concat(fragChunks, fragSize);
@@ -530,15 +527,7 @@ function runConnection(
             fragChunks = [payload];
             fragSize = len;
             msgRsv1 = rsv1;
-            if (fragSize > maxPayload) {
-              failTooBig();
-              return;
-            }
           } else {
-            if (len > maxPayload) {
-              failTooBig();
-              return;
-            }
             deliver(opcode, payload, rsv1);
           }
           break;

@@ -45,6 +45,11 @@ export function signalInit(request: Request): { signal: AbortSignal } | undefine
   return signal === undefined ? undefined : { signal };
 }
 
+/** @internal */
+export function signalAny(a: AbortSignal, b: AbortSignal): AbortSignal | undefined {
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([a, b]) : undefined;
+}
+
 /**
  * Two signals raced as one: `AbortSignal.any` where the runtime has it
  * (Node >= 20.3 — the floor), manual listener linkage elsewhere. The
@@ -59,8 +64,9 @@ export function signalInit(request: Request): { signal: AbortSignal } | undefine
  * @internal
  */
 export function composeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
-  if (typeof AbortSignal.any === 'function') {
-    return AbortSignal.any([a, b]);
+  const any = signalAny(a, b);
+  if (any !== undefined) {
+    return any;
   }
   const controller = new AbortController();
   const abort = (source: AbortSignal): void => {

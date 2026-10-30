@@ -13,6 +13,13 @@ const STATUS_ERROR = 2;
 /** `SpanStatusCode.UNSET` from @opentelemetry/api. */
 const STATUS_UNSET = 1;
 
+/** Uppercase request method, as OTel's `http.request.method` wants. */
+const methodOf = (ctx: Ctx): string => ctx.req.method.toUpperCase();
+
+/** Response status, or the 0 sentinel when nothing materialized (a
+ * middleware error still on its way out). */
+const statusCodeOf = (ctx: Ctx): number => (ctx.res === undefined ? 0 : ctx.res.status);
+
 /**
  * Minimal structural span — a subset of @opentelemetry/api's `Span`. Any
  * real OTel span satisfies it, so bridging is a lambda (see
@@ -132,12 +139,9 @@ export function trace(options: TraceOptions = {}): Middleware {
     const span = tracer.startSpan(name, { attributes, parentContext });
     try {
       await next();
-      span.setAttribute('http.request.method', ctx.req.method.toUpperCase());
+      span.setAttribute('http.request.method', methodOf(ctx));
       span.setAttribute('url.path', ctx.url.pathname);
-      span.setAttribute(
-        'http.response.status_code',
-        ctx.res === undefined ? 0 : ctx.res.status
-      );
+      span.setAttribute('http.response.status_code', statusCodeOf(ctx));
       span.setAttribute('s200.duration_ms', performance.now() - start);
       span.setStatus({
         code:
@@ -317,7 +321,7 @@ export function metrics(options: MetricsOptions = {}): Middleware {
         : typeof attributes === 'function'
           ? attributes(ctx)
           : attributes;
-    const method = ctx.req.method.toUpperCase();
+    const method = methodOf(ctx);
     const start = now();
     requests.add(1, { 'http.request.method': method, ...custom });
     active.add(1);
@@ -327,10 +331,7 @@ export function metrics(options: MetricsOptions = {}): Middleware {
       active.add(-1);
       duration.record(now() - start, {
         'http.request.method': method,
-        // 0 when nothing materialized (a middleware error still on its
-        // way out) — same sentinel trace() uses.
-        'http.response.status_code':
-          ctx.res === undefined ? 0 : ctx.res.status,
+        'http.response.status_code': statusCodeOf(ctx),
         ...custom,
       });
     }

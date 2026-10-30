@@ -55,3 +55,19 @@ export function assertPositiveInteger(
     );
   }
 }
+
+/** Throws when `value` is not in the unit range (0, 1] — same house
+ * format as {@link assertPositive} for ratio bounds (event-loop
+ * utilization: zero disables the sensor, above one is out of range):
+ * `` Invalid ${module} ${name} ${String(value)}: must be in (0, 1] ``. */
+export function assertUnitRange(
+  module: string,
+  name: string,
+  value: number
+): void {
+  if (!Number.isFinite(value) || value <= 0 || value > 1) {
+    throw new Error(
+      `Invalid ${module} ${name} ${String(value)}: must be in (0, 1]`
+    );
+  }
+}

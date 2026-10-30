@@ -50,6 +50,10 @@ function b64urlDecode(text: string): Uint8Array {
   return bytes;
 }
 
+// Module-level singleton — every token parse reuses one decoder (the
+// body/multipart convention).
+const decoder = new TextDecoder();
+
 type AlgInfo =
   | { readonly kind: 'hmac'; readonly hash: 'SHA-256' | 'SHA-384' | 'SHA-512' }
   | {
@@ -471,7 +475,7 @@ export async function verifyJwt<T = Record<string, unknown>>(
   let payload: T & RegisteredClaims;
   try {
     payload = JSON.parse(
-      new TextDecoder().decode(b64urlDecode(payloadText ?? ''))
+      decoder.decode(b64urlDecode(payloadText ?? ''))
     );
   } catch {
     throw jwtError('malformed token payload');
@@ -698,7 +702,7 @@ function headerFromParts(
   }
   try {
     return JSON.parse(
-      new TextDecoder().decode(b64urlDecode(parts[0] ?? ''))
+      decoder.decode(b64urlDecode(parts[0] ?? ''))
     ) as { alg?: unknown; kid?: unknown };
   } catch {
     throw jwtError('malformed token header');

@@ -267,6 +267,9 @@ export function use<S extends State = State>(
       return use(app, first as Middleware<S>, ...rest);
     }
     const base = basePrefixOf(prefix);
+    // Precomputed once — the guard below checks every request against it
+    // (static.ts's stripPrefix keeps the same withSlash shape).
+    const baseSlash = `${base}/`;
     // Static prefixes get a plain string check (no per-request split);
     // param/wildcard prefixes use the router's own matcher.
     const dynamic = base.includes(':') || base.includes('*');
@@ -297,7 +300,7 @@ export function use<S extends State = State>(
       const pathname = ctx.url.pathname;
       const scoped =
         segments === undefined
-          ? pathname === base || pathname.startsWith(`${base}/`)
+          ? pathname === base || pathname.startsWith(baseSlash)
           : matchSegments(segments, pathname) !== undefined;
       if (!scoped) {
         return next();

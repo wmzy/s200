@@ -19,7 +19,7 @@
  * connection reapers, and `s200/lifecycle`'s structural servers may carry
  * any subset — each call site degrades to what its server actually has.
  */
-type DrainedServer = {
+export type DrainedServer = {
   close?(callback?: (error?: Error) => void): unknown;
   closeIdleConnections?(): void;
   closeAllConnections?(): void;

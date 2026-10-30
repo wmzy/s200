@@ -257,14 +257,12 @@ export function nextRun(expr: string, from: Date): Date {
  * Runs `fn`, routing any throw/rejection to `onError` — the returned promise
  * always resolves, so the scheduling loop cannot be taken down by a job.
  */
-function run(state: SchedulerState, job: Job): Promise<void> {
-  return (async () => {
-    try {
-      await job.fn();
-    } catch (err) {
-      state.onError(err, job.expr);
-    }
-  })();
+async function run(state: SchedulerState, job: Job): Promise<void> {
+  try {
+    await job.fn();
+  } catch (err) {
+    state.onError(err, job.expr);
+  }
 }
 
 /** Arms `job` at its absolute `next` target, chunking delays past the

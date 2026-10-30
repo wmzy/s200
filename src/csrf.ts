@@ -81,32 +81,32 @@ function tokenMessage(
  * Parses a token and verifies its signature + expiry against the secret.
  * `bind` is the current bind value for a bound instance (`undefined` for
  * an unbound one — the signed message stays exactly `exp.nonce`).
- * Returns the remaining lifetime in ms, or `null` for any malformed,
- * forged, or expired input.
+ * Returns whether the token is valid — any malformed, forged, or expired
+ * input reads `false`.
  */
 async function verifyToken(
   token: string,
   hmacKey: CryptoKey,
   now: number,
   bind: string | undefined
-): Promise<number | null> {
+): Promise<boolean> {
   const parts = token.split('.');
   if (parts.length !== 3 || parts.some((part) => part === '')) {
-    return null;
+    return false;
   }
   const [expPart = '', nonce = '', sig = ''] = parts;
   const exp = Number(expPart);
   if (!Number.isFinite(exp) || exp <= now) {
-    return null;
+    return false;
   }
   // Appending the bind value is unambiguous — see {@link tokenMessage}.
   // hmacVerify re-signs and compares constant-time; a malformed
   // signature encoding reads false, the same answer as a forged one.
   const message = tokenMessage(expPart, nonce, bind);
   if (!(await hmacVerify(message, sig, hmacKey))) {
-    return null;
+    return false;
   }
-  return exp - now;
+  return true;
 }
 
 export type Csrf = {
@@ -201,12 +201,10 @@ export function createCsrf(options: CsrfOptions): Csrf {
     // bind value — is replaced by a fresh token.
     const bind = await currentBind(ctx);
     const cookieToken = getCookie(ctx, cookieName);
-    const remaining =
-      cookieToken === undefined
-        ? null
-        : await verifyToken(cookieToken, await keyPromise, now(), bind);
-    const installed =
-      remaining !== null ? cookieToken : await createToken(bind);
+    const valid =
+      cookieToken !== undefined &&
+      (await verifyToken(cookieToken, await keyPromise, now(), bind));
+    const installed = valid ? cookieToken : await createToken(bind);
     ctx.state.csrfToken = installed;
 
     // The cookie-write baseline differs by branch: safe responses
@@ -261,9 +259,7 @@ export function createCsrf(options: CsrfOptions): Csrf {
       if (presented === null || presented === '') {
         throw httpError(403, 'CSRF token missing');
       }
-      if (
-        (await verifyToken(presented, await keyPromise, now(), bind)) === null
-      ) {
+      if (!(await verifyToken(presented, await keyPromise, now(), bind))) {
         throw httpError(403, 'CSRF token invalid or expired');
       }
     }

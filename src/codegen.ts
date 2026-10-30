@@ -131,8 +131,8 @@ function schemaToTs(schema: SerializeSchema): string {
 }
 
 /**
- * One pattern segment's contribution to a method name: `:id` → `Id`,
- * `*name` capture as a string member — required except optional params
+ * The route's params record type: every `:param` and `*name` capture
+ * becomes a string member — required except optional params
  * (`/users/:id` → `{ id: string }`, `/posts/:postId?` →
  * `{ postId?: string }`). `undefined` when the pattern captures nothing.
  */

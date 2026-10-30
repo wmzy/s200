@@ -25,7 +25,11 @@
 
 import type { Ctx, Middleware } from './types';
 
-import { assertPositive, assertPositiveInteger } from './assert';
+import {
+  assertPositive,
+  assertPositiveInteger,
+  assertUnitRange,
+} from './assert';
 import { createEluReader } from './elu';
 import { httpError } from './errors';
 
@@ -118,13 +122,8 @@ export function loadShed(options: LoadShedOptions = {}): Middleware {
   const bypass = options.bypass;
   const sensors = options.sensors;
 
-  if (
-    maxElu !== undefined &&
-    (!Number.isFinite(maxElu) || maxElu <= 0 || maxElu > 1)
-  ) {
-    throw new Error(
-      `Invalid load-shed maxEventLoopUtilization ${String(maxElu)}: must be in (0, 1]`
-    );
+  if (maxElu !== undefined) {
+    assertUnitRange('load-shed', 'maxEventLoopUtilization', maxElu);
   }
   if (maxRssBytes !== undefined) {
     assertPositive('load-shed', 'maxRssBytes', maxRssBytes);
@@ -142,9 +141,8 @@ export function loadShed(options: LoadShedOptions = {}): Middleware {
   // timer ever wakes the loop (NaN→0 clamp lives in the reader).
   const elu = createEluReader();
 
-  const readElu =
-    sensors?.eventLoopUtilization ??
-    ((): number => elu.read());
+  // Lift straight off the reader (elu.ts): neither method captures `this`.
+  const readElu = sensors?.eventLoopUtilization ?? elu.read;
   const readRssBytes =
     sensors?.rssBytes ?? ((): number => process.memoryUsage().rss);
   const readInFlight = sensors?.inFlight ?? ((): number => inFlight);

@@ -18,6 +18,10 @@ import type { Ctx, Middleware } from './types';
 import { httpError } from './errors';
 import { b64Decode } from './crypto-util';
 
+// Module-level singleton — Basic-credential decode reuses one decoder
+// instead of a fresh allocation per request.
+const decoder = new TextDecoder();
+
 /**
  * Decodes `Basic base64(user:pass)`. The standard-alphabet payload
  * decodes as UTF-8 so non-ASCII credentials round-trip; an undecodable
@@ -29,7 +33,7 @@ function decodeBasic(header: string): [string, string] | undefined {
   if (payload === undefined) return undefined;
   const bytes = b64Decode(payload);
   if (bytes === null) return undefined;
-  const text = new TextDecoder().decode(bytes);
+  const text = decoder.decode(bytes);
   const colon = text.indexOf(':');
   if (colon < 0) return undefined;
   return [text.slice(0, colon), text.slice(colon + 1)];

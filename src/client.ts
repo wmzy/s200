@@ -362,12 +362,10 @@ function signalOf(options: ClientOptions): (init: AbortSignal | null | undefined
   return (init) => {
     const effective = init ?? options.signal;
     if (options.timeoutMs === undefined) {
-      return effective ?? undefined;
+      return effective;
     }
     const timeout = AbortSignal.timeout(options.timeoutMs);
-    return effective === undefined || effective === null
-      ? timeout
-      : composeSignals(effective, timeout);
+    return effective === undefined ? timeout : composeSignals(effective, timeout);
   };
 }
 

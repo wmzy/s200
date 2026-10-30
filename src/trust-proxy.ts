@@ -41,6 +41,36 @@ export type TrustProxyOptions = {
 /** The entry written to `ctx.state.proxy` — augment `State` to read it typed. */
 export type TrustProxyState = { readonly proxy?: TrustProxyInfo };
 
+/** Reads one forwarded header at the trusted depth — the per-request
+ * core of {@link trustProxy}, hoisted to module level so the middleware
+ * does not rebuild it on every request. The inline notes carry the
+ * case-preservation and no-clamping semantics. */
+const takeFrom = (
+  headers: Headers,
+  hops: number,
+  name: string
+): string | undefined => {
+  const value = headers.get(name);
+  if (value === null) {
+    return undefined;
+  }
+  // Case-preserving split (raw-headers.ts) — forwarded values must
+  // not be mangled on their way into ctx.url/state.
+  const list = splitList(value);
+  if (list.length === 0) {
+    return undefined;
+  }
+  const index = list.length - hops;
+  // More hops declared than entries forwarded: nothing on the list
+  // is at a trusted depth. Clamping to 0 would silently return the
+  // OLDEST (least trustworthy) address, so the header reads as
+  // absent instead of being corrected.
+  if (index < 0) {
+    return undefined;
+  }
+  return list[index];
+};
+
 /**
  * Applies the forwarding headers for this request: `ctx.url` is rewritten
  * in place (protocol and host only — the path never changes) and the
@@ -54,30 +84,9 @@ export function trustProxy(options: TrustProxyOptions = {}): Middleware {
   const forHeader = options.forHeader ?? 'x-forwarded-for';
 
   return async (ctx: Ctx, next) => {
-    const take = (name: string): string | undefined => {
-      const value = ctx.req.headers.get(name);
-      if (value === null) {
-        return undefined;
-      }
-      // Case-preserving split (raw-headers.ts) — forwarded values must
-      // not be mangled on their way into ctx.url/state.
-      const list = splitList(value);
-      if (list.length === 0) {
-        return undefined;
-      }
-      const index = list.length - hops;
-      // More hops declared than entries forwarded: nothing on the list
-      // is at a trusted depth. Clamping to 0 would silently return the
-      // OLDEST (least trustworthy) address, so the header reads as
-      // absent instead of being corrected.
-      if (index < 0) {
-        return undefined;
-      }
-      return list[index];
-    };
-    const proto = take(protoHeader);
-    const host = take(hostHeader);
-    const clientIp = take(forHeader);
+    const proto = takeFrom(ctx.req.headers, hops, protoHeader);
+    const host = takeFrom(ctx.req.headers, hops, hostHeader);
+    const clientIp = takeFrom(ctx.req.headers, hops, forHeader);
     const info: TrustProxyInfo = { proto, host, clientIp };
     ctx.state.proxy = info;
     if (proto === 'http' || proto === 'https') {
