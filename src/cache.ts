@@ -16,7 +16,7 @@
 import type { Ctx, Middleware } from './types';
 
 import { newResponse } from './respond';
-import { evictOldest } from './bounded-collections';
+import { lruSet } from './bounded-collections';
 
 export type CacheOptions = {
   /** Entry lifetime in seconds; default 60. */
@@ -73,15 +73,16 @@ function createMemoryStore(max: number) {
       return map.get(key);
     },
     set(key: string, entry: CacheEntry): void {
-      map.set(key, entry);
-      // evictOldest no-ops on an empty Map, so a max of 0 still terminates.
-      while (map.size > max) {
-        evictOldest(map);
-      }
+      lruSet(map, key, entry, max);
     },
     delete(key: string): void {
       map.delete(key);
     },
+    // A recency bump, not a fresh write: `Map#set` on an existing key
+    // keeps its original insertion position, so the delete-first dance
+    // IS the bump. Stays manual — lruSet encodes set + evict-on-overflow,
+    // not move-to-end, and lruGet re-inserts the OLD value while refresh
+    // carries the entry as read.
     refresh(key: string, entry: CacheEntry): void {
       map.delete(key);
       map.set(key, entry);

@@ -291,6 +291,51 @@ describe('client signal, timeout & baseUrl guard', () => {
     ((signals[0]!.reason as Error).message as string).should.equal('gone');
   });
 
+  it('links signals manually when the runtime lacks AbortSignal.any', async () => {
+    const app = get(createApp(), '/x', () => new Response('ok'));
+    const controller = new AbortController();
+    const signals: (AbortSignal | undefined)[] = [];
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined);
+      return new Response('ok');
+    };
+    const client = createClient(app, {
+      baseUrl: 'http://x.test',
+      fetch,
+      signal: controller.signal,
+      timeoutMs: 60_000, // far away — only the user signal decides here
+    });
+    // Hide the fast path: the fallback's listener linkage must carry the
+    // same semantics (first source's reason wins, pre-aborted honored).
+    const originalAny = AbortSignal.any;
+    try {
+      (AbortSignal as { any?: unknown }).any = undefined;
+      await client.get('/x');
+      const composite = signals[0]!;
+      composite.should.not.equal(controller.signal); // a linked composite
+      controller.abort(new Error('user gone'));
+      composite.aborted.should.equal(true);
+      ((composite.reason as Error).message as string).should.equal('user gone');
+      // A pre-aborted source is honored at link time: the composite is
+      // born aborted with that reason, still not the source itself.
+      const early = new AbortController();
+      early.abort(new Error('early'));
+      const earlyClient = createClient(app, {
+        baseUrl: 'http://x.test',
+        fetch,
+        signal: early.signal,
+        timeoutMs: 60_000,
+      });
+      await earlyClient.get('/x');
+      const bornAborted = signals[1]!;
+      bornAborted.should.not.equal(early.signal);
+      bornAborted.aborted.should.equal(true);
+      ((bornAborted.reason as Error).message as string).should.equal('early');
+    } finally {
+      (AbortSignal as { any?: unknown }).any = originalAny;
+    }
+  });
+
   it('throws at creation with a baseUrl hint when Node has no location', async () => {
     const app = get(createApp(), '/x', () => new Response('ok'));
     // Node (this suite's runtime) defines no globalThis.location — the

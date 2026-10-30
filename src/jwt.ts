@@ -29,9 +29,10 @@ import { httpError } from './errors';
 import {
   b64urlDecode as decodeB64url,
   b64urlEncode,
-  equalBytes,
   getHmacKey,
+  hmacVerify,
   materialDigest,
+  type HmacKeyCache,
 } from './crypto-util';
 import { lruStore } from './bounded-collections';
 
@@ -130,21 +131,21 @@ export function isJwtError(error: unknown): boolean {
 }
 
 /**
- * Key-import cache. The key encodes the algorithm and usages plus a
- * SHA-256 hex digest of the key material — the material itself is never
- * embedded, since an injected store may persist or log whatever it is
- * keyed by. The value is
- * a `Promise` of a process-local, non-extractable `CryptoKey`: it cannot
- * be serialized or shipped to another process, so an injected store
- * customizes the in-process import cache (its bounds, eviction policy, or
- * an id→secret mapping the process imports itself) rather than sharing
- * imported keys across instances. The default is an in-process LRU
- * bounded at 100 entries; injecting a store bypasses it entirely.
+ * Key-import cache — an alias of crypto-util's {@link HmacKeyCache} (the
+ * same `get`/`set` contract `lruStore` returns), kept under jwt's name
+ * so an injected store slots in without an adapter on either side. The
+ * key encodes the algorithm and usages plus a SHA-256 hex digest of the
+ * key material — the material itself is never embedded, since an
+ * injected store may persist or log whatever it is keyed by. The value
+ * is a `Promise` of a process-local, non-extractable `CryptoKey`: it
+ * cannot be serialized or shipped to another process, so an injected
+ * store customizes the in-process import cache (its bounds, eviction
+ * policy, or an id→secret mapping the process imports itself) rather
+ * than sharing imported keys across instances. The default is an
+ * in-process LRU bounded at 100 entries; injecting a store bypasses it
+ * entirely.
  */
-export type JwtKeyStore = {
-  get(key: string): Promise<CryptoKey> | undefined;
-  set(key: string, value: Promise<CryptoKey>): void;
-};
+export type JwtKeyStore = HmacKeyCache;
 
 /** Default key-store bound: past this many distinct imports the least
  * recently used entry is dropped (re-imported on demand), so attacker-
@@ -261,8 +262,8 @@ async function resolveKey(
     const hmacUsages: readonly KeyUsage[] = usages.includes('verify')
       ? ['sign', 'verify']
       : usages;
-    // The store passes through as-is — `JwtKeyStore` and the shared
-    // HMAC cache contract speak the same get/set shape.
+    // The store passes through as-is — JwtKeyStore *is* the shared HMAC
+    // cache contract (HmacKeyCache), same get/set shape.
     return getHmacKey(key, info.hash, hmacUsages, store);
   }
   if (key instanceof CryptoKey) {
@@ -468,10 +469,10 @@ export async function verifyJwt<T = Record<string, unknown>>(
   );
   const data = encoder.encode(`${headerText}.${payloadText}`);
   if (info.kind === 'hmac') {
-    const expected = new Uint8Array(
-      await crypto.subtle.sign('HMAC', verifyingKey, data)
-    );
-    if (!equalBytes(expected, sigBytes)) {
+    // hmacVerify re-signs and compares constant-time. The resolved key
+    // (imported 'sign'+'verify' above) passes through untouched — the
+    // usage-aware import already happened through the caller's store.
+    if (!(await hmacVerify(data, sigText ?? '', verifyingKey))) {
       throw jwtError('invalid signature');
     }
   } else {

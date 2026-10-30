@@ -33,6 +33,7 @@ import type { Ctx } from './types';
 import { readStream } from './body';
 import { concatBytes } from './bytes';
 import { httpError } from './errors';
+import { mediaTypeOf, unquoteParam } from './raw-headers';
 
 /** One parsed form field: name plus (for file parts) client metadata and
  * the part's raw bytes — binary-safe, byte-exact. */
@@ -94,7 +95,7 @@ function indexOfBytes(
 
 /** Splits a parameter list on `;` while honoring quoted strings (a `;`
  * inside quotes is data, not a separator). Backslash escapes inside
- * quotes are carried through verbatim for {@link paramValue} to unfold. */
+ * quotes are carried through verbatim for {@link unquoteParam} to unfold. */
 function splitParams(s: string): string[] {
   const out: string[] = [];
   let current = '';
@@ -123,27 +124,6 @@ function splitParams(s: string): string[] {
   return out;
 }
 
-/** Unfolds one parameter value: a quoted-string has its quotes dropped and
- * backslash escapes unfolded; a bare token is returned as-is (trimmed). */
-function paramValue(raw: string): string {
-  const t = raw.trim();
-  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
-    const inner = t.slice(1, -1);
-    let out = '';
-    for (let i = 0; i < inner.length; i += 1) {
-      const c = inner[i] ?? '';
-      if (c === '\\' && i + 1 < inner.length) {
-        out += inner[i + 1] ?? '';
-        i += 1;
-      } else {
-        out += c;
-      }
-    }
-    return out;
-  }
-  return t;
-}
-
 /** Parses `k=v; k="v"` parameters into a lowercase-keyed map. Parameter
  * names are case-insensitive; values keep their case. */
 function parseParams(s: string): Map<string, string> {
@@ -153,7 +133,7 @@ function parseParams(s: string): Map<string, string> {
     if (eq <= 0) continue;
     const key = piece.slice(0, eq).trim().toLowerCase();
     if (key === '') continue;
-    params.set(key, paramValue(piece.slice(eq + 1)));
+    params.set(key, unquoteParam(piece.slice(eq + 1)));
   }
   return params;
 }
@@ -162,13 +142,10 @@ function parseParams(s: string): Map<string, string> {
  * Media type and parameter names compare case-insensitively; the boundary
  * value (quoted or bare) keeps its case. Anything else is a 415. */
 function boundaryOf(header: string | null): string {
-  if (header !== null) {
+  if (header !== null && mediaTypeOf(header) === 'multipart/form-data') {
     const semi = header.indexOf(';');
-    const media = (semi < 0 ? header : header.slice(0, semi)).trim().toLowerCase();
-    if (media === 'multipart/form-data') {
-      const boundary = parseParams(semi < 0 ? '' : header.slice(semi + 1)).get('boundary');
-      if (boundary !== undefined && boundary !== '') return boundary;
-    }
+    const boundary = parseParams(semi < 0 ? '' : header.slice(semi + 1)).get('boundary');
+    if (boundary !== undefined && boundary !== '') return boundary;
   }
   throw httpError(415, 'Unsupported Media Type');
 }

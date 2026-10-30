@@ -3,7 +3,7 @@ import type { ShardSpec } from '../src/shard';
 import { describe, it } from 'vitest';
 
 import { createApp, get, handle, mount, post, use } from '../src/app';
-import { getPolicy, matchShard, policy, shardApp, shardSpecs } from '../src/shard';
+import { getPolicy, longestFirst, matchShard, policy, shardApp, shardSpecs } from '../src/shard';
 
 function makeRequest(path: string, method = 'GET'): Request {
   return new Request(`http://localhost${path}`, { method });
@@ -265,5 +265,43 @@ describe('matchShard', function () {
     (matchShard(noRoot, '/none') === undefined).should.be.true;
     // The '/' spec alone matches everything.
     matchShard([spec('root', '/')], '/anything/x')?.id.should.equal('root');
+  });
+});
+
+describe('longestFirst', function () {
+  const spec = (id: string, prefix: string): ShardSpec => ({
+    id,
+    prefix,
+    routes: [],
+    policy: { shard: id },
+  });
+
+  it('orders longest-prefix-first and agrees with matchShard winner-first', function () {
+    const specs = [spec('root', '/'), spec('heavy', '/heavy'), spec('jobs', '/heavy/jobs')];
+    longestFirst(specs).map((candidate) => candidate.id).should.deep.equal([
+      'jobs',
+      'heavy',
+      'root',
+    ]);
+    // The rendered priority and the dispatch decision are the same rule:
+    // for any pathname, the first list entry that matches is matchShard's pick.
+    for (const pathname of ['/', '/heavy', '/heavy/jobs/x', '/other']) {
+      const winner = matchShard(specs, pathname)?.id;
+      longestFirst(specs).find((candidate) => matchShard([candidate], pathname) !== undefined)
+        ?.id.should.equal(winner);
+    }
+  });
+
+  it('is stable for equal-length prefixes and pure over its input', function () {
+    const a = spec('a', '/aa');
+    const b = spec('b', '/bb');
+    const c = spec('c', '/cc');
+    const specs = [a, b, c];
+    // Equal lengths keep input order — a stable sort, not a re-shuffle.
+    longestFirst(specs).map((candidate) => candidate.id).should.deep.equal(['a', 'b', 'c']);
+    // Pure: the input array's declaration order survives the sort.
+    specs.map((candidate) => candidate.id).should.deep.equal(['a', 'b', 'c']);
+    // A copy, not the same reference — generation stays deterministic.
+    (longestFirst(specs) === specs).should.be.false;
   });
 });

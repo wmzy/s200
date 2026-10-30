@@ -30,9 +30,8 @@ import {
   getAppMeta,
   getRouteMeta,
   isMultipartBody,
-  isQueryRequired,
   multipartFormSchema,
-  querySchemaOf,
+  queryEntries,
   uniqueName,
   type MultipartBody,
   type RouteMeta,
@@ -166,9 +165,11 @@ function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['in
     if (paramRequired(segment)) required.add(segment.name);
   }
   if (meta?.query !== undefined) {
-    for (const [name, entry] of Object.entries(meta.query)) {
-      properties[name] = toJsonSchema(querySchemaOf(entry));
-      if (isQueryRequired(entry)) required.add(name);
+    // `required` (the Set) shadows nothing here: the walk's flag is
+    // destructured under its own name.
+    for (const { name, schema, required: isRequired } of queryEntries(meta.query)) {
+      properties[name] = toJsonSchema(schema);
+      if (isRequired) required.add(name);
     }
   }
   const body = meta?.body;

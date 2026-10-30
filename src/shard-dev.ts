@@ -23,7 +23,7 @@ import type { App } from './app';
 import type { ShardSpec } from './shard';
 
 import { handle } from './app';
-import { matchShard } from './shard';
+import { longestFirst, matchShard } from './shard';
 import { jsonFallback } from './respond';
 
 /**
@@ -80,7 +80,8 @@ export function createDispatcher(
 
 /**
  * Pure data view of the dispatch decision table — shards ordered
- * longest-prefix-first, the priority the gateway config and
+ * longest-prefix-first via {@link longestFirst} (from `s200/shard`, the
+ * contract owner), the priority the gateway config and
  * {@link matchShard} both follow. Exists for tests and docs: render it
  * next to the generated nginx map and the two must tell the same story.
  * Equal-length prefixes keep input order; they can never compete for the
@@ -89,7 +90,8 @@ export function createDispatcher(
 export function dispatchPlan(
   specs: readonly ShardSpec[]
 ): readonly { readonly prefix: string; readonly id: string }[] {
-  return [...specs]
-    .sort((a, b) => b.prefix.length - a.prefix.length)
-    .map((spec) => ({ prefix: spec.prefix, id: spec.id }));
+  return longestFirst(specs).map((spec) => ({
+    prefix: spec.prefix,
+    id: spec.id,
+  }));
 }

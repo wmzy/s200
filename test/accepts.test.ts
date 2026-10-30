@@ -115,4 +115,19 @@ describe('accepts', () => {
       { value: 'text/html', q: 1, params: new Map() },
     ]);
   });
+
+  it('parseRanges unfolds quoted params with the shared escape semantics', () => {
+    // Escaped newline unfolds to a bare LF and an escaped quote to `"`
+    // (the escape character is always consumed); a trailing lone
+    // backslash has nothing left to escape and stays; bare and
+    // empty-quoted tokens pass through.
+    const [range] = parseRanges(
+      'text/html; nl="a\\\nb"; esc="say \\"hi\\""; end="x\\"; tok=plain; empty=""'
+    );
+    range!.params.get('nl')!.should.equal('a\nb');
+    range!.params.get('esc')!.should.equal('say "hi"');
+    range!.params.get('end')!.should.equal('x\\');
+    range!.params.get('tok')!.should.equal('plain');
+    range!.params.get('empty')!.should.equal('');
+  });
 });

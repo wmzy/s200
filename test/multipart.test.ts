@@ -320,6 +320,38 @@ describe('streamForm', () => {
     outcome.parts.length.should.equal(0);
   });
 
+  it('unfolds a quoted boundary\'s escapes: a quote becomes literal, a trailing lone backslash stays', async () => {
+    // boundary="a\"b\"" unfolds to a boundary containing a literal quote
+    // and a trailing backslash — both must match the delimiters
+    // byte-exactly. (The escaped-newline case cannot ride this vehicle:
+    // the platform Headers constructor rejects a raw LF in a header
+    // value, so it is pinned over parseRanges in accepts instead.)
+    const weird = 'a"b\\';
+    const body = buildBody([
+      { label: 'd1', bytes: text(`--${weird}\r\n`) },
+      { label: 'h1', bytes: text('Content-Disposition: form-data; name="a"\r\n\r\n') },
+      { label: 'p1', bytes: text('hello') },
+      { label: 'd2', bytes: text(`\r\n--${weird}--\r\n`) },
+    ]);
+    const outcome = await runForm(
+      eagerBody(splitBytes(body.bytes, [body.at('p1') + 2])),
+      'multipart/form-data; boundary="a\\"b\\"'
+    );
+    (outcome.error === null).should.equal(true);
+    outcome.parts.length.should.equal(1);
+    outcome.parts[0]!.name.should.equal('a');
+    outcome.parts[0]!.data.should.deep.equal(Array.from(text('hello')));
+  });
+
+  it('throws 415 for a quoted empty boundary', async () => {
+    const outcome = await runForm(
+      eagerBody([text('--\r\n')]),
+      'multipart/form-data; boundary=""'
+    );
+    (outcome.error as { status: number }).status.should.equal(415);
+    outcome.parts.length.should.equal(0);
+  });
+
   it('propagates the 413 when the limit is exceeded mid-part', async () => {
     const body = buildBody([
       { label: 'd1', bytes: text(`--${BOUNDARY}\r\n`) },

@@ -199,7 +199,9 @@ function mergePolicies(group: ShardGroup, routes: readonly Route[]): RoutePolicy
 }
 
 /** The declared group with the longest matching prefix for `pattern`
- * (earlier declaration wins ties) — '/a/b/x' prefers '/a/b' over '/a'. */
+ * (earlier declaration wins ties) — '/a/b/x' prefers '/a/b' over '/a'.
+ * Single-pass best-tracking; the shared longest-prefix-wins ordering
+ * rule lives in {@link longestFirst}. */
 function longestPrefixGroup(
   groups: readonly ShardGroup[],
   pattern: string
@@ -342,6 +344,10 @@ export function shardApp<S extends State = State>(app: App<S>, group: ShardGroup
  * equals the pathname or is a path-segment prefix of it; the '/' spec
  * matches everything. Returns the winning spec, or undefined when nothing
  * matches — callers decide what an unrouted pathname means.
+ *
+ * Single-pass best-tracking (no sort, no copy): the shared
+ * longest-prefix-wins ordering rule lives in {@link longestFirst}, the
+ * sort form surfaces that render an ordered list ride.
  */
 export function matchShard(
   specs: readonly ShardSpec[],
@@ -357,4 +363,20 @@ export function matchShard(
     }
   }
   return best;
+}
+
+/**
+ * Specs ordered longest-prefix-first — the dispatch priority rendered as a
+ * list. `s200/gateway`'s views (Gateway API rules evaluate top-down, ALB
+ * rules by ascending priority) and `s200/shard-dev`'s `dispatchPlan` both
+ * ride this, so what a generated config lists and what {@link matchShard}
+ * picks can never disagree. The sort is stable: equal-length prefixes keep
+ * input order — they can never compete for the same pathname, so the order
+ * between them is presentation only. Pure: returns a new array, the
+ * input's declaration order untouched (deterministic generation).
+ */
+export function longestFirst(
+  specs: readonly ShardSpec[]
+): readonly ShardSpec[] {
+  return [...specs].sort((a, b) => b.prefix.length - a.prefix.length);
 }

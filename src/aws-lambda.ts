@@ -15,6 +15,7 @@ import type { App } from './app';
 
 import { handle } from './app';
 import { finishGuarded } from './finish';
+import { mediaTypeOf } from './raw-headers';
 import { isSafeHost } from './safe-host';
 
 /** An API Gateway HTTP API (payload v2) event — the structural subset the
@@ -119,9 +120,7 @@ function isTextual(headers: Record<string, string>): boolean {
   if (encoding !== '' && encoding !== 'identity') {
     return false;
   }
-  const media = ((headers['content-type'] ?? '').split(';', 1)[0] ?? '')
-    .trim()
-    .toLowerCase();
+  const media = mediaTypeOf(headers['content-type']);
   return (
     media === '' ||
     media.startsWith('text/') ||

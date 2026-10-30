@@ -12,6 +12,7 @@
 import type { JsonResponse } from './respond';
 import type { Handler, Params, State } from './types';
 
+import { messageOf } from './errors';
 import { json } from './respond';
 
 /**
@@ -44,9 +45,11 @@ const REASON_LIMIT = 200;
 /** Default reason when a gate is closed without one. */
 const GATE_CLOSED = 'unavailable';
 
-/** Failure reason from any thrown value: an `Error`'s message, anything else stringified, truncated. */
+/** Failure reason from any thrown value: the shared `messageOf` extraction
+ * (`./errors` — health must not import the child-realm module for it),
+ * truncated to {@link REASON_LIMIT}. */
 function reasonOf(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = messageOf(error);
   return message.length > REASON_LIMIT ? `${message.slice(0, REASON_LIMIT - 1)}…` : message;
 }
 

@@ -269,6 +269,67 @@ describe('app dispatch', () => {
     (await res.json()).should.deep.equal({ error: 'Internal Server Error' });
   });
 
+  it('logs a crashing onError through the sink with the original as cause', async () => {
+    const seen: unknown[] = [];
+    const app = createApp({
+      logError: (error) => seen.push(error),
+      onError: () => {
+        throw new Error('error-handler bug');
+      },
+    });
+    get(app, '/throw', () => {
+      throw new Error('original');
+    });
+    const res = await handle(app, new Request('http://localhost/throw'));
+    res.status.should.equal(500);
+    (await res.json()).should.deep.equal({ error: 'Internal Server Error' });
+    // One sink call: the crash carries the suppressed original as its
+    // cause, so operators see both.
+    seen.length.should.equal(1);
+    (seen[0] as Error).message.should.equal('error-handler bug');
+    ((seen[0] as Error).cause as Error).message.should.equal('original');
+  });
+
+  it('logs a non-Error original as a second sink call when onError crashes', async () => {
+    const seen: unknown[] = [];
+    const app = createApp({
+      logError: (error) => seen.push(error),
+      onError: () => {
+        throw new Error('error-handler bug');
+      },
+    });
+    get(app, '/throw', () => {
+      const oops: unknown = 'not an Error'; // cannot ride as a cause
+      throw oops;
+    });
+    const res = await handle(app, new Request('http://localhost/throw'));
+    res.status.should.equal(500);
+    // The crash first, then the original: both surfaces, in order.
+    seen
+      .map((entry) => (entry instanceof Error ? entry.message : entry))
+      .should.deep.equal(['error-handler bug', 'not an Error']);
+  });
+
+  it('keeps a bare HttpError crash silent while still surfacing the original', async () => {
+    const seen: unknown[] = [];
+    const app = createApp({
+      logError: (error) => seen.push(error),
+      onError: () => {
+        throw httpError(500, 'handler gave up');
+      },
+    });
+    get(app, '/throw', () => {
+      const oops: unknown = 'not an Error';
+      throw oops;
+    });
+    const res = await handle(app, new Request('http://localhost/throw'));
+    res.status.should.equal(500);
+    (await res.json()).should.deep.equal({ error: 'handler gave up' });
+    // Same predicate as the default path: a bare HttpError (no cause) is
+    // intentional and stays out of the sink — only the original logs.
+    seen.should.deep.equal(['not an Error']);
+  });
+
   it('registers each method helper under its HTTP method', async () => {
     const app = createApp();
     get(app, '/r', () => new Response('GET'));

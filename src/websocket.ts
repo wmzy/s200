@@ -360,6 +360,63 @@ export function negotiateProtocol(
   return undefined;
 }
 
+/** What {@link decideUpgrade} settles one upgrade request to: the
+ * promise resolving `undefined` means no registered route matched (the
+ * adapter falls through to its HTTP path), while the two verdicts mirror
+ * {@link WsUpgradeDecision} with the matched route and the negotiated
+ * subprotocol riding the approval.
+ *
+ * @internal Exported for the bun and cloudflare adapters' types. */
+export type UpgradeOutcome =
+  | {
+      readonly ok: true;
+      readonly route: WebSocketRoute;
+      readonly ctx: Ctx;
+      readonly protocol: string | undefined;
+    }
+  | { readonly ok: false; readonly response: Response };
+
+/**
+ * The adapters' shared upgrade decision chain — everything between "a
+ * request arrived" and "the runtime upgrades": parse the URL, match the
+ * ws registry (`undefined` = no route, the caller's fall-through
+ * sentinel), run the app + route middleware chain (`{ ok: false }`
+ * carries the rejection `Response` to answer with as plain HTTP instead
+ * of the `101`), then negotiate the subprotocol onto the approval. The
+ * bun and cloudflare adapters call this directly; the node adapter keeps
+ * its own front half (node's `'upgrade'` event hands it an
+ * `IncomingMessage`, so raw-header validation precedes any `Request`)
+ * over the same {@link resolveUpgrade}/{@link negotiateProtocol} pieces.
+ *
+ * @internal Exported for the bun and cloudflare adapters — their front
+ * halves were verbatim copies of this sequence.
+ */
+export async function decideUpgrade(
+  app: App,
+  request: Request
+): Promise<UpgradeOutcome | undefined> {
+  const url = new URL(request.url);
+  const matched = matchWebSocket(app, url.pathname);
+  if (matched === undefined) {
+    return undefined;
+  }
+  // The chain decides first: a rejection Response is answered as plain
+  // HTTP instead of the 101 handshake; approval carries the
+  // chain-stamped ctx.
+  const decision = await resolveUpgrade(app, matched.route, request, url, matched.params);
+  if (!decision.ok) {
+    return { ok: false, response: decision.response };
+  }
+  // Subprotocol negotiation (server preference order), through the same
+  // negotiateProtocol the node adapter calls — every runtime picks
+  // identically.
+  const protocol = negotiateProtocol(
+    request.headers.get('sec-websocket-protocol'),
+    matched.route.protocols
+  );
+  return { ok: true, route: matched.route, ctx: decision.ctx, protocol };
+}
+
 /** One live connection's listener lists — what a {@link WsSocket}'s
  * `onX` registrations append to and the adapter's transport events fan
  * out to. Plain arrays, not event emitters: dispatch is a for-loop over
@@ -436,6 +493,20 @@ export function createWsSocket(
 }
 
 /**
+ * Normalizes a thrown or runtime-reported value to the `Error` the
+ * session's error callbacks take: `Error` instances pass through,
+ * anything else becomes `new Error(fallbackMessage ?? String(value))`.
+ * All three adapters funnel their error fan-out through this one rule —
+ * a workerd error event has no guaranteed payload shape (hence its
+ * 'WebSocket error' fallback), a handler-thrown value keeps its
+ * stringified message.
+ *
+ * @internal Exported for the adapters' error callbacks. */
+export function asError(value: unknown, fallbackMessage?: string): Error {
+  return value instanceof Error ? value : new Error(fallbackMessage ?? String(value));
+}
+
+/**
  * Runs the route handler outside the middleware chain, the shared tail of
  * every adapter: the chain has already unwound by the time the socket
  * exists, so a thrown/rejected handler error must not travel it again —
@@ -454,7 +525,7 @@ export function runWsHandler(
     .then(() => handler(socket, ctx))
     .catch((error: unknown) => {
       for (const cb of session.onError) {
-        cb(error instanceof Error ? error : new Error(String(error)));
+        cb(asError(error));
       }
       close(1011, 'handler error');
     });

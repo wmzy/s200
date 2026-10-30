@@ -2,11 +2,14 @@ import { describe, it, vi } from 'vitest';
 
 import { lruStore } from '../src/bounded-collections';
 import {
+  b64Decode,
   b64Encode,
   b64urlDecode,
   b64urlEncode,
   equalBytes,
   getHmacKey,
+  hmacSign,
+  hmacVerify,
   materialDigest,
   randomToken,
   toHex,
@@ -100,6 +103,37 @@ describe('crypto-util', function () {
     // All-0xff drives the encoder into the high alphabet chars — here they
     // must stay '+', '/', unlike b64urlEncode's '-'/'_' translation.
     b64Encode(new Uint8Array(32).fill(255)).should.match(/^[A-Za-z0-9+/]{43}=$/);
+  });
+
+  it('decodes standard base64: vectors roundtrip b64Encode (b64Decode)', function () {
+    for (const bytes of [
+      new Uint8Array(0),
+      new Uint8Array([102]),
+      new Uint8Array([102, 111]),
+      new Uint8Array([102, 111, 111]),
+      new Uint8Array(32).fill(255),
+    ]) {
+      const decoded = b64Decode(b64Encode(bytes));
+      (decoded === null).should.be.false;
+      equalBytes(decoded!, bytes).should.be.true;
+    }
+    // Padded vectors, plus the unpadded shape atob accepts.
+    Array.from(b64Decode('Zg==') ?? []).should.deep.equal([102]);
+    Array.from(b64Decode('Zm8=') ?? []).should.deep.equal([102, 111]);
+    Array.from(b64Decode('Zm9v') ?? []).should.deep.equal([102, 111, 111]);
+    Array.from(b64Decode('Zm8') ?? []).should.deep.equal([102, 111]);
+    // Padding completes the final quantum — a '=' after a whole group,
+    // or 3+ pads, is malformed.
+    (b64Decode('Zm9v=') === null).should.be.true;
+    (b64Decode('Zg===') === null).should.be.true;
+    (b64Decode('Zg====') === null).should.be.true;
+    // '=' before the trailing run, out-of-alphabet chars, non-ASCII.
+    (b64Decode('Zm=9v') === null).should.be.true;
+    (b64Decode('Zm9v!') === null).should.be.true;
+    (b64Decode('Z\u00e9==') === null).should.be.true;
+    // A final group of 1 char carries only 6 bits — short of a byte.
+    (b64Decode('Z') === null).should.be.true;
+    (b64Decode('Z==') === null).should.be.true;
   });
 
   it('renders lowercase hex, two chars per byte (toHex)', function () {
@@ -221,5 +255,54 @@ describe('crypto-util', function () {
     }
     const tokens = new Set(Array.from({ length: 64 }, () => randomToken(16)));
     tokens.size.should.equal(64);
+  });
+
+  it('signs and verifies through the shared HMAC helpers (hmacSign/hmacVerify)', async function () {
+    const message = new TextEncoder().encode('604800.nonce');
+    const sig = await hmacSign(message, 'shared-secret');
+    sig.should.match(/^[A-Za-z0-9_-]+$/); // base64url, no '=' tail
+    (await hmacVerify(message, sig, 'shared-secret')).should.be.true;
+    (await hmacVerify(message, sig, 'other-secret')).should.be.false;
+    // A different message, or a mutated/lengthened signature, fails.
+    (await hmacVerify(new TextEncoder().encode('604800.nonce.'), sig, 'shared-secret')).should.be.false;
+    (await hmacVerify(message, `${sig}x`, 'shared-secret')).should.be.false;
+    (await hmacVerify(message, `${sig.slice(0, -1)}`, 'shared-secret')).should.be.false;
+    // A malformed signature encoding reads false, never throws.
+    (await hmacVerify(message, '!!not-base64url!!', 'shared-secret')).should.be.false;
+    (await hmacVerify(message, 'Zg==', 'shared-secret')).should.be.false; // '=' padding
+    // Default digest is SHA-256 — byte-identical to a direct subtle sign.
+    const key = await getHmacKey('shared-secret', 'SHA-256', ['sign']);
+    Array.from(b64urlDecode(sig)!).should.deep.equal(
+      Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, message)))
+    );
+  });
+
+  it('honors the hash option and an injected cache (hmacSign/hmacVerify)', async function () {
+    const message = new TextEncoder().encode('scoped');
+    const seen: string[] = [];
+    const store: HmacKeyCache = { get: () => undefined, set: (key) => seen.push(key) };
+    const sig512 = await hmacSign(message, 'scoped-secret', { hash: 'SHA-512', cache: store });
+    // The cache row carries the hash and the secret's digest, never the secret.
+    seen.length.should.equal(1);
+    seen[0]!.should.match(/^SHA-512:sign:[0-9a-f]{64}$/);
+    // The same material+hash verifies through the default cache — the
+    // injected store is a scope, not a different key derivation.
+    (await hmacVerify(message, sig512, 'scoped-secret', { hash: 'SHA-512' })).should.be.true;
+    // A different digest is a different signature.
+    const sig256 = await hmacSign(message, 'scoped-secret', { cache: store });
+    sig256.should.not.equal(sig512);
+    seen[1]!.should.match(/^SHA-256:sign:/);
+    (await hmacVerify(message, sig256, 'scoped-secret', { hash: 'SHA-512' })).should.be.false;
+  });
+
+  it('signs and verifies with a pre-imported CryptoKey untouched', async function () {
+    const message = new TextEncoder().encode('passthrough');
+    // jwt hands hmacSign/hmacVerify an already-resolved key — no import,
+    // no cache hop, no usage negotiation.
+    const key = await getHmacKey('passthrough-secret', 'SHA-384', ['sign', 'verify']);
+    const sig = await hmacSign(message, key);
+    (await hmacVerify(message, sig, key)).should.be.true;
+    // Same material through the import path derives the same signature.
+    (await hmacVerify(message, sig, 'passthrough-secret', { hash: 'SHA-384' })).should.be.true;
   });
 });

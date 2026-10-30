@@ -227,16 +227,25 @@ function materialize<S extends number = 200>(
   return ctx.res as StatusedResponse<S>;
 }
 
-/** Builds a Headers view of `init` with a default content-type filled in —
- * explicit headers always win over defaults. */
-function defaultedHeaders(
+/** Builds a Headers view of `init` with the helper's `defaults` filled in
+ * only where the caller set nothing — explicit headers always win over
+ * defaults. Built on {@link headersFor}, so every legal `HeadersInit`
+ * shape (a `Headers` instance, a `[name, value]` pair list, a plain
+ * record) lands identically and the light path keeps its zero-copy
+ * {@link LightHeaders} view. The one fill-unset loop behind the respond
+ * helpers' fallback content-type and `s200/streaming`'s multi-default
+ * headers. Exported for batteries that fill defaults of their own
+ * instead of hand-rolling a `new Headers`.
+ *
+ * @internal */
+export function defaultedHeaders(
   ctx: Ctx,
   init: ResponseInit | undefined,
-  fallback: string
+  defaults: Readonly<Record<string, string>>
 ): Headers {
   const headers = headersFor(ctx, init?.headers);
-  if (!headers.has('content-type')) {
-    headers.set('content-type', fallback);
+  for (const [name, value] of Object.entries(defaults)) {
+    if (!headers.has(name)) headers.set(name, value);
   }
   return headers;
 }
@@ -261,7 +270,7 @@ export function stringResponse<S extends number = 200>(
   const headers =
     fallbackContentType === undefined
       ? headersFor(ctx, init?.headers)
-      : defaultedHeaders(ctx, init, fallbackContentType);
+      : defaultedHeaders(ctx, init, { 'content-type': fallbackContentType });
   return materialize(ctx, body, init, headers, utf8Length(body));
 }
 

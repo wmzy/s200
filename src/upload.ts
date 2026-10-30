@@ -33,6 +33,7 @@ import type { Ctx } from './types';
 import type { FormPart } from './multipart';
 
 import { DEFAULT_MAX_PART_SIZE, streamForm } from './multipart';
+import { addParam } from './query';
 import { httpError } from './errors';
 
 const decoder = new TextDecoder();
@@ -257,15 +258,7 @@ export async function uploadForm(
     ctx,
     async (part) => {
       if (part.filename === undefined) {
-        const value = decoder.decode(part.data);
-        const existing = fields[part.name];
-        if (existing === undefined) {
-          fields[part.name] = value;
-        } else if (Array.isArray(existing)) {
-          existing.push(value);
-        } else {
-          fields[part.name] = [existing, value];
-        }
+        addParam(fields, part.name, decoder.decode(part.data));
         return;
       }
       if (accept !== undefined && !accepted(part, accept)) {

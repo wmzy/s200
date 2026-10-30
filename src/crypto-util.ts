@@ -47,6 +47,35 @@ export function b64Encode(bytes: Uint8Array): string {
   return btoa(toBinaryString(bytes));
 }
 
+/** Standard-alphabet base64 decode (RFC 4648 §4, padded) — the decode
+ * twin of {@link b64Encode}: `+` `/` translate onto the url-safe table
+ * so the bit-packing stays the one shared decoder. `null` on '='
+ * outside the one trailing padding run, padding that does not complete
+ * the final quantum (a `=` after a whole group, or 3+ pads), any
+ * out-of-alphabet char, or `length % 4 === 1` (inherited from the core
+ * — a final group of 1 char carries only 6 bits, short of a byte). */
+export function b64Decode(text: string): Uint8Array | null {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 61 /* '=' */) {
+    end -= 1;
+  }
+  const pads = text.length - end;
+  // Padding completes a quantum: 0 pads anywhere (unpadded input), else
+  // exactly 2 or 3 data chars must precede it — atob's forgiving shape.
+  if (pads > 2 || (pads > 0 && end % 4 !== 2 && end % 4 !== 3)) {
+    return null;
+  }
+  let core = '';
+  for (let i = 0; i < end; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code === 61 /* '=' */) {
+      return null; // before the trailing run — out of place
+    }
+    core += code === 43 /* '+' */ ? '-' : code === 47 /* '/' */ ? '_' : String.fromCharCode(code);
+  }
+  return b64urlDecode(core);
+}
+
 /** Lowercase hex, two chars per byte — the digest rendering SHA etags
  * and key-material cache keys use. */
 export function toHex(bytes: Uint8Array): string {
@@ -120,8 +149,8 @@ export async function materialDigest(
 }
 
 /** The cache contract {@link getHmacKey} reads and writes through — the
- * same `get`/`set` shape `lruStore` returns and jwt's `JwtKeyStore`
- * speaks, so an injected store slots in without an adapter. */
+ * `get`/`set` shape `lruStore` returns (jwt's `JwtKeyStore` is this
+ * type), so an injected store slots in without an adapter. */
 export type HmacKeyCache = {
   get(key: string): Promise<CryptoKey> | undefined;
   set(key: string, value: Promise<CryptoKey>): void;
@@ -213,4 +242,69 @@ export async function getHmacKey(
  * share. */
 export function randomToken(byteLength: number): string {
   return b64urlEncode(crypto.getRandomValues(new Uint8Array(byteLength)));
+}
+
+/** The {@link hmacSign}/{@link hmacVerify} knobs: the digest (default
+ * SHA-256, the cookie/CSRF/jwt-HS256 convention) and the import cache a
+ * caller scopes for itself (cookies' private 8-entry LRU) — the default
+ * is the shared process-wide cache below. */
+export type HmacOptions = {
+  readonly hash?: 'SHA-256' | 'SHA-384' | 'SHA-512';
+  readonly cache?: HmacKeyCache;
+};
+
+/** Resolves the key behind {@link hmacSign}/{@link hmacVerify}: material
+ * imports through {@link getHmacKey} (one digest-keyed row per secret),
+ * an already-imported `CryptoKey` passes through untouched — jwt
+ * resolves its keys through usage-aware stores of its own. */
+async function hmacKeyFor(
+  secret: string | Uint8Array | CryptoKey,
+  options: HmacOptions
+): Promise<CryptoKey> {
+  if (secret instanceof CryptoKey) {
+    return secret;
+  }
+  return getHmacKey(secret, options.hash ?? 'SHA-256', ['sign'], options.cache);
+}
+
+/** HMAC over `message` as raw digest bytes — the shared core of
+ * {@link hmacSign} (renders base64url) and {@link hmacVerify} (compares
+ * the bytes constant-time). */
+async function hmacSignBytes(
+  message: Uint8Array,
+  secret: string | Uint8Array | CryptoKey,
+  options: HmacOptions
+): Promise<Uint8Array> {
+  const key = await hmacKeyFor(secret, options);
+  return new Uint8Array(
+    await crypto.subtle.sign('HMAC', key, message as Uint8Array<ArrayBuffer>)
+  );
+}
+
+/** HMAC over `message`, rendered base64url — the one mint the cookie
+ * signature, the CSRF token, and jwt's HS* re-sign share; digest and
+ * cache scope flow through `options`. */
+export async function hmacSign(
+  message: Uint8Array,
+  secret: string | Uint8Array | CryptoKey,
+  options: HmacOptions = {}
+): Promise<string> {
+  return b64urlEncode(await hmacSignBytes(message, secret, options));
+}
+
+/** HMAC verification by re-signing and comparing constant-time
+ * ({@link equalBytes}) — the cookie-signature/double-submit convention.
+ * The stored signature decodes as base64url first: a malformed encoding
+ * reads `false`, not a throw, so a gate keeps its fail-closed answer. */
+export async function hmacVerify(
+  message: Uint8Array,
+  signatureB64url: string,
+  secret: string | Uint8Array | CryptoKey,
+  options: HmacOptions = {}
+): Promise<boolean> {
+  const given = b64urlDecode(signatureB64url);
+  if (given === null) {
+    return false;
+  }
+  return equalBytes(await hmacSignBytes(message, secret, options), given);
 }

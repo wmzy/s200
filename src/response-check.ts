@@ -36,6 +36,7 @@ import type { SchemaIssue, SerializeSchema } from './serialize';
 
 import { httpError } from './errors';
 import { getRouteMeta } from './meta';
+import { mediaTypeOf } from './raw-headers';
 import { rebuild } from './respond';
 import { checkSchema } from './serialize';
 import { formatIssuePath } from './validate';
@@ -44,10 +45,10 @@ import { formatIssuePath } from './validate';
 const MISMATCH = 'Response schema mismatch';
 
 /** JSON media test: `application/json` (parameters ignored) or any
- * `…+json` vendor type, case-insensitively. */
+ * `…+json` vendor type, case-insensitively. An absent content-type is
+ * not JSON (`mediaTypeOf` reads it as `''`). */
 function isJson(contentType: string | null): boolean {
-  if (contentType === null) return false;
-  const media = contentType.split(';')[0]!.trim().toLowerCase();
+  const media = mediaTypeOf(contentType);
   return media === 'application/json' || media.endsWith('+json');
 }
 

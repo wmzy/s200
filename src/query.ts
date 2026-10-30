@@ -16,6 +16,30 @@ import { recordGate, type InputOf, type StandardSchema } from './validate';
 export type QueryRecord = Record<string, string | string[]>;
 
 /**
+ * The shared repeated-key collection convention: a key's first value
+ * lands as a plain string, its second promotes the key to an array, and
+ * every later value appends (`?tag=a&tag=b` → `['a', 'b']`).
+ * `parseQuery` and `uploadForm`'s field branch ride it so the two
+ * collectors cannot drift apart.
+ *
+ * @internal
+ */
+export function addParam(
+  record: QueryRecord,
+  key: string,
+  value: string
+): void {
+  const existing = record[key];
+  if (existing === undefined) {
+    record[key] = value;
+  } else if (Array.isArray(existing)) {
+    existing.push(value);
+  } else {
+    record[key] = [existing, value];
+  }
+}
+
+/**
  * Reads the request's query string into a plain record. Keys appearing
  * once are strings; repeated keys become arrays. Allocation is per
  * request — the URL was already parsed on the context, no re-parsing.
@@ -26,14 +50,7 @@ export function parseQuery(ctx: Ctx): QueryRecord {
   // `constructor`/`toString` keys must not shadow inherited members.
   const out = Object.create(null) as QueryRecord;
   for (const [key, value] of ctx.query) {
-    const existing = out[key];
-    if (existing === undefined) {
-      out[key] = value;
-    } else if (Array.isArray(existing)) {
-      existing.push(value);
-    } else {
-      out[key] = [existing, value];
-    }
+    addParam(out, key, value);
   }
   return out;
 }

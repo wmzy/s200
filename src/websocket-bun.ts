@@ -25,9 +25,7 @@ import type { Ctx } from './types';
 import {
   createWsSession,
   createWsSocket,
-  matchWebSocket,
-  negotiateProtocol,
-  resolveUpgrade,
+  decideUpgrade,
   runWsHandler,
   type WebSocketHandler,
   type WsSession,
@@ -107,28 +105,24 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
     req: Request,
     server: BunUpgrader
   ): Promise<boolean | Response> => {
-    const url = new URL(req.url);
-    const matched = matchWebSocket(app, url.pathname);
-    if (matched === undefined) {
+    // The shared decision chain (websocket.ts's decideUpgrade): route
+    // match, middleware verdict, subprotocol negotiation. undefined = no
+    // ws route → the fetch handler's HTTP path; a rejection Response is
+    // answered as plain HTTP.
+    const decision = await decideUpgrade(app, req);
+    if (decision === undefined) {
       return false;
     }
-    // The chain decides first: a rejection Response is answered as plain
-    // HTTP by the fetch handler; approval carries the chain-stamped ctx.
-    const decision = await resolveUpgrade(app, matched.route, req, url, matched.params);
     if (!decision.ok) {
       return decision.response;
     }
-    // Subprotocol negotiation (server preference order), shared with the
-    // node and cloudflare adapters through negotiateProtocol so every
-    // runtime picks identically.
-    const protocol = negotiateProtocol(
-      req.headers.get('sec-websocket-protocol'),
-      matched.route.protocols
-    );
     // The data record reaches `open` via Bun's ws.data.
     return server.upgrade(req, {
-      data: { route: matched.route, ctx: decision.ctx, protocol },
-      headers: protocol === undefined ? undefined : { 'sec-websocket-protocol': protocol },
+      data: { route: decision.route, ctx: decision.ctx, protocol: decision.protocol },
+      headers:
+        decision.protocol === undefined
+          ? undefined
+          : { 'sec-websocket-protocol': decision.protocol },
     });
   };
 

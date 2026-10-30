@@ -33,11 +33,10 @@ import type { App } from './app';
 import type { Ctx } from './types';
 
 import {
+  asError,
   createWsSession,
   createWsSocket,
-  matchWebSocket,
-  negotiateProtocol,
-  resolveUpgrade,
+  decideUpgrade,
   runWsHandler,
   type WebSocketHandler,
   type WsData,
@@ -97,9 +96,10 @@ export type CloudflareWebSocketBridge = {
  * falls through to the HTTP handler. The matched handler runs once the
  * response is returned; its listeners receive the socket's events.
  *
- * Subprotocol negotiation mirrors the node and bun adapters (server
- * preference order), and the negotiated protocol rides the 101 response's
- * `sec-websocket-protocol` header so the runtime completes the handshake.
+ * Subprotocol negotiation happens inside the shared decideUpgrade chain
+ * (server preference order, identical to node and bun), and the
+ * negotiated protocol rides the 101 response's `sec-websocket-protocol`
+ * header so the runtime completes the handshake.
  */
 export function createCloudflareWebSocketBridge(app: App): CloudflareWebSocketBridge {
   const upgrade = async (request: Request): Promise<Response | undefined> => {
@@ -110,24 +110,17 @@ export function createCloudflareWebSocketBridge(app: App): CloudflareWebSocketBr
     if (wanted === null || wanted.toLowerCase() !== 'websocket') {
       return undefined;
     }
-    const url = new URL(request.url);
-    const matched = matchWebSocket(app, url.pathname);
-    if (matched === undefined) {
+    // The shared decision chain (websocket.ts's decideUpgrade): route
+    // match, middleware verdict, subprotocol negotiation. undefined = no
+    // ws route → the worker's HTTP fetch; a rejection Response is
+    // answered as plain HTTP.
+    const decision = await decideUpgrade(app, request);
+    if (decision === undefined) {
       return undefined;
     }
-    // The chain decides first: a rejection Response is answered as plain
-    // HTTP by the fetch handler; approval carries the chain-stamped ctx.
-    const decision = await resolveUpgrade(app, matched.route, request, url, matched.params);
     if (!decision.ok) {
       return decision.response;
     }
-    // Subprotocol negotiation (server preference order), shared with the
-    // node and bun adapters through negotiateProtocol so every runtime
-    // picks identically.
-    const protocol = negotiateProtocol(
-      request.headers.get('sec-websocket-protocol'),
-      matched.route.protocols
-    );
     let pair: CloudflareWebSocketPair;
     try {
       pair = new WebSocketPair();
@@ -144,10 +137,10 @@ export function createCloudflareWebSocketBridge(app: App): CloudflareWebSocketBr
     // Accept before wiring listeners: workerd dispatches socket events
     // only after accept.
     server.accept();
-    runConnection(server, matched.route.handler, decision.ctx, protocol);
+    runConnection(server, decision.route.handler, decision.ctx, decision.protocol);
     const headers = new Headers();
-    if (protocol !== undefined) {
-      headers.set('sec-websocket-protocol', protocol);
+    if (decision.protocol !== undefined) {
+      headers.set('sec-websocket-protocol', decision.protocol);
     }
     return switchProtocols(client, headers);
   };
@@ -204,7 +197,9 @@ function runConnection(
     for (const cb of session.onClose) cb(event.code, event.reason);
   });
   server.addEventListener('error', (event) => {
-    const error = event instanceof Error ? event : new Error('WebSocket error');
+    // Workerd's error events carry no guaranteed payload — asError keeps
+    // this bridge's 'WebSocket error' fallback message contract.
+    const error = asError(event, 'WebSocket error');
     for (const cb of session.onError) cb(error);
   });
   runWsHandler(handler, socket, ctx, session, close);

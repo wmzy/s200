@@ -7,9 +7,15 @@ import { join, relative } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createApp, get, handle, use } from '../src/app';
-import { createHotApp, importFresh, watchAndReload } from '../src/dev';
+import {
+  createDevEventBus,
+  createHotApp,
+  importFresh,
+  watchAndReload,
+  withDevOverlay,
+} from '../src/dev';
 import { serve } from '../src/node';
-import { json, text } from '../src/respond';
+import { html, json, text } from '../src/respond';
 
 const req = (path: string): Request => new Request(`http://localhost${path}`);
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -357,5 +363,23 @@ describe('watchAndReload source-file filtering', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('withDevOverlay rebuild', () => {
+  it('keeps status, statusText and an honest content-length across the injection', async () => {
+    const app = createApp();
+    get(app, '/page', (ctx) =>
+      html(ctx, '<html><body>hello</body></html>', { statusText: 'Swell' })
+    );
+    const overlay = withDevOverlay(app, createDevEventBus());
+    const res = await handle(overlay, req('/page'));
+    res.status.should.equal(200);
+    // rebuildWithBody now rides respond's rebuild: statusText survives
+    // the body swap (the hand-rolled newResponse rebuild dropped it).
+    res.statusText.should.equal('Swell');
+    const body = await res.text();
+    body.should.contain('/__s200/dev-events'); // the script landed before </body>
+    res.headers.get('content-length')?.should.equal(String(body.length)); // ASCII body
   });
 });

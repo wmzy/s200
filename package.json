@@ -786,7 +786,7 @@
       "path": "src/openapi.ts",
       "import": "{ openapiSpec, openapiJson }",
       "gzip": true,
-      "limit": "3.87 KB"
+      "limit": "3.89 KB"
     },
     {
       "name": "dev battery (min+gz)",

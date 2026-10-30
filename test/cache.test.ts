@@ -152,6 +152,27 @@ describe('cache', () => {
     (await (await handle(app, new Request('http://localhost/a'))).text()).should.equal('a3');
   });
 
+  it('refreshes recency on hit — a hit saves an entry from eviction', async () => {
+    let runs = 0;
+    const app = createApp();
+    use(app, cache({ max: 2 }));
+    get(app, '/a', () => {
+      runs += 1;
+      return new Response(`a${runs}`);
+    });
+    get(app, '/b', () => new Response('b'));
+    get(app, '/c', () => new Response('c'));
+
+    await handle(app, new Request('http://localhost/a')); // cache: [a]
+    await handle(app, new Request('http://localhost/b')); // cache: [a, b]
+    // Hit /a: refresh bumps it past /b — cache order is now [b, a].
+    (await (await handle(app, new Request('http://localhost/a'))).text()).should.equal('a1');
+    // /c stores by evicting the OLDEST — /b, not the refreshed /a.
+    await handle(app, new Request('http://localhost/c'));
+    // /a survived: served from the store without a re-run.
+    (await (await handle(app, new Request('http://localhost/a'))).text()).should.equal('a1');
+  });
+
   it('skips storage when the body exceeds the size limit', async () => {
     let runs = 0;
     const app = createApp();

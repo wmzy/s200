@@ -27,6 +27,7 @@ import type {
 import type { ParamsOf } from './router';
 
 import { appendQuery, fillSegments } from './pattern-fill';
+import { composeSignals } from './signal';
 
 /** `RequestInit` plus s200's query-string sugar. */
 export type ClientInit = RequestInit & {
@@ -352,32 +353,6 @@ type PathFn = (args: Params | undefined, init: ClientInit | undefined) => Promis
 type ClientDispatch = (req: Request) => Promise<Response>;
 
 /**
- * Two signals raced as one: `AbortSignal.any` where the runtime has it
- * (Node >= 20.3 — the floor), manual listener linkage elsewhere. The
- * composite aborts with the reason of whichever source aborted first.
- */
-function linkSignals(primary: AbortSignal, timeout: AbortSignal): AbortSignal {
-  if (typeof AbortSignal.any === 'function') {
-    return AbortSignal.any([primary, timeout]);
-  }
-  const controller = new AbortController();
-  const abort = (source: AbortSignal): void => {
-    if (!controller.signal.aborted) {
-      controller.abort(source.reason);
-    }
-  };
-  if (primary.aborted) {
-    abort(primary);
-  }
-  if (timeout.aborted) {
-    abort(timeout);
-  }
-  primary.addEventListener('abort', () => abort(primary), { once: true });
-  timeout.addEventListener('abort', () => abort(timeout), { once: true });
-  return controller.signal;
-}
-
-/**
  * Resolves the signal one request rides: the per-call `init.signal` when
  * given (it overrides the client-level `signal`), else the client-level
  * `signal`; with `timeoutMs` set, a fresh per-request
@@ -390,7 +365,9 @@ function signalOf(options: ClientOptions): (init: AbortSignal | null | undefined
       return effective ?? undefined;
     }
     const timeout = AbortSignal.timeout(options.timeoutMs);
-    return effective === undefined || effective === null ? timeout : linkSignals(effective, timeout);
+    return effective === undefined || effective === null
+      ? timeout
+      : composeSignals(effective, timeout);
   };
 }
 

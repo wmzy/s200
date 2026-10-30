@@ -107,6 +107,23 @@ describe('readiness', () => {
     });
   });
 
+  it('reports non-Error rejects stringified (the shared messageOf extraction)', async () => {
+    const app = createApp();
+    get(
+      app,
+      '/ready',
+      readiness({
+        str: () => Promise.reject('raw string reject'),
+        obj: () => Promise.reject({ code: 17 }),
+      })
+    );
+    const res = await handle(app, new Request('http://localhost/ready'));
+    res.status.should.equal(503);
+    const body = (await res.json()) as ReadinessBody;
+    body.checks.str?.should.equal('raw string reject');
+    body.checks.obj?.should.equal('[object Object]');
+  });
+
   it('times a hung check out at the budget and reports the timeout reason', async () => {
     const app = createApp();
     get(

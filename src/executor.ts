@@ -44,7 +44,8 @@ import { createServer as createNetServer, connect as connectSocket } from 'node:
 import process from 'node:process';
 import { Worker } from 'node:worker_threads';
 
-import { messageOf, SELF_PATH, SELF_URL, WORKER_BOOTSTRAP } from './executor-child';
+import { SELF_PATH, SELF_URL, WORKER_BOOTSTRAP } from './executor-child';
+import { messageOf } from './errors';
 
 // Child-realm machinery re-exports: `s200/executor` keeps the whole
 // battery's public surface at one specifier (and the published bundle

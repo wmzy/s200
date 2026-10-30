@@ -64,8 +64,8 @@ import {
   getRouteMeta,
   isMultipartBody,
   isMultipartFile,
-  isQueryRequired,
   multipartFormSchema,
+  queryEntries,
   querySchemaOf,
   throwsErrors,
   uniqueName,
@@ -206,12 +206,12 @@ function locatedParameters(
   sites: SchemaSite[]
 ): unknown[] {
   const out: unknown[] = [];
-  for (const [name, entry] of Object.entries(entries ?? {})) {
-    const schema = toJsonSchema(querySchemaOf(entry));
+  for (const { name, schema: entrySchema, required } of queryEntries(entries)) {
+    const schema = toJsonSchema(entrySchema);
     const param = {
       name,
       in: where,
-      required: isQueryRequired(entry),
+      required,
       schema,
     };
     sites.push({ json: JSON.stringify(schema), holder: param });
@@ -517,9 +517,10 @@ function validationGate(meta: RouteMeta): Middleware {
   const gateEntries = (
     entries: Record<string, QueryParam> | undefined
   ): readonly GateEntry[] =>
-    Object.entries(entries ?? {}).map(
-      ([key, entry]) =>
-        [key, compileValidator(querySchemaOf(entry)), isQueryRequired(entry)] as const
+    Array.from(
+      queryEntries(entries),
+      ({ name, schema, required }) =>
+        [name, compileValidator(schema), required] as const
     );
   const query = gateEntries(meta.query);
   const params = gateEntries(meta.params);

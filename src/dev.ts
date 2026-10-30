@@ -20,7 +20,7 @@ import type { Ctx, Middleware, Next, Route, Segment, State } from './types';
 import { watch, type FSWatcher } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import { newResponse, utf8Length } from './respond';
+import { rebuild, utf8Length } from './respond';
 import { createRoute, methodCompatible } from './router';
 import { streamSSE } from './streaming';
 
@@ -257,19 +257,15 @@ export type RouteHintsBody = {
   readonly routes?: string[];
 };
 
-/** Rebuilds a response around a rewritten body: a fresh response carrying
- * the original status and headers, then a REPLACED `content-length` —
- * `newResponse` does not recompute it, and the copied value still
- * describes the old body, so the wire framing would lie (this is the
- * hazard both the hints decoration and the overlay injection run into).
- * Only ever replaces, never appends, so a shorter body shrinks it. */
-function rebuildWithBody(
-  ctx: Ctx,
-  body: string,
-  status: number,
-  headers: Headers
-): Response {
-  const rebuilt = newResponse(ctx, body, { status, headers });
+/** Rebuilds a response around a rewritten body: {@link rebuild} carries the
+ * original status, statusText, and a headers copy, then a REPLACED
+ * `content-length` — neither {@link rebuild} nor `newResponse` recomputes
+ * it, and the copied value still describes the old body, so the wire
+ * framing would lie (this is the hazard both the hints decoration and
+ * the overlay injection run into). Only ever replaces, never appends, so
+ * a shorter body shrinks it. */
+function rebuildWithBody(ctx: Ctx, res: Response, body: string): Response {
+  const rebuilt = rebuild(ctx, res, body);
   rebuilt.headers.set('content-length', String(utf8Length(body)));
   return rebuilt;
 }
@@ -405,7 +401,7 @@ export function routeHints(app: App, options: RouteHintsOptions = {}): Middlewar
       // headers were stamped for — rebuildWithBody swaps the framing to
       // the new body (replacing the stale content-length, never
       // appending to it).
-      ctx.res = rebuildWithBody(ctx, JSON.stringify(decorated), 404, res.headers);
+      ctx.res = rebuildWithBody(ctx, res, JSON.stringify(decorated));
     }
   };
 }
@@ -559,8 +555,8 @@ const OVERLAY_SCRIPT = `<script>(function () {
  * and passes through as-is: buffering it to inject would defeat the
  * streaming. `HEAD` requests skip injection (their body is rebuilt away by
  * the core afterwards anyway); so does anything without a closing body
- * tag. The rebuilt response keeps the status and headers, with an honest
- * new `content-length`.
+ * tag. The rebuilt response keeps the status, statusText, and headers,
+ * with an honest new `content-length`.
  */
 function overlayMiddleware(): Middleware {
   return async (ctx: Ctx, next: Next): Promise<void> => {
@@ -584,7 +580,7 @@ function overlayMiddleware(): Middleware {
       return;
     }
     const injected = `${body.slice(0, at)}${OVERLAY_SCRIPT}${body.slice(at)}`;
-    ctx.res = rebuildWithBody(ctx, injected, res.status, res.headers);
+    ctx.res = rebuildWithBody(ctx, res, injected);
   };
 }
 

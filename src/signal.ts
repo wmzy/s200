@@ -44,3 +44,37 @@ export function signalInit(request: Request): { signal: AbortSignal } | undefine
   const signal = requestSignal(request);
   return signal === undefined ? undefined : { signal };
 }
+
+/**
+ * Two signals raced as one: `AbortSignal.any` where the runtime has it
+ * (Node >= 20.3 — the floor), manual listener linkage elsewhere. The
+ * composite aborts with the reason of whichever source aborted first —
+ * pre-aborted sources are honored in argument order, and the first
+ * `abort` wins, so the composite's reason is stable no matter how late
+ * the second source fires. `s200/client`'s per-request timeout race
+ * rides this; call it inside a request handler, never at module
+ * evaluation (workerd forbids signal creation in the global scope —
+ * see {@link neverSignal}).
+ *
+ * @internal
+ */
+export function composeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([a, b]);
+  }
+  const controller = new AbortController();
+  const abort = (source: AbortSignal): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(source.reason);
+    }
+  };
+  if (a.aborted) {
+    abort(a);
+  }
+  if (b.aborted) {
+    abort(b);
+  }
+  a.addEventListener('abort', () => abort(a), { once: true });
+  b.addEventListener('abort', () => abort(b), { once: true });
+  return controller.signal;
+}

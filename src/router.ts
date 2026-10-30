@@ -582,6 +582,10 @@ export function matchRoutes(
   // hot path pays nothing for the other methods registered on the same
   // path. Each candidate check appears twice — once for the node's plain
   // list, once per indexed bucket — keeping the loop bodies allocation-free.
+  //
+  // Mirrored by the phase-2 `Allow` walk below (~:636): a walk shape
+  // changed here must be mirrored there (descent order, plain/indexed
+  // scans, seq lookup).
   let best: { seq: number; route: Route; params: Params } | undefined;
   let node: StaticNode | undefined = index.root;
   let depth = 0;
@@ -629,6 +633,10 @@ export function matchRoutes(
   // methods per path that cost a second path match per candidate, on top of
   // allocating the `Allow` collection on a request that never needs it. The
   // 405 path is rare — the second walk is the cheaper trade.
+  //
+  // Mirrored from the phase-1 candidate walk above (~:579, method filter
+  // inverted): a walk shape changed here must be mirrored there (descent
+  // order, plain/indexed scans, seq lookup).
   //
   // Position-sorted so the list reads in registration order, deduping
   // shadowed same-method registrations (first one wins on dispatch, but

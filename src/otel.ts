@@ -266,6 +266,13 @@ const noopMeter: Meter = {
  *   `unit: 'ms'` hint says so; the OTel convention default is seconds —
  *   rescale in your backend view if you need `'s'`).
  *
+ * The +1/`finally` -1 gauge and completion count are the same in-chain
+ * accounting `s200/unit-metrics`' middleware keeps in-process
+ * (`inFlight`/`maxInFlight`/`requests` — the twin note lives there);
+ * both rely on the in-chain error boundary: a settled `next()` implies a
+ * materialized response, so the `finally` always balances and every
+ * request counts as handled, error or not.
+ *
  * Attributes follow the same conventions: `http.request.method` (uppercased)
  * and `http.response.status_code` — always the materialized status, because
  * the in-chain error boundary writes the 404/405/500 before the unwind, so

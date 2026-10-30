@@ -4,6 +4,8 @@ import { createApp, use } from '../src/app';
 import { httpError } from '../src/errors';
 import { setHeader } from '../src/respond';
 import {
+  asError,
+  decideUpgrade,
   matchWebSocket,
   resolveUpgrade,
   upgradeWebSocket,
@@ -331,5 +333,78 @@ describe('websocket upgrade decision (middleware chain)', () => {
     if (!decision.ok) {
       (decision.response.headers.get('x-ws-verdict') ?? '').should.equal('denied');
     }
+  });
+});
+
+describe('websocket decideUpgrade (the adapters\' shared chain)', () => {
+  it('returns undefined when no ws route matches — the fall-through sentinel', async () => {
+    const app = createApp();
+    upgradeWebSocket(app, '/ws', () => undefined);
+    const outcome = await decideUpgrade(app, new Request('http://localhost/other'));
+    (outcome === undefined).should.be.true;
+  });
+
+  it('passes a middleware rejection response through untouched', async () => {
+    const app = createApp();
+    const rejection = new Response('no token', { status: 401 });
+    use(app, (ctx) => {
+      ctx.res = rejection;
+    });
+    upgradeWebSocket(app, '/ws', () => undefined);
+    const outcome = (await decideUpgrade(app, new Request('http://localhost/ws')))!;
+    outcome.ok.should.be.false;
+    if (!outcome.ok) {
+      outcome.response.should.equal(rejection);
+    }
+  });
+
+  it('approves with the matched route, chain-stamped ctx, and negotiated protocol', async () => {
+    const app = createApp();
+    use(app, async (ctx, next) => {
+      ctx.state.user = 'alice';
+      await next();
+    });
+    const handler = (): undefined => undefined;
+    upgradeWebSocket(app, '/chat/:room', handler, { protocols: ['chat.b', 'chat.a'] });
+    const outcome = (await decideUpgrade(
+      app,
+      new Request('http://localhost/chat/general', {
+        headers: { 'sec-websocket-protocol': 'chat.a, chat.b' },
+      })
+    ))!;
+    outcome.ok.should.be.true;
+    if (outcome.ok) {
+      // Server preference order: chat.b is declared first.
+      outcome.route.handler.should.equal(handler);
+      outcome.route.pattern.should.equal('/chat/:room');
+      (outcome.ctx.state.user as string).should.equal('alice');
+      (outcome.ctx.params.room as string).should.equal('general');
+      outcome.protocol!.should.equal('chat.b');
+    }
+  });
+
+  it('approves with protocol undefined when the client offers no shared one', async () => {
+    const app = createApp();
+    upgradeWebSocket(app, '/ws', () => undefined, { protocols: ['chat.a'] });
+    const outcome = (await decideUpgrade(
+      app,
+      new Request('http://localhost/ws', {
+        headers: { 'sec-websocket-protocol': 'other' },
+      })
+    ))!;
+    outcome.ok.should.be.true;
+    if (outcome.ok) {
+      (outcome.protocol === undefined).should.be.true;
+    }
+  });
+
+  it('asError passes Error instances through and wraps the rest', () => {
+    const boom = new Error('boom');
+    asError(boom).should.equal(boom);
+    // The workerd fallback message contract the cloudflare adapter relies on.
+    asError(undefined, 'WebSocket error').message.should.equal('WebSocket error');
+    // Handler-thrown values keep their stringified message.
+    asError('plain').message.should.equal('plain');
+    asError(42).message.should.equal('42');
   });
 });

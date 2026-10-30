@@ -146,6 +146,65 @@ describe('csrf', () => {
     res.status.should.equal(200);
   });
 
+  it('reads the urlencoded field across content-type parameters', async () => {
+    const { app } = build();
+    const form = await handle(app, new Request('http://localhost/form'));
+    const token = await readSetCookie(form);
+
+    const res = await handle(
+      app,
+      new Request('http://localhost/submit', {
+        method: 'POST',
+        headers: {
+          cookie: `csrf_token=${encodeURIComponent(token)}`,
+          'content-type': 'application/x-www-form-urlencoded; charset=utf-8',
+        },
+        body: new URLSearchParams({ _csrf: token, note: 'hi' }),
+      })
+    );
+    res.status.should.equal(200);
+  });
+
+  it('reads the token from a multipart form field', async () => {
+    const { app } = build();
+    const form = await handle(app, new Request('http://localhost/form'));
+    const token = await readSetCookie(form);
+
+    const fields = new FormData();
+    fields.set('_csrf', token);
+    fields.set('note', 'hi');
+    const res = await handle(
+      app,
+      new Request('http://localhost/submit', {
+        method: 'POST',
+        headers: { cookie: `csrf_token=${encodeURIComponent(token)}` },
+        body: fields,
+      })
+    );
+    res.status.should.equal(200);
+  });
+
+  it('does not form-parse a lookalike content type', async () => {
+    const { app } = build();
+    const form = await handle(app, new Request('http://localhost/form'));
+    const token = await readSetCookie(form);
+
+    // Shares the prefix but is not the media type — the body must not be
+    // pulled through a form parse, so the token counts as missing.
+    const res = await handle(
+      app,
+      new Request('http://localhost/submit', {
+        method: 'POST',
+        headers: {
+          cookie: `csrf_token=${encodeURIComponent(token)}`,
+          'content-type': 'application/x-www-form-urlencodedish',
+        },
+        body: new URLSearchParams({ _csrf: token, note: 'hi' }),
+      })
+    );
+    res.status.should.equal(403);
+  });
+
   it('rejects forged and expired tokens', async () => {
     const { app } = build();
     const forged = `9999999999999.${'A'.repeat(22)}.${'B'.repeat(43)}`;

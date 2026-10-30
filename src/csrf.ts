@@ -27,7 +27,8 @@ import type { Ctx, Middleware } from './types';
 import { getCookie, setCookie } from './cookies';
 import { readForm } from './body';
 import { httpError } from './errors';
-import { b64urlDecode, b64urlEncode, equalBytes, getHmacKey, randomToken } from './crypto-util';
+import { getHmacKey, hmacSign, hmacVerify, randomToken } from './crypto-util';
+import { mediaTypeOf } from './raw-headers';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -99,12 +100,10 @@ async function verifyToken(
     return null;
   }
   // Appending the bind value is unambiguous — see {@link tokenMessage}.
+  // hmacVerify re-signs and compares constant-time; a malformed
+  // signature encoding reads false, the same answer as a forged one.
   const message = tokenMessage(expPart, nonce, bind);
-  const expected = new Uint8Array(
-    await crypto.subtle.sign('HMAC', hmacKey, message)
-  );
-  const given = b64urlDecode(sig);
-  if (given === null || !equalBytes(expected, given)) {
+  if (!(await hmacVerify(message, sig, hmacKey))) {
     return null;
   }
   return exp - now;
@@ -156,6 +155,13 @@ export function createCsrf(options: CsrfOptions): Csrf {
     typeof options.secret === 'string'
       ? new TextEncoder().encode(options.secret)
       : options.secret.slice();
+  // One key import per instance, resolved once at creation: every mint
+  // and verify below awaits this same promise, so an unsafe request pays
+  // the (memoized) digest + import once instead of three times. The
+  // shared digest-keyed cache underneath keeps distinct secrets on
+  // distinct imports — importing a CryptoKey per request is a real
+  // per-request cost; HMAC is stateless, so one key serves all.
+  const keyPromise = getHmacKey(secret, 'SHA-256', ['sign']);
   // `undefined` means unbound (no `bind` option) and keeps the signed
   // message byte-identical to an unbound instance.
   const bindOf = options.bind;
@@ -171,16 +177,12 @@ export function createCsrf(options: CsrfOptions): Csrf {
   };
 
   const createToken = async (bind: string | undefined): Promise<string> => {
-    // The shared HMAC import cache (one imported key per distinct secret
-    // for the whole process, keyed by the secret's digest) — importing a
-    // CryptoKey per request is a real per-request cost; HMAC is stateless
-    // so one key serves all.
-    const key = await getHmacKey(secret, 'SHA-256', ['sign']);
     const exp = now() + ttl;
     const nonceText = randomToken(16);
     const message = tokenMessage(String(exp), nonceText, bind);
-    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
-    return `${exp}.${nonceText}.${b64urlEncode(sig)}`;
+    // The instance's resolved key — no import, no cache hop.
+    const sig = await hmacSign(message, await keyPromise);
+    return `${exp}.${nonceText}.${sig}`;
   };
 
   const issueToken = async (ctx: Ctx): Promise<string> => {
@@ -203,12 +205,7 @@ export function createCsrf(options: CsrfOptions): Csrf {
     const remaining =
       cookieToken === undefined
         ? null
-        : await verifyToken(
-            cookieToken,
-            await getHmacKey(secret, 'SHA-256', ['sign']),
-            now(),
-            bind
-          );
+        : await verifyToken(cookieToken, await keyPromise, now(), bind);
     const installed =
       remaining !== null ? cookieToken : await createToken(bind);
     ctx.state.csrfToken = installed;
@@ -243,10 +240,12 @@ export function createCsrf(options: CsrfOptions): Csrf {
 
       let presented = ctx.req.headers.get(headerName);
       if (presented === null || presented === '') {
-        const contentType = ctx.req.headers.get('content-type') ?? '';
+        // Exact media-type equality (parameters stripped, case folded) —
+        // a prefix lookalike must not pull the body through a form parse.
+        const contentType = mediaTypeOf(ctx.req.headers.get('content-type'));
         if (
-          contentType.startsWith('application/x-www-form-urlencoded') ||
-          contentType.startsWith('multipart/form-data')
+          contentType === 'application/x-www-form-urlencoded' ||
+          contentType === 'multipart/form-data'
         ) {
           // readForm caches the parse per request, so a later handler read
           // replays the same body instead of hitting "already consumed".
@@ -260,12 +259,7 @@ export function createCsrf(options: CsrfOptions): Csrf {
         throw httpError(403, 'CSRF token missing');
       }
       if (
-        (await verifyToken(
-          presented,
-          await getHmacKey(secret, 'SHA-256', ['sign']),
-          now(),
-          bind
-        )) === null
+        (await verifyToken(presented, await keyPromise, now(), bind)) === null
       ) {
         throw httpError(403, 'CSRF token invalid or expired');
       }

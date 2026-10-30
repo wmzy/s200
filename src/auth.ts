@@ -16,26 +16,35 @@
 import type { Ctx, Middleware } from './types';
 
 import { httpError } from './errors';
+import { b64Decode } from './crypto-util';
 
 /**
- * Decodes `Basic base64(user:pass)`. atob yields the base64 payload as
- * latin1 bytes; decoding them as UTF-8 lets non-ASCII credentials
- * round-trip. Malformed input returns `undefined` (→ 401, never a throw).
+ * Decodes `Basic base64(user:pass)`. The standard-alphabet payload
+ * decodes as UTF-8 so non-ASCII credentials round-trip; an undecodable
+ * encoding reads `null` → `undefined` (→ 401, never a throw).
  */
 function decodeBasic(header: string): [string, string] | undefined {
   const match = /^Basic\s+(.+)$/i.exec(header);
   const payload = match?.[1];
   if (payload === undefined) return undefined;
-  let text: string;
-  try {
-    const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-    text = new TextDecoder().decode(bytes);
-  } catch {
-    return undefined;
-  }
+  const bytes = b64Decode(payload);
+  if (bytes === null) return undefined;
+  const text = new TextDecoder().decode(bytes);
   const colon = text.indexOf(':');
   if (colon < 0) return undefined;
   return [text.slice(0, colon), text.slice(colon + 1)];
+}
+
+/** The gates' shared 401: the body is fixed, only the
+ * `www-authenticate` challenge differs — thrown into the error
+ * boundary. */
+function unauthorized(challenge: string): never {
+  throw httpError(
+    401,
+    'Unauthorized',
+    { error: 'Unauthorized' },
+    { 'www-authenticate': challenge }
+  );
 }
 
 export type BasicAuthOptions = {
@@ -57,12 +66,7 @@ export function basicAuth(
     const header = ctx.req.headers.get('authorization');
     const creds = header === null ? undefined : decodeBasic(header);
     if (creds === undefined || !(await verify(creds[0], creds[1], ctx))) {
-      throw httpError(
-        401,
-        'Unauthorized',
-        { error: 'Unauthorized' },
-        { 'www-authenticate': challenge }
-      );
+      unauthorized(challenge);
     }
     return next();
   };
@@ -112,12 +116,7 @@ export function bearerAuth(
   return async (ctx, next) => {
     const token = extractBearer(ctx.req.headers.get('authorization'));
     if (token === undefined || !(await verify(token, ctx))) {
-      throw httpError(
-        401,
-        'Unauthorized',
-        { error: 'Unauthorized' },
-        { 'www-authenticate': challenge }
-      );
+      unauthorized(challenge);
     }
     return next();
   };

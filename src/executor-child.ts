@@ -60,7 +60,12 @@ export const SELF_PATH: string =
 /** Child-side drain deadline: reap idle connections, then force-close. */
 const CHILD_DRAIN_MS = 2000;
 
-export function messageOf(error: unknown): string {
+// The canonical extraction lives in `./errors` (`messageOf` — health's
+// failure reasons render through it); this copy is inlined, not imported,
+// for the same link-time reason as the self-url guard above: child realms
+// link this module under plain node before the resolve fallback installs,
+// so a static relative import would kill every shard boot.
+function messageOf(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }

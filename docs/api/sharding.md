@@ -26,6 +26,7 @@ const serving = matchShard(specs, '/api/users');   // longest-prefix dispatch
 | `shardSpecs(app, groups)` | Resolves `ShardGroup` declarations against the actual route table → `readonly ShardSpec[]`; specs keep declaration order, routes keep registration order (deterministic generation). Duplicate group ids throw |
 | `shardApp(app, group)` | Cuts one group's routes out of the app as a new `App` (pure data transform — the source app is never mutated) |
 | `matchShard(specs, pathname)` | Longest-prefix dispatch over specs — the seam gateway config, the dev dispatcher, and any custom router share; returns the winning spec or `undefined` |
+| `longestFirst(specs)` | Specs sorted longest-prefix-first — the dispatch priority as an ordered list; the gateway views and `dispatchPlan` render through it, so generated config and `matchShard` can never disagree. Stable: equal-length prefixes keep input order. Pure: returns a new array, input order untouched |
 
 `RoutePolicy`: `{ timeoutMs? (response deadline hint), memoryMb? (executor resource limit), maxConcurrency? (scheduler cap — a group's merged policy takes the max), streaming? (generated proxy config disables buffering), shard? (explicit shard id override — claims the route regardless of prefix) }`.
 

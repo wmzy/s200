@@ -124,6 +124,24 @@ export function isHttpError(e: unknown): e is HttpError {
 }
 
 /**
+ * The message of any thrown value: an `Error`'s `message`, anything else
+ * stringified — `String(error)` alone would render `Error: msg` for
+ * values that carry a message without being `instanceof Error` in the
+ * reporting realm (cross-realm throws, plain rejects). Health's failure
+ * reasons render through this. (`executor-child.ts` carries an inlined
+ * twin of it for a link-time reason — child realms link before the
+ * shard resolve fallback installs — see that module's comment.)
+ *
+ * @internal
+ */
+export function messageOf(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+/**
  * Terminal mapping from any thrown value to a `Response`. `HttpError` keeps
  * its status and message — and when it carries a `body`, that payload ships
  * verbatim (a structured error shape instead of the default envelope); a

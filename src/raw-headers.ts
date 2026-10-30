@@ -11,7 +11,12 @@
  * `writeHead` takes (`s200/node`'s plain write path and the shard
  * executor's bridge); `withVary` appends a cache-varying header name
  * without duplicating it (compress, cors, and the version gate's Vary
- * stamps). NOT a public entry — the barrel does not re-export
+ * stamps); `unquoteParam` unfolds one quoted header parameter value
+ * (accepts' and multipart's shared escape semantics, previously two
+ * drifting copies); `mediaTypeOf` reads the lowercase media token before
+ * the `;` of a content-type-ish header (response-check's JSON test,
+ * multipart's boundary dispatch, the lambda adapter's textual test).
+ * NOT a public entry — the barrel does not re-export
  * this module; import it relatively from within src.
  *
  * @internal
@@ -114,4 +119,48 @@ export function withVary(headers: Headers, value: string): void {
   ) {
     headers.set('vary', `${vary}, ${value}`);
   }
+}
+
+/**
+ * Unfolds one header parameter value: a quoted-string drops its quotes
+ * and unfolds backslash escapes (`\"` → `"`, `\<LF>` → LF — the escape
+ * character is always consumed, whatever byte follows it); a bare token
+ * is returned as-is (trimmed). A trailing lone backslash has nothing left
+ * to escape and is kept. The k=v loops around it stay per-module: accepts
+ * special-cases `q=`, multipart splits quote-aware — only the value
+ * unfold is shared, so the two cannot drift again.
+ *
+ * @internal
+ */
+export function unquoteParam(raw: string): string {
+  const t = raw.trim();
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+    const inner = t.slice(1, -1);
+    let out = '';
+    for (let i = 0; i < inner.length; i += 1) {
+      const c = inner[i] ?? '';
+      if (c === '\\' && i + 1 < inner.length) {
+        out += inner[i + 1] ?? '';
+        i += 1;
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  }
+  return t;
+}
+
+/**
+ * The lowercase media token of a content-type-ish header value: the bytes
+ * before the first `;`, trimmed. null/undefined (an absent header) or an
+ * empty/parameters-only value reads as `''` — each caller's absent-header
+ * case, kept out of three per-site spellings.
+ *
+ * @internal
+ */
+export function mediaTypeOf(header: string | null | undefined): string {
+  if (header === null || header === undefined) return '';
+  const semi = header.indexOf(';');
+  return (semi < 0 ? header : header.slice(0, semi)).trim().toLowerCase();
 }

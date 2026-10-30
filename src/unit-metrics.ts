@@ -89,6 +89,12 @@ export function createUnitMetrics(options: UnitMetricsOptions = {}): {
   // NaN→0 clamp for zero-elapsed reads lives in the reader).
   const elu = createEluReader();
 
+  // In-flight gauge (+1 on entry, −1 in the `finally`) and completion
+  // count — the same in-chain accounting `s200/otel`'s `metrics()`
+  // records as `http.server.active_requests` / `http.server.requests`
+  // (see the twin note there); both lean on the in-chain error boundary:
+  // a settled `next()` implies a materialized response, and the
+  // `finally` balances the gauge even when a sibling throws past it.
   const middleware: Middleware = (_ctx, next) => {
     inFlight += 1;
     if (inFlight > maxInFlight) {

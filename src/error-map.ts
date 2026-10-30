@@ -66,12 +66,15 @@ export async function runOnError<S extends State = State>(
 
 /**
  * Maps a thrown value to a response through the app's error policy: custom
- * `onError` (its own failures degrade to the default mapping), or the
- * default — `HttpError` keeps its status/message, anything else is logged
- * with request context (`logError`, default {@link defaultLogError}) and
- * becomes an anonymous 500. Shared by the in-chain boundary (route/fallback
- * errors), the outer catch (middleware errors), and the WebSocket upgrade
- * decision (`s200/websocket` maps chain errors identically).
+ * `onError` (its own failures degrade to the default mapping — and the
+ * crash is logged through the same `logError` sink, with the suppressed
+ * original attached as its `cause` when both are Errors, or logged as a
+ * second sink call), or the default — `HttpError` keeps its status/message,
+ * anything else is logged with request context (`logError`, default
+ * {@link defaultLogError}) and becomes an anonymous 500. Shared by the
+ * in-chain boundary (route/fallback errors), the outer catch (middleware
+ * errors), and the WebSocket upgrade decision (`s200/websocket` maps
+ * chain errors identically).
  *
  * A thrown `HttpError`'s `headers` record (a gate's `WWW-Authenticate`
  * challenge, `Retry-After`, `RateLimit-*`) rides the default mapping via
@@ -99,6 +102,26 @@ export async function mapError<S extends State = State>(
       await runOnError(app.onError, ctx, error);
     } catch (handlerError) {
       // A crashing error handler is itself a failure — default mapping.
+      // It still owes the operator the surface the no-onError path gives:
+      // same sink, same predicate (a bare HttpError is an intentional
+      // client error and stays silent). The suppressed original must not
+      // vanish under the crash — when both are Errors with no `cause` of
+      // their own, the original rides the crash as its `cause` (custom
+      // sinks read `error.cause`; {@link defaultLogError} surfaces an
+      // HttpError's cause, and Node's error inspect renders the chain);
+      // anything not attachable is logged as a second sink call instead.
+      const attachable =
+        handlerError instanceof Error &&
+        handlerError.cause === undefined &&
+        error instanceof Error &&
+        error.cause === undefined;
+      if (attachable) handlerError.cause = error;
+      if (!isHttpError(handlerError) || handlerError.cause !== undefined) {
+        (app.logError ?? defaultLogError)(handlerError, ctx);
+      }
+      if (!attachable) {
+        (app.logError ?? defaultLogError)(error, ctx);
+      }
       adoptResponse(ctx, toErrorResponse(handlerError));
     }
   }

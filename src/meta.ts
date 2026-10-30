@@ -121,6 +121,35 @@ export function isQueryRequired(entry: QueryParam): boolean {
   return 'schema' in entry && entry.required === true;
 }
 
+/** One located annotation walked out of its record: the entry's name,
+ * its unwrapped schema, and its required flag — the extraction triple
+ * every surface that renders a query/params/headers record starts from.
+ *
+ * @internal */
+export type QueryEntry = {
+  readonly name: string;
+  readonly schema: SerializeSchema;
+  readonly required: boolean;
+};
+
+/**
+ * Walks a located annotation record (`query`, `params`, or `headers` —
+ * all three speak the shared {@link QueryParam} form) as
+ * {@link QueryEntry} triples: the one pass over the marker form's two
+ * shapes, so consumers keep only their own rendering (`toJsonSchema`
+ * for spec emission, `compileValidator` for runtime gates) instead of
+ * re-deriving the extraction walk per surface.
+ *
+ * @internal
+ */
+export function* queryEntries(
+  entries: Record<string, QueryParam> | undefined
+): Generator<QueryEntry> {
+  for (const [name, entry] of Object.entries(entries ?? {})) {
+    yield { name, schema: querySchemaOf(entry), required: isQueryRequired(entry) };
+  }
+}
+
 /**
  * One `multipart/form-data` part's annotation: a text field's
  * {@link QueryParam} (either form), or the `{ file: true, … }` marker for

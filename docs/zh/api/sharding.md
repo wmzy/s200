@@ -26,6 +26,7 @@ const serving = matchShard(specs, '/api/users');   // 最长前缀分发
 | `shardSpecs(app, groups)` | 把 `ShardGroup` 声明对真实路由表解析 → `readonly ShardSpec[]`；spec 保持声明序、路由保持注册序（生成确定性）。重复分组 id 抛错 |
 | `shardApp(app, group)` | 把一个分组的路由切出为新 `App`（纯数据变换 —— 源应用绝不修改） |
 | `matchShard(specs, pathname)` | spec 上的最长前缀分发 —— 网关配置、开发调度器与任何自定义路由器共享的接缝；返回胜出 spec 或 `undefined` |
+| `longestFirst(specs)` | 按最长前缀优先排序的 spec —— 分发优先级的有序列表形态；网关视图与 `dispatchPlan` 都经它渲染，生成的配置与 `matchShard` 的抉择永不背离。稳定排序：等长前缀保持输入序。纯函数：返回新数组，输入序不动 |
 
 `RoutePolicy`：`{ timeoutMs?（响应截止提示）, memoryMb?（执行器资源限制）, maxConcurrency?（调度上限 —— 分组合并策略取最大值）, streaming?（生成的代理配置关闭缓冲）, shard?（显式分片 id 覆盖 —— 无论前缀声明该路由） }`。
 

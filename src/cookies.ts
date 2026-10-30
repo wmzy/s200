@@ -14,9 +14,9 @@ import type { Ctx } from './types';
 
 import { lruStore } from './bounded-collections';
 import {
-  b64urlEncode,
   equalBytes,
-  getHmacKey,
+  hmacSign,
+  hmacVerify,
   type HmacKeyCache,
 } from './crypto-util';
 
@@ -117,11 +117,10 @@ export function setCookie(
 const KEY_CACHE_LIMIT = 8;
 const hmacCache: HmacKeyCache = lruStore(KEY_CACHE_LIMIT);
 
-/** HMAC-SHA256 over `value`, base64url — the cookie-signature convention. */
+/** HMAC-SHA256 over `value`, base64url — the cookie-signature convention.
+ * The private cache above scopes the key import to this module. */
 export async function signCookie(value: string, secret: string): Promise<string> {
-  const key = await getHmacKey(secret, 'SHA-256', ['sign'], hmacCache);
-  const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value));
-  return b64urlEncode(new Uint8Array(digest));
+  return hmacSign(new TextEncoder().encode(value), secret, { cache: hmacCache });
 }
 
 /**
@@ -138,13 +137,16 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return equalBytes(encoder.encode(a), encoder.encode(b));
 }
 
-/** Checks a stored signature against a recomputed one, constant-time. */
+/** Checks a stored signature against a recomputed one, constant-time —
+ * an undecodable signature reads `false`, same answer as a forged one. */
 export async function verifyCookieSignature(
   value: string,
   signature: string,
   secret: string
 ): Promise<boolean> {
-  return timingSafeEqual(await signCookie(value, secret), signature);
+  return hmacVerify(new TextEncoder().encode(value), signature, secret, {
+    cache: hmacCache,
+  });
 }
 
 /**

@@ -42,6 +42,7 @@ import { rawHeaderPairs, splitTokens } from './raw-headers';
 import { isSafeHost } from './safe-host';
 
 import {
+  asError,
   createWsSession,
   createWsSocket,
   matchWebSocket,
@@ -402,7 +403,7 @@ function runConnection(
         cb(data);
       } catch (error) {
         for (const errorCb of session.onError) {
-          errorCb(error instanceof Error ? error : new Error(String(error)));
+          errorCb(asError(error));
         }
         sendClose(1011, 'handler error');
         return;

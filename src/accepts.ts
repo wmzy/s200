@@ -9,6 +9,8 @@
 
 import type { Ctx } from './types';
 
+import { unquoteParam } from './raw-headers';
+
 /**
  * One parsed Accept-family entry: the lowercased value, its quality, and
  * its other parameters. Exported only because {@link parseRanges}
@@ -29,13 +31,6 @@ export type Range = {
    */
   readonly params: ReadonlyMap<string, string>;
 };
-
-/** Unfolds one parameter value: a quoted string drops its quotes and
- * unfolds backslash escapes (`\"` → `"`); a bare token passes through. */
-function unfoldParam(raw: string): string {
-  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
-  return raw.slice(1, -1).replace(/\\(.)/g, '$1');
-}
 
 /**
  * Parses an Accept-family header into `{ value, q, params }` ranges in
@@ -69,7 +64,7 @@ export function parseRanges(header: string | null): Range[] {
       if (eq === -1) continue;
       params.set(
         kv.slice(0, eq).trim().toLowerCase(),
-        unfoldParam(kv.slice(eq + 1).trim())
+        unquoteParam(kv.slice(eq + 1).trim())
       );
     }
     ranges.push({ value, q, params });
