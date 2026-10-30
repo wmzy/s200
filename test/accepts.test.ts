@@ -118,16 +118,33 @@ describe('accepts', () => {
 
   it('parseRanges unfolds quoted params with the shared escape semantics', () => {
     // Escaped newline unfolds to a bare LF and an escaped quote to `"`
-    // (the escape character is always consumed); a trailing lone
-    // backslash has nothing left to escape and stays; bare and
-    // empty-quoted tokens pass through.
+    // (the escape character is always consumed); an escaped backslash
+    // unfolds to a single `\`; bare and empty-quoted tokens pass through.
+    // (A trailing LONE backslash cannot ride a terminated value — it
+    // would eat the closing quote and run the value on — so that unfold
+    // is pinned by multipart's boundary tests instead.)
     const [range] = parseRanges(
-      'text/html; nl="a\\\nb"; esc="say \\"hi\\""; end="x\\"; tok=plain; empty=""'
+      'text/html; nl="a\\\nb"; esc="say \\"hi\\""; end="x\\\\"; tok=plain; empty=""'
     );
     range!.params.get('nl')!.should.equal('a\nb');
     range!.params.get('esc')!.should.equal('say "hi"');
     range!.params.get('end')!.should.equal('x\\');
     range!.params.get('tok')!.should.equal('plain');
     range!.params.get('empty')!.should.equal('');
+  });
+
+  it('parseRanges keeps a quoted parameter value containing a semicolon intact', () => {
+    // A `;` inside quotes is data, not a separator — the parameter split
+    // is quote-aware (raw-headers' shared grammar), so `version="1.0;ext=a"`
+    // arrives as ONE parameter and unfolds whole; the q after it still
+    // parses. The naive `split(';')` used to shred this into
+    // version="1.0 / ext=a" garbage.
+    const [range] = parseRanges(
+      'application/vnd.api+json; version="1.0;ext=a"; q=0.8, text/html'
+    );
+    range!.value.should.equal('application/vnd.api+json');
+    range!.q.should.equal(0.8);
+    range!.params.size.should.equal(1);
+    range!.params.get('version')!.should.equal('1.0;ext=a');
   });
 });

@@ -977,6 +977,17 @@ export async function handle<S extends State = State>(
       jsonFallback(ctx, 500, 'No response written');
     }
   };
+  // The fallback's two call sites — the in-chain terminal below and the
+  // post-error rerun further down — share one error move: a throw while
+  // the terminal materializes is mapped through the same boundary as any
+  // chain error, so the unwind sees the mapped response either way.
+  const runFallback = async (): Promise<void> => {
+    try {
+      await fallback();
+    } catch (error) {
+      await mapError(app, ctx, error);
+    }
+  };
   // The error boundary sits BELOW the app middlewares: a route handler (or
   // the fallback) that throws is mapped right here, so the app middlewares
   // unwind with the error response materialized — the same contract the
@@ -987,7 +998,7 @@ export async function handle<S extends State = State>(
       if (route !== undefined) {
         await getRouteChain(route)(ctx);
       }
-      await fallback();
+      await runFallback();
     } catch (error) {
       await mapError(app, ctx, error);
     }
@@ -1001,11 +1012,7 @@ export async function handle<S extends State = State>(
   // latter falls back like the in-chain terminal did (original semantics:
   // the 405/404/500 decision still applies after errors).
   if (ctx.res === undefined) {
-    try {
-      await fallback();
-    } catch (error) {
-      await mapError(app, ctx, error);
-    }
+    await runFallback();
   }
   if (request.method === 'HEAD') {
     // fallback()/mapError guarantee a response above, but the write happens

@@ -86,13 +86,29 @@ export function newResponse(
   return res;
 }
 
+/** Byte-backed-body detection: an explicit `content-length` header is the
+ * backing signal — every size-aware respond helper stamps it
+ * (`json`/`text`/`html`/`send`), while platforms serialize it lazily
+ * (undici), so a bare `new Response(…)` and every streamed or bodyless
+ * response carry none. Presence is the whole predicate; the value's
+ * magnitude stays each caller's policy (`compress`'s `minBytes` reads it
+ * separately). The one check `s200/etag`, `s200/compress` (brotli), and
+ * `s200/response-check` share instead of re-deriving the contract.
+ *
+ * @internal */
+export function isByteBacked(res: Response): boolean {
+  return res.headers.get('content-length') !== null;
+}
+
 /**
  * Rebuilds a materialized response with a replacement body: the tail
  * every response-rewriting site shares — `s200/etag`'s restamp,
  * `s200/compress`'s re-encode, `s200/response-check`'s verbatim rebuild,
  * and the HEAD body-strip in `handle`. Keeps the original's status and
  * statusText; ships `headers` when the rewriter built a mutated copy,
- * otherwise a copy of the original's headers. Built on
+ * otherwise {@link headersFor} makes the copy — the light view on the
+ * light path (one copy, no LightHeaders → platform → light round-trip),
+ * a platform copy everywhere else. Built on
  * {@link newResponse}, so the light path stays light.
  *
  * @internal
@@ -106,7 +122,7 @@ export function rebuild(
   return newResponse(ctx, body, {
     status: res.status,
     statusText: res.statusText,
-    headers: headers ?? new Headers(res.headers),
+    headers: headers ?? headersFor(ctx, res.headers),
   });
 }
 

@@ -27,6 +27,7 @@ import {
   createFileStatWith,
   createRealPathGuardWith,
   existsWith,
+  missOrNull,
   type FileIo,
 } from './fs-containment';
 import { runFinish } from './finish';
@@ -560,8 +561,10 @@ export async function brotliCompress(bytes: Uint8Array): Promise<Uint8Array> {
  * (fs-containment's `FileIo`): `fs/promises` stat/readFile over
  * `createReadStream` windows. The always-stream precheck is node's real
  * extra — a directory passes `access(R_OK)` but its stream errors after
- * the response has started, and any precheck failure (including EACCES)
- * reads as a miss so nothing surfaces mid-response.
+ * the response has started — and every precheck failure runs the shared
+ * miss policy (`missOrNull`): a genuine miss reads as `null` while an IO
+ * failure such as EACCES rethrows (a 500) before the response starts,
+ * never masked as a 404.
  */
 const nodeFileIo: FileIo = {
   stat,
@@ -570,8 +573,8 @@ const nodeFileIo: FileIo = {
     try {
       if ((await stat(file)).isDirectory()) return null;
       await access(file, constants.R_OK);
-    } catch {
-      return null;
+    } catch (error) {
+      return missOrNull(error);
     }
     return Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
   },

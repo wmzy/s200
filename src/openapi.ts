@@ -65,9 +65,9 @@ import {
   isMultipartBody,
   isMultipartFile,
   multipartFormSchema,
+  mergedResponses,
   queryEntries,
   querySchemaOf,
-  throwsErrors,
   uniqueName,
   type MultipartBody,
   type QueryParam,
@@ -78,7 +78,6 @@ import { json } from './respond';
 import { createRoute } from './router';
 import {
   compileValidator,
-  exampleToSchema,
   toJsonSchema,
   type ValidationIssue,
 } from './serialize';
@@ -243,53 +242,34 @@ function multipartEncoding(form: MultipartBody['form']): Record<string, unknown>
 }
 
 /**
- * Responses by status code: the metadata's declarations (or a bare 200)
- * merged with the `throws` gates' error branches. Neither clobbers the
- * other — a status only one side declares is emitted; on conflict
- * `meta.responses` wins (its description and schema were written for the
- * spec, the gate's example is only an inference seed). Both branches
- * register hoistable schema sites, so an inferred error schema occurring
- * ≥2 times hoists to `components.schemas` exactly like a declared one.
+ * Responses by status code: {@link mergedResponses} rendered, one
+ * operation response per merged entry — no schema, no `content`; with
+ * one, the schema rides `toJsonSchema` and registers as a hoistable
+ * site, so an inferred error schema occurring ≥2 times hoists to
+ * `components.schemas` exactly like a declared one. A route that
+ * declares no `responses` still gets its bare 200 success first — it
+ * occupies the status like a declaration, shadowing a gate-declared
+ * 200 the type emitter would keep.
  */
 function responsesOf(
   meta: RouteMeta | undefined,
   route: Route,
   sites: SchemaSite[]
 ): Record<string, unknown> {
-  const declared = meta?.responses;
-  const gates = throwsErrors(route);
   const out: Record<string, unknown> = {};
-  if (declared === undefined) {
+  if (meta?.responses === undefined) {
     out[200] = { description: 'Successful response' };
   }
-  for (const [status, entry] of Object.entries(declared ?? {})) {
-    if (entry.schema === undefined) {
-      out[status] = { description: entry.description };
-      continue;
-    }
-    const media: { schema: unknown } = { schema: toJsonSchema(entry.schema) };
-    sites.push({ json: JSON.stringify(media.schema), holder: media });
-    out[status] = {
-      description: entry.description,
-      content: { 'application/json': media },
-    };
-  }
-  for (const [status, example] of Object.entries(gates)) {
+  for (const { status, schema, description } of mergedResponses(meta, route)) {
     if (status in out) continue;
-    // The one inference layer (`s200/serialize`), rendered through the
-    // same bridge every declared schema takes — and registered as a
-    // hoistable site like a declared one, so N routes throwing the same
-    // error shape reference one `components.schemas` entry instead of
-    // repeating it inline N times.
-    const inferred = exampleToSchema(example);
-    if (inferred === undefined) {
-      out[status] = { description: 'Error response' };
+    if (schema === undefined) {
+      out[status] = { description };
       continue;
     }
-    const media: { schema: unknown } = { schema: toJsonSchema(inferred) };
+    const media: { schema: unknown } = { schema: toJsonSchema(schema) };
     sites.push({ json: JSON.stringify(media.schema), holder: media });
     out[status] = {
-      description: 'Error response',
+      description,
       content: { 'application/json': media },
     };
   }

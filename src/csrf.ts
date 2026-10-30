@@ -30,6 +30,11 @@ import { httpError } from './errors';
 import { getHmacKey, hmacSign, hmacVerify, randomToken } from './crypto-util';
 import { mediaTypeOf } from './raw-headers';
 
+/** One process-wide encoder — `encode()` still allocates a fresh output
+ * buffer per call, so mint/verify pays no encoder allocation (respond.ts
+ * precedent). */
+const encoder = new TextEncoder();
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export type CsrfOptions = {
@@ -72,7 +77,7 @@ function tokenMessage(
   nonce: string,
   bind: string | undefined
 ): Uint8Array<ArrayBuffer> {
-  return new TextEncoder().encode(
+  return encoder.encode(
     bind === undefined ? `${exp}.${nonce}` : `${exp}.${nonce}.${bind}`
   );
 }
@@ -150,10 +155,10 @@ export function createCsrf(options: CsrfOptions): Csrf {
   const ttl = ttlSeconds * 1000;
   // A byte secret is copied — the shared key cache digests the material
   // on every use, so a caller mutating their array after createCsrf must
-  // not change what verifies. `TextEncoder().encode` is already fresh.
+  // not change what verifies. `encoder.encode` is already fresh.
   const secret =
     typeof options.secret === 'string'
-      ? new TextEncoder().encode(options.secret)
+      ? encoder.encode(options.secret)
       : options.secret.slice();
   // One key import per instance, resolved once at creation: every mint
   // and verify below awaits this same promise, so an unsafe request pays

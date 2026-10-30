@@ -16,6 +16,7 @@
 import type { Ctx, Middleware } from './types';
 
 import { newResponse } from './respond';
+import { assertNonNegativeInteger } from './assert';
 import { lruSet } from './bounded-collections';
 
 export type CacheOptions = {
@@ -245,11 +246,7 @@ export function cacheControl(options: CacheControlOptions): string {
   const parts: string[] = [];
   const seconds = (name: string, value: number | undefined): void => {
     if (value === undefined) return;
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new Error(
-        `Invalid cache-control ${name} ${String(value)}: must be a non-negative integer (seconds)`
-      );
-    }
+    assertNonNegativeInteger('cache-control', name, value);
     parts.push(`${name}=${String(value)}`);
   };
   if (options.noCache === true) parts.push('no-cache');

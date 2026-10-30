@@ -34,6 +34,7 @@ import type { FormPart } from './multipart';
 
 import { DEFAULT_MAX_PART_SIZE, streamForm } from './multipart';
 import { addParam } from './query';
+import { assertNonNegativeInteger } from './assert';
 import { httpError } from './errors';
 
 const decoder = new TextDecoder();
@@ -245,11 +246,7 @@ export async function uploadForm(
 ): Promise<UploadResult> {
   const { accept, limit, maxFiles, maxFileSize, maxParts, sniff } = options;
   const sniffBytes = options.sniffBytes ?? DEFAULT_SNIFF_BYTES;
-  if (!Number.isSafeInteger(sniffBytes) || sniffBytes < 0) {
-    throw new Error(
-      `Invalid upload sniffBytes ${String(sniffBytes)}: must be a non-negative integer`
-    );
-  }
+  assertNonNegativeInteger('upload', 'sniffBytes', sniffBytes);
   const files: UploadedFile[] = [];
   // Null prototype, same reason as `parseQuery`: `__proto__` must land as
   // a plain own key, `constructor` must not shadow inherited members.

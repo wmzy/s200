@@ -22,11 +22,13 @@ import { b64Encode, b64urlEncode, randomToken } from './crypto-util';
 /** RFC 7636 §4.2 S256: base64url(SHA-256(verifier)). */
 async function s256(text: string): Promise<string> {
   return b64urlEncode(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
+    new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text)))
   );
 }
 
 /** Space-joins an array scope; a string scope passes through as-is. */
+const encoder = new TextEncoder();
+
 function joinScope(scope: string | readonly string[]): string {
   return typeof scope === 'string' ? scope : scope.join(' ');
 }
@@ -150,7 +152,7 @@ async function postTokenGrant(
     // RFC 7617 §2: Basic's credentials are standard RFC 4648 §4 base64
     // (`+` `/`, padded) — NOT the url-safe alphabet, whose `-`/`_` and
     // stripped `=` would corrupt credentials at strict IdPs.
-    const encoded = new TextEncoder().encode(`${options.clientId}:${options.clientSecret}`);
+    const encoded = encoder.encode(`${options.clientId}:${options.clientSecret}`);
     headers.authorization = `Basic ${b64Encode(encoded)}`;
   } else {
     body.set('client_id', options.clientId);

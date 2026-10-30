@@ -33,7 +33,7 @@ import type { Ctx } from './types';
 import { readStream } from './body';
 import { concatBytes } from './bytes';
 import { httpError } from './errors';
-import { mediaTypeOf, unquoteParam } from './raw-headers';
+import { mediaTypeOf, splitParams, unquoteParam } from './raw-headers';
 
 /** One parsed form field: name plus (for file parts) client metadata and
  * the part's raw bytes — binary-safe, byte-exact. */
@@ -93,37 +93,6 @@ function indexOfBytes(
   return -1;
 }
 
-/** Splits a parameter list on `;` while honoring quoted strings (a `;`
- * inside quotes is data, not a separator). Backslash escapes inside
- * quotes are carried through verbatim for {@link unquoteParam} to unfold. */
-function splitParams(s: string): string[] {
-  const out: string[] = [];
-  let current = '';
-  let quoted = false;
-  for (let i = 0; i < s.length; i += 1) {
-    const c = s[i] ?? '';
-    if (quoted) {
-      if (c === '\\') {
-        current += c + (s[i + 1] ?? '');
-        i += 1;
-      } else {
-        if (c === '"') quoted = false;
-        current += c;
-      }
-    } else if (c === '"') {
-      quoted = true;
-      current += c;
-    } else if (c === ';') {
-      out.push(current);
-      current = '';
-    } else {
-      current += c;
-    }
-  }
-  out.push(current);
-  return out;
-}
-
 /** Parses `k=v; k="v"` parameters into a lowercase-keyed map. Parameter
  * names are case-insensitive; values keep their case. */
 function parseParams(s: string): Map<string, string> {
@@ -176,6 +145,42 @@ function delimiterFollow(bytes: Uint8Array, j: number): Follow {
   if (bytes[k] !== CR) return { kind: 'invalid' };
   if (k + 1 >= bytes.length) return { kind: 'need' };
   return bytes[k + 1] === LF ? { kind: 'part', next: k + 2 } : { kind: 'invalid' };
+}
+
+/** The next settled delimiter in `bytes` from `from`, shared by the
+ * preamble and body stages: `none` — no complete match (the caller drops
+ * or flushes the scanned span, keeping a partial-delimiter tail);
+ * `pending` — a possible match whose follow bytes are still incomplete
+ * (hold everything, pull more bytes); `hit` — a delimiter at `i` whose
+ * follow is `part`/`final`. An `invalid` follow (body data that merely
+ * resembles a boundary) is resolved here by rescanning from one byte
+ * past the decoy. */
+type DelimiterScan =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'pending' }
+  | {
+      readonly kind: 'hit';
+      readonly i: number;
+      readonly follow: Extract<Follow, { readonly kind: 'part' | 'final' }>;
+    };
+
+function scanDelimiter(
+  bytes: Uint8Array,
+  delim: Uint8Array,
+  from: number
+): DelimiterScan {
+  let at = Math.max(0, from);
+  for (;;) {
+    const i = indexOfBytes(bytes, delim, at);
+    if (i < 0) return { kind: 'none' };
+    const follow = delimiterFollow(bytes, i + delim.length);
+    if (follow.kind === 'invalid') {
+      at = i + 1;
+      continue;
+    }
+    if (follow.kind === 'need') return { kind: 'pending' };
+    return { kind: 'hit', i, follow };
+  }
 }
 
 /** Reads a part's header block (already stripped of its terminating empty
@@ -259,29 +264,22 @@ async function scanForm(
 
   for (;;) {
     if (stage === 'preamble') {
-      const i = indexOfBytes(carry, delim, from);
-      if (i < 0) {
+      const scan = scanDelimiter(carry, delim, from);
+      if (scan.kind === 'none') {
         // No delimiter yet: everything but a partial-delimiter tail is
         // preamble and gets dropped — never buffered, never re-scanned.
         const keep = delim.length - 1;
         if (carry.length > keep) carry = carry.subarray(carry.length - keep);
         from = 0;
+      } else if (scan.kind === 'pending') {
+        // match pending — hold the carry and pull more bytes below
+      } else if (scan.follow.kind === 'final') {
+        return;
       } else {
-        const follow = delimiterFollow(carry, i + delim.length);
-        if (follow.kind === 'invalid') {
-          from = i + 1;
-          continue;
-        }
-        if (follow.kind === 'need') {
-          // match pending — hold the carry and pull more bytes below
-        } else if (follow.kind === 'final') {
-          return;
-        } else {
-          carry = carry.subarray(follow.next);
-          stage = 'headers';
-          from = 0;
-          continue;
-        }
+        carry = carry.subarray(scan.follow.next);
+        stage = 'headers';
+        from = 0;
+        continue;
       }
     } else if (stage === 'headers') {
       if (
@@ -322,8 +320,8 @@ async function scanForm(
         continue;
       }
     } else {
-      const i = indexOfBytes(carry, delim, from);
-      if (i < 0) {
+      const scan = scanDelimiter(carry, delim, from);
+      if (scan.kind === 'none') {
         // Mid-part: flush all but a partial-delimiter tail into the part.
         const keep = delim.length - 1;
         const flush = carry.length - keep;
@@ -334,36 +332,30 @@ async function scanForm(
           checkPartSize();
         }
         from = 0;
+      } else if (scan.kind === 'pending') {
+        // match pending — hold the carry and pull more bytes below
       } else {
-        const follow = delimiterFollow(carry, i + delim.length);
-        if (follow.kind === 'invalid') {
-          from = i + 1;
-          continue;
+        const { i, follow } = scan;
+        // Bytes before the delimiter's leading CRLF are the part's data.
+        if (i > 0) {
+          partChunks.push(carry.subarray(0, i));
+          partLen += i;
+          checkPartSize();
         }
-        if (follow.kind === 'need') {
-          // match pending — hold the carry and pull more bytes below
-        } else {
-          // Bytes before the delimiter's leading CRLF are the part's data.
-          if (i > 0) {
-            partChunks.push(carry.subarray(0, i));
-            partLen += i;
-            checkPartSize();
-          }
-          const part: FormPart = {
-            name,
-            ...(filename !== undefined ? { filename } : {}),
-            ...(contentType !== undefined ? { contentType } : {}),
-            data: concatBytes(partChunks, partLen),
-          };
-          await onPart(part);
-          carry = carry.subarray(follow.next);
-          partChunks = [];
-          partLen = 0;
-          if (follow.kind === 'final') return;
-          stage = 'headers';
-          from = 0;
-          continue;
-        }
+        const part: FormPart = {
+          name,
+          ...(filename !== undefined ? { filename } : {}),
+          ...(contentType !== undefined ? { contentType } : {}),
+          data: concatBytes(partChunks, partLen),
+        };
+        await onPart(part);
+        carry = carry.subarray(follow.next);
+        partChunks = [];
+        partLen = 0;
+        if (follow.kind === 'final') return;
+        stage = 'headers';
+        from = 0;
+        continue;
       }
     }
 

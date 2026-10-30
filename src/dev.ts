@@ -20,7 +20,7 @@ import type { Ctx, Middleware, Next, Route, Segment, State } from './types';
 import { watch, type FSWatcher } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import { rebuild, utf8Length } from './respond';
+import { isByteBacked, rebuild, utf8Length } from './respond';
 import { createRoute, methodCompatible } from './router';
 import { streamSSE } from './streaming';
 
@@ -566,7 +566,7 @@ function overlayMiddleware(): Middleware {
       return;
     }
     const type = res.headers.get('content-type') ?? '';
-    if (!/^text\/html\b/i.test(type) || res.headers.get('content-length') === null) {
+    if (!/^text\/html\b/i.test(type) || !isByteBacked(res)) {
       return;
     }
     let body: string;

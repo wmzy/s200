@@ -507,6 +507,27 @@ export function asError(value: unknown, fallbackMessage?: string): Error {
 }
 
 /**
+ * The handler-error fan-out contract every dispatch point shares: report
+ * the normalized error to the session's error callbacks, then close 1011
+ * `'handler error'` through the adapter's close — the code and reason are
+ * the wire contract clients see, kept verbatim. {@link runWsHandler}
+ * applies it to a thrown/rejected route handler; the node adapter applies
+ * it to a message callback that throws mid-dispatch.
+ *
+ * @internal Exported for the adapters' handler-error fan-outs. */
+export function reportHandlerError(
+  error: unknown,
+  session: WsSession,
+  close: (code: number, reason: string) => void
+): void {
+  const normalized = asError(error);
+  for (const cb of session.onError) {
+    cb(normalized);
+  }
+  close(1011, 'handler error');
+}
+
+/**
  * Runs the route handler outside the middleware chain, the shared tail of
  * every adapter: the chain has already unwound by the time the socket
  * exists, so a thrown/rejected handler error must not travel it again —
@@ -524,9 +545,6 @@ export function runWsHandler(
   void Promise.resolve()
     .then(() => handler(socket, ctx))
     .catch((error: unknown) => {
-      for (const cb of session.onError) {
-        cb(asError(error));
-      }
-      close(1011, 'handler error');
+      reportHandlerError(error, session, close);
     });
 }

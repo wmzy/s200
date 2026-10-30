@@ -37,7 +37,7 @@ import type { SchemaIssue, SerializeSchema } from './serialize';
 import { httpError } from './errors';
 import { getRouteMeta } from './meta';
 import { mediaTypeOf } from './raw-headers';
-import { rebuild } from './respond';
+import { isByteBacked, rebuild } from './respond';
 import { checkSchema } from './serialize';
 import { formatIssuePath } from './validate';
 
@@ -136,7 +136,7 @@ export function responseCheck(
     if (res.body === null) return;
     // Byte-backed detection, the etag contract: streamed bodies carry no
     // explicit content-length — skip them, never buffer.
-    if (res.headers.get('content-length') === null) return;
+    if (!isByteBacked(res)) return;
     const body = await res.text();
     const issues = checkJson(schema, body);
     if (issues.length > 0) {

@@ -1,6 +1,6 @@
 import type { NodeServer } from '../src/node';
 
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
@@ -227,6 +227,38 @@ describe('node adapter (real http)', () => {
       await symlink(join(dir, 'sub'), join(dir, 'stream-sub'));
       (await read('stream-sub') === null).should.be.true;
     });
+
+    // IO failure is not masked as a 404 (fs-containment's missOrNull
+    // contract): an unreadable file must reject, not read as a miss —
+    // the stream precheck's access(R_OK) and the buffered readFile path
+    // alike. Skipped under root, which ignores permission bits.
+    it.skipIf(process.geteuid?.() === 0)(
+      'throws on an unreadable file instead of missing',
+      async () => {
+        const file = join(dir, 'unreadable.txt');
+        await writeFile(file, 'no dice');
+        await chmod(file, 0o000);
+        try {
+          for (const read of [
+            createFileReader(dir),
+            createFileReader(dir, { stream: true }),
+          ]) {
+            let error: unknown;
+            try {
+              await read('unreadable.txt');
+            } catch (caught) {
+              error = caught;
+            }
+            (error as { code?: string } | undefined)?.code?.should.equal(
+              'EACCES'
+            );
+            (error !== undefined).should.be.true;
+          }
+        } finally {
+          await chmod(file, 0o644);
+        }
+      }
+    );
   });
 
   describe('createFileStat', () => {

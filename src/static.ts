@@ -110,8 +110,20 @@ function decodedPieces(segment: string): string[] | undefined {
  * when a '..' segment would climb out of root — callers fall through to
  * next() instead of serving anything. Clients normally pre-normalize '..'
  * away, so a literal climb attempt is always crafted.
+ *
+ * With `denyDotfiles`, the dotfile veto rides the same walk: any decoded
+ * piece starting with '.' (`.env`, `.git/…`) reads as a fall-through, and
+ * a malformed escape fails closed the same way — there is no safely
+ * decoded text to resolve, and the deny policy would veto it regardless.
+ * '.'/'..' pieces never hit the veto — '.' is skipped, '..' is traversal
+ * (they are not hidden names). One walk, one `decodedPieces` per segment:
+ * the request path is decoded exactly once.
  */
-function resolveUnderRoot(root: string, path: string): string | undefined {
+function resolveUnderRoot(
+  root: string,
+  path: string,
+  denyDotfiles = false
+): string | undefined {
   const stack: string[] = [];
   for (const segment of path.split('/')) {
     if (segment === '' || segment === '.') continue;
@@ -122,9 +134,10 @@ function resolveUnderRoot(root: string, path: string): string | undefined {
       if (piece === '..') {
         if (stack.length === 0) return undefined;
         stack.pop();
-      } else {
-        stack.push(piece);
+        continue;
       }
+      if (denyDotfiles && piece.startsWith('.')) return undefined;
+      stack.push(piece);
     }
   }
   const base = root === '' ? [] : root.split('/').filter(Boolean);
@@ -138,29 +151,6 @@ function stripPrefix(pathname: string, prefix: string): string | undefined {
   if (!pathname.startsWith(withSlash)) return undefined;
   const rest = pathname.slice(prefix.length);
   return rest.startsWith('/') ? rest : `/${rest}`;
-}
-
-/**
- * Detects dotfile segments in a request path: any percent-decoded segment
- * starting with '.' (`.env`, `.git/…`). '.'/'..' segments are traversal,
- * handled by {@link resolveUnderRoot}; a malformed escape is reported as a
- * dotfile so the deny policy fails closed even before resolution.
- */
-function hasDotfileSegment(path: string): boolean {
-  for (const segment of path.split('/')) {
-    if (segment === '' || segment === '.' || segment === '..') continue;
-    const pieces = decodedPieces(segment);
-    // A malformed escape fails closed — reported as a dotfile so the deny
-    // policy blocks it before resolution ever runs.
-    if (pieces === undefined) return true;
-    for (const piece of pieces) {
-      // '.'/'..' pieces are traversal, not dotfiles — resolveUnderRoot
-      // decides them; the policy here only vetoes hidden names.
-      if (piece === '' || piece === '.' || piece === '..') continue;
-      if (piece.startsWith('.')) return true;
-    }
-  }
-  return false;
 }
 
 /** A parsed single byte-range, or `null` when unsatisfiable. */
@@ -439,10 +429,10 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
 
     // Hidden files are refused by default — the request path is the only
     // input that decides, so '.env' or '.git/config' can never leave the
-    // process even when they sit inside the served root.
-    if (options.dotfiles !== 'allow' && hasDotfileSegment(rest)) return next();
-
-    let lookup = resolveUnderRoot(root, rest);
+    // process even when they sit inside the served root. The veto rides
+    // the same walk that resolves the lookup: each segment's decoded
+    // pieces are computed once.
+    let lookup = resolveUnderRoot(root, rest, options.dotfiles !== 'allow');
     if (lookup === undefined) return next();
     const directoryPath = rest.endsWith('/');
     if (directoryPath) lookup = lookup === '' ? index : `${lookup}/${index}`;

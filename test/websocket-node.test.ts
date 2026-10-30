@@ -196,6 +196,7 @@ function readResponse(socket: Socket): Promise<{ head: string; body: string }> {
 describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
   let server: NodeServer;
   let droppedCode = -1;
+  let thrownErrors: Error[] = [];
 
   beforeAll(async () => {
     const app = createApp();
@@ -212,6 +213,15 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     });
     upgradeWebSocket(app, '/close-long-reason', (socket) => {
       socket.close(1000, 'x'.repeat(200));
+    });
+    // The handler-error contract: a message callback throwing mid-dispatch
+    // fans out to onError and closes 1011 'handler error' — the wire
+    // strings are the client-facing contract, pinned by the test below.
+    upgradeWebSocket(app, '/throw-msg', (socket) => {
+      socket.onError((error) => thrownErrors.push(error));
+      socket.onMessage(() => {
+        throw new Error('kaboom');
+      });
     });
     upgradeWebSocket(app, '/drop-log', (socket) => {
       socket.onClose((code) => {
@@ -340,6 +350,22 @@ describe('websocket node upgrade handler (raw RFC 6455 client)', () => {
     frame.payload.readUInt16BE(0).should.equal(1000);
     await once(socket, 'end');
     socket.destroy();
+  });
+
+  it('fans a throwing message callback to onError and closes 1011 "handler error"', async () => {
+    thrownErrors = [];
+    const socket = openSocket(server.port, '/throw-msg');
+    const { rest } = await readHead(socket);
+    const read = frameReader(socket, rest);
+    socket.write(clientFrame(0x1, 'x'));
+    const frame = await read();
+    frame.opcode.should.equal(0x8);
+    frame.payload.readUInt16BE(0).should.equal(1011);
+    // The code/reason pair is the wire contract clients see — verbatim.
+    frame.payload.subarray(2).toString().should.equal('handler error');
+    await once(socket, 'end');
+    socket.destroy();
+    thrownErrors.map((error) => error.message).should.deep.equal(['kaboom']);
   });
 
   it('performs a server-initiated close with code and reason', async () => {

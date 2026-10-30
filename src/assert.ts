@@ -22,3 +22,20 @@ export function assertPositive(
     );
   }
 }
+
+/** Throws when `value` is not a safe integer ≥ 0 — same house format as
+ * {@link assertPositive} for the bounds where zero is legitimate (an
+ * empty window is a valid choice, a negative or fractional one is not):
+ * `` Invalid ${module} ${name} ${String(value)}: must be a non-negative
+ * integer ``. */
+export function assertNonNegativeInteger(
+  module: string,
+  name: string,
+  value: number
+): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `Invalid ${module} ${name} ${String(value)}: must be a non-negative integer`
+    );
+  }
+}

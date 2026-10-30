@@ -10,6 +10,11 @@
 
 import { lruStore } from './bounded-collections';
 
+/** One process-wide encoder — `encode()` still allocates a fresh output
+ * buffer per call, so hoisting the encoder itself (respond.ts precedent)
+ * leaves per-request work unchanged and removes the per-call allocation. */
+const encoder = new TextEncoder();
+
 /** Base64url alphabet and its decode table — built once at module load
  * so per-request token mint/verify paths allocate nothing for them. */
 const B64_ALPHABET =
@@ -141,7 +146,7 @@ export async function materialDigest(
   material: string | Uint8Array
 ): Promise<string> {
   const bytes =
-    typeof material === 'string' ? new TextEncoder().encode(material) : material;
+    typeof material === 'string' ? encoder.encode(material) : material;
   const digest = new Uint8Array(
     await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)
   );
@@ -162,6 +167,28 @@ export type HmacKeyCache = {
 const HMAC_KEY_CACHE_LIMIT = 100;
 
 const defaultHmacCache: HmacKeyCache = lruStore(HMAC_KEY_CACHE_LIMIT);
+
+/** Get-or-import through a {@link HmacKeyCache}: on a miss the import
+ * starts and its *promise* is cached before anything awaits it, so
+ * concurrent misses for one key share a single import, and a rejected
+ * import replays the identical cached failure on every later read (the
+ * LRU-bounds tests pin both). The callback owns the algorithm
+ * parameters — this module's HMAC row and jwt's asymmetric JWK rows are
+ * the two callers — and a synchronous throw from it never reaches
+ * `set`, so a bad-before-start import leaves the cache untouched for
+ * the next call to retry. */
+export function cachedImport(
+  store: HmacKeyCache,
+  cacheKey: string,
+  importKey: () => Promise<CryptoKey>
+): Promise<CryptoKey> {
+  let key = store.get(cacheKey);
+  if (key === undefined) {
+    key = importKey();
+    store.set(cacheKey, key);
+  }
+  return key;
+}
 
 /** String-secret digest-memo bound: past this many distinct secrets the
  * oldest memo entry drops (its digest recomputes on demand). Secrets are
@@ -221,20 +248,17 @@ export async function getHmacKey(
   store: HmacKeyCache = defaultHmacCache
 ): Promise<CryptoKey> {
   const bytes =
-    typeof secret === 'string' ? new TextEncoder().encode(secret) : secret;
+    typeof secret === 'string' ? encoder.encode(secret) : secret;
   const cacheKey = `${hash}:${usages.join('+')}:${await secretDigest(secret)}`;
-  let key = store.get(cacheKey);
-  if (key === undefined) {
-    key = crypto.subtle.importKey(
+  return cachedImport(store, cacheKey, () =>
+    crypto.subtle.importKey(
       'raw',
       bytes as Uint8Array<ArrayBuffer>,
       { name: 'HMAC', hash },
       false,
       usages
-    );
-    store.set(cacheKey, key);
-  }
-  return key;
+    )
+  );
 }
 
 /** Random token of `byteLength` entropy bytes, base64url — the opaque

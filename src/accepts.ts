@@ -9,7 +9,7 @@
 
 import type { Ctx } from './types';
 
-import { unquoteParam } from './raw-headers';
+import { splitParams, unquoteParam } from './raw-headers';
 
 /**
  * One parsed Accept-family entry: the lowercased value, its quality, and
@@ -36,9 +36,11 @@ export type Range = {
  * Parses an Accept-family header into `{ value, q, params }` ranges in
  * header order (order matters: at equal specificity, the earlier range
  * wins). q is clamped to [0, 1]; q=0 ranges stay — they ban candidates;
- * an unparseable q parameter is ignored (q stays 1). Shared by every
- * Accept-header consumer (compress's pickEncoding rides it too), so the
- * grammar is defined exactly once.
+ * an unparseable q parameter is ignored (q stays 1). Parameter pieces
+ * split quote-aware (`;` inside a quoted value, like `version="a;b"`, is
+ * data — {@link splitParams}). Shared by every Accept-header consumer
+ * (compress's pickEncoding rides it too), so the grammar is defined
+ * exactly once.
  *
  * @internal
  */
@@ -48,7 +50,7 @@ export function parseRanges(header: string | null): Range[] {
   for (const part of header.split(',')) {
     const trimmed = part.trim();
     if (trimmed === '') continue;
-    const pieces = trimmed.split(';');
+    const pieces = splitParams(trimmed);
     const value = (pieces[0] ?? '').trim().toLowerCase();
     if (value === '') continue;
     let q = 1;

@@ -14,7 +14,7 @@ import { compress } from '../src/compress';
 import { etag } from '../src/etag';
 import { isLightRequest, LightHeaders } from '../src/light';
 import { createFileRangeReader, createFileReader, createFileStat, serve } from '../src/node';
-import { json, setHeader, setHeaders, text } from '../src/respond';
+import { json, rebuild, setHeader, setHeaders, text, utf8Length } from '../src/respond';
 import { jsonRaw, serialize } from '../src/serialize';
 import { serveStatic } from '../src/static';
 import { stream, streamSSE } from '../src/streaming';
@@ -412,6 +412,93 @@ describe('setHeader / setHeaders over real http (both modes)', () => {
       seen[mode].status.should.equal(500);
       (seen[mode].stamped ?? '').should.equal('pre');
     }
+  });
+});
+
+describe('rebuild default headers over real http (both modes)', () => {
+  let urls: { normal: string; light: string };
+  // Set by the probe route's middleware per mode: did the default-headers
+  // rebuild (no explicit copy handed in) keep the light view?
+  let probeHeadersLight: boolean | undefined;
+  let probeHeadersNormal: boolean | undefined;
+
+  beforeAll(async () => {
+    urls = await serveBoth(() => {
+      const app = createApp();
+      use(app, modeMarker());
+      use(app, async (ctx, next) => {
+        await next();
+        const res = ctx.res;
+        if (res === undefined) return;
+        if (ctx.url.pathname === '/verbatim') {
+          // response-check's tail: rebuild with the read-back body and no
+          // explicit headers — the default-copy path under test.
+          ctx.res = rebuild(ctx, res, await res.text());
+          return;
+        }
+        if (ctx.url.pathname === '/probe') {
+          const body = 'rebuilt';
+          const rebuilt = rebuild(ctx, res, body);
+          // rebuild never recomputes content-length — keep the framing
+          // honest for the replaced body (dev's rebuildWithBody contract).
+          rebuilt.headers.set('content-length', String(utf8Length(body)));
+          if (isLightRequest(ctx.req)) {
+            probeHeadersLight = rebuilt.headers instanceof LightHeaders;
+          } else {
+            probeHeadersNormal = rebuilt.headers instanceof LightHeaders;
+          }
+          ctx.res = rebuilt;
+        }
+      });
+      get(app, '/verbatim', (ctx) => json(ctx, { hello: 'rebuild' }));
+      get(app, '/probe', (ctx) => text(ctx, 'probe'));
+      return app;
+    });
+  });
+
+  it('rebuilds verbatim identically in both modes', async () => {
+    const seen = await inBoth(urls, async (url) => {
+      const res = await fetch(`${url}/verbatim`);
+      return {
+        mode: res.headers.get('x-s200-mode'),
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+        contentLength: res.headers.get('content-length'),
+        body: await res.text(),
+      };
+    });
+    seen.normal.mode?.should.equal('normal');
+    seen.light.mode?.should.equal('light');
+    for (const mode of ['normal', 'light'] as const) {
+      seen[mode].status.should.equal(200);
+      (seen[mode].contentType ?? '').should.equal('application/json');
+      (seen[mode].contentLength ?? '').should.equal(String(seen[mode].body.length));
+      seen[mode].body.should.equal('{"hello":"rebuild"}');
+    }
+  });
+
+  it('keeps the default-headers copy light on the light path', async () => {
+    const seen = await inBoth(urls, async (url) => {
+      const res = await fetch(`${url}/probe`);
+      return {
+        mode: res.headers.get('x-s200-mode'),
+        status: res.status,
+        contentLength: res.headers.get('content-length'),
+        body: await res.text(),
+      };
+    });
+    seen.normal.mode?.should.equal('normal');
+    seen.light.mode?.should.equal('light');
+    for (const mode of ['normal', 'light'] as const) {
+      seen[mode].status.should.equal(200);
+      seen[mode].contentLength?.should.equal('7');
+      seen[mode].body.should.equal('rebuilt');
+    }
+    // The point of the headersFor default: the light rebuild copies
+    // LightHeaders → LightHeaders, never through the platform class
+    // (the normal path stays a platform copy, of course).
+    probeHeadersLight!.should.be.true;
+    probeHeadersNormal!.should.be.false;
   });
 });
 

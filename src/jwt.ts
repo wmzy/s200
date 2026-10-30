@@ -29,12 +29,18 @@ import { httpError } from './errors';
 import {
   b64urlDecode as decodeB64url,
   b64urlEncode,
+  cachedImport,
   getHmacKey,
   hmacVerify,
   materialDigest,
   type HmacKeyCache,
 } from './crypto-util';
 import { lruStore } from './bounded-collections';
+
+/** One process-wide encoder — `encode()` still allocates a fresh output
+ * buffer per call; signJwt/verifyJwt used to allocate the encoder itself
+ * per token (respond.ts precedent for the hoist). */
+const encoder = new TextEncoder();
 
 /** Decoding that keeps this module's throw-site contract: any invalid
  * input (padding, out-of-alphabet char, impossible length) surfaces as
@@ -163,34 +169,32 @@ async function importAsymKey(
 ): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
   const cacheKey = `${alg}:${usages.join('+')}:${await materialDigest(JSON.stringify(jwk))}`;
-  let key = store.get(cacheKey);
-  if (key === undefined) {
+  return cachedImport(store, cacheKey, () => {
     if (info.kind === 'rsa') {
-      key = crypto.subtle.importKey(
+      return crypto.subtle.importKey(
         'jwk',
         jwk,
         { name: info.algName, hash: info.hash },
         false,
         usages
       );
-    } else if (info.kind === 'ec') {
-      key = crypto.subtle.importKey(
+    }
+    if (info.kind === 'ec') {
+      return crypto.subtle.importKey(
         'jwk',
         jwk,
         { name: 'ECDSA', namedCurve: info.curve },
         false,
         usages
       );
-    } else if (info.kind === 'ed') {
+    }
+    if (info.kind === 'ed') {
       // The string identifier, not an algorithm object — some runtimes
       // mishandle the object form for secure curves.
-      key = crypto.subtle.importKey('jwk', jwk, 'Ed25519', false, usages);
-    } else {
-      throw jwtError(`HMAC key material cannot be imported as a JWK (${alg})`);
+      return crypto.subtle.importKey('jwk', jwk, 'Ed25519', false, usages);
     }
-    store.set(cacheKey, key);
-  }
-  return key;
+    throw jwtError(`HMAC key material cannot be imported as a JWK (${alg})`);
+  });
 }
 
 function isSecretKey(key: JwtKey): key is string | Uint8Array {
@@ -378,7 +382,6 @@ export async function signJwt(
   if (options.jwtId !== undefined) {
     claims.jti = options.jwtId;
   }
-  const encoder = new TextEncoder();
   const headerText = b64urlEncode(encoder.encode(JSON.stringify({ alg, typ: 'JWT' })));
   const payloadText = b64urlEncode(encoder.encode(JSON.stringify(claims)));
   const signingKey = await getSignKey(key, alg, options.keyStore ?? defaultKeyStore);
@@ -452,7 +455,6 @@ export async function verifyJwt<T = Record<string, unknown>>(
   const header = headerFromParts(parts);
   const [headerText, payloadText, sigText] = parts;
   const sigBytes = b64urlDecode(sigText ?? '');
-  const encoder = new TextEncoder();
   if (
     typeof header.alg !== 'string' ||
     !(header.alg in ALG_INFO) ||

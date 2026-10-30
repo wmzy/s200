@@ -13,7 +13,9 @@
  * without duplicating it (compress, cors, and the version gate's Vary
  * stamps); `unquoteParam` unfolds one quoted header parameter value
  * (accepts' and multipart's shared escape semantics, previously two
- * drifting copies); `mediaTypeOf` reads the lowercase media token before
+ * drifting copies); `splitParams` splits a parameter list on `;`
+ * quote-aware so a quoted separator stays data (the same two consumers'
+ * shared split); `mediaTypeOf` reads the lowercase media token before
  * the `;` of a content-type-ish header (response-check's JSON test,
  * multipart's boundary dispatch, the lambda adapter's textual test).
  * NOT a public entry — the barrel does not re-export
@@ -126,9 +128,9 @@ export function withVary(headers: Headers, value: string): void {
  * and unfolds backslash escapes (`\"` → `"`, `\<LF>` → LF — the escape
  * character is always consumed, whatever byte follows it); a bare token
  * is returned as-is (trimmed). A trailing lone backslash has nothing left
- * to escape and is kept. The k=v loops around it stay per-module: accepts
- * special-cases `q=`, multipart splits quote-aware — only the value
- * unfold is shared, so the two cannot drift again.
+ * escape and is kept. The k=v loops around it stay per-module: accepts
+ * special-cases `q=`; the quote-aware split ({@link splitParams}) and
+ * this unfold are shared, so the two cannot drift again.
  *
  * @internal
  */
@@ -149,6 +151,43 @@ export function unquoteParam(raw: string): string {
     return out;
   }
   return t;
+}
+
+/**
+ * Splits a header parameter list on `;` while honoring quoted strings (a
+ * `;` inside quotes is data, not a separator). Backslash escapes inside
+ * quotes are carried through verbatim for {@link unquoteParam} to unfold.
+ * Accepts' range parsing and multipart's part-header parameters share this
+ * one grammar — previously two drifting copies.
+ *
+ * @internal
+ */
+export function splitParams(s: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i] ?? '';
+    if (quoted) {
+      if (c === '\\') {
+        current += c + (s[i + 1] ?? '');
+        i += 1;
+      } else {
+        if (c === '"') quoted = false;
+        current += c;
+      }
+    } else if (c === '"') {
+      quoted = true;
+      current += c;
+    } else if (c === ';') {
+      out.push(current);
+      current = '';
+    } else {
+      current += c;
+    }
+  }
+  out.push(current);
+  return out;
 }
 
 /**

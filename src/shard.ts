@@ -198,24 +198,36 @@ function mergePolicies(group: ShardGroup, routes: readonly Route[]): RoutePolicy
   return merged;
 }
 
-/** The declared group with the longest matching prefix for `pattern`
- * (earlier declaration wins ties) — '/a/b/x' prefers '/a/b' over '/a'.
- * Single-pass best-tracking; the shared longest-prefix-wins ordering
- * rule lives in {@link longestFirst}. */
+/** Longest-prefix-wins selection over prefix-carrying items: the item
+ * whose prefix `pathname` equals or nests under (`underPrefix`), longest
+ * prefix winning, earlier item winning equal-length ties — '/a/b/x'
+ * prefers '/a/b' over '/a'. Single-pass best-tracking, no sort and no
+ * copy; the sort form of the same ordering rule is {@link longestFirst},
+ * which renders the priority as a list. The one home of the rule — both
+ * prefix-riding call sites below delegate here so they cannot drift. */
+function bestByPrefix<T extends { prefix: string }>(
+  items: readonly T[],
+  pathname: string
+): T | undefined {
+  let best: T | undefined;
+  for (const item of items) {
+    if (
+      underPrefix(pathname, item.prefix) &&
+      (best === undefined || item.prefix.length > best.prefix.length)
+    ) {
+      best = item;
+    }
+  }
+  return best;
+}
+
+/** The declared group with the longest matching prefix for `pattern` —
+ * grouping's ride on the shared {@link bestByPrefix} rule. */
 function longestPrefixGroup(
   groups: readonly ShardGroup[],
   pattern: string
 ): ShardGroup | undefined {
-  let best: ShardGroup | undefined;
-  for (const group of groups) {
-    if (
-      underPrefix(pattern, group.prefix) &&
-      (best === undefined || group.prefix.length > best.prefix.length)
-    ) {
-      best = group;
-    }
-  }
-  return best;
+  return bestByPrefix(groups, pattern);
 }
 
 /**
@@ -345,24 +357,14 @@ export function shardApp<S extends State = State>(app: App<S>, group: ShardGroup
  * matches everything. Returns the winning spec, or undefined when nothing
  * matches — callers decide what an unrouted pathname means.
  *
- * Single-pass best-tracking (no sort, no copy): the shared
- * longest-prefix-wins ordering rule lives in {@link longestFirst}, the
- * sort form surfaces that render an ordered list ride.
+ * The selection itself is {@link bestByPrefix} — the one home of the
+ * longest-prefix-wins rule; {@link longestFirst} is its sort form.
  */
 export function matchShard(
   specs: readonly ShardSpec[],
   pathname: string
 ): ShardSpec | undefined {
-  let best: ShardSpec | undefined;
-  for (const spec of specs) {
-    if (
-      underPrefix(pathname, spec.prefix) &&
-      (best === undefined || spec.prefix.length > best.prefix.length)
-    ) {
-      best = spec;
-    }
-  }
-  return best;
+  return bestByPrefix(specs, pathname);
 }
 
 /**

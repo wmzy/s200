@@ -17,7 +17,7 @@
 import type { Ctx, Middleware } from './types';
 
 import { bytesOf } from './light';
-import { newResponse, rebuild } from './respond';
+import { isByteBacked, newResponse, rebuild } from './respond';
 import { toHex } from './crypto-util';
 
 export type EtagOptions = {
@@ -53,7 +53,7 @@ export function etag(options: EtagOptions = {}): Middleware {
     if (res.headers.has('etag')) return;
     if (res.headers.has('content-range')) return;
     if (res.status < 200 || res.status >= 300) return;
-    if (res.headers.get('content-length') === null) return;
+    if (!isByteBacked(res)) return;
     // Light fast path: a byte-backed light response hands its bytes over
     // synchronously — no platform body read, no defensive copy. Streamed
     // and lazy light bodies fall through to the async read, exactly like a

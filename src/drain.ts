@@ -3,8 +3,11 @@
  * grows: `s200/node`'s graceful close, `s200/lifecycle`'s shutdown drain,
  * and the shard executor's child-realm drain all run the same skeleton —
  * stop accepting, reap idle keep-alive sockets continuously, hard-kill on
- * the deadline. NOT a public entry — the barrel does not re-export this
- * module; import it relatively from within src.
+ * the deadline — and `s200/lifecycle`'s bun path runs the settled/deadline/
+ * kill scaffolding too, with its `stop(false)`/`stop()` verbs injected
+ * through {@link DrainOptions.gracefulStop} and {@link
+ * DrainOptions.onHardKill}. NOT a public entry — the barrel does not
+ * re-export this module; import it relatively from within src.
  *
  * @internal
  * @module
@@ -26,11 +29,22 @@ type DrainedServer = {
 export type DrainOptions = {
   /** Total budget before the hard kill. */
   readonly budgetMs: number;
+  /** Replaces the node graceful start (`server.close(callback)` — the
+   * callback settles once every connection has ended) for servers whose
+   * graceful verb is something else — `s200/lifecycle`'s bun path:
+   * `stop(false)`. A promise return settles on resolution or rejection,
+   * anything else has nothing observable to await so it settles at once;
+   * a throw means already stopped, which the skeleton's catch settles.
+   * The idle reaper stays a node-path concern — it is skipped when this
+   * is provided. */
+  readonly gracefulStop?: (finish: (error?: Error | null) => void) => void;
   /** Extra destruction on the hard kill — `s200/node`'s upgraded-socket
    * and h2-session registries: `closeAllConnections()` cannot reach
    * sockets taken over by `'upgrade'`, and HTTP/2 sessions have no such
-   * method at all. */
-  readonly onHardKill?: () => void;
+   * method at all. Receives the skeleton's settle for call sites whose
+   * forced stop is itself terminal — bun's `stop()`, where no close
+   * callback exists to settle the drain afterwards. */
+  readonly onHardKill?: (finish: (error?: Error | null) => void) => void;
   /** Runs right after `close()` is issued — `s200/node`'s GOAWAY sweep
    * over persistent h2 sessions, which would otherwise hold close()'s
    * callback open until the client leaves. */
@@ -60,16 +74,19 @@ const reapCadenceMs = (budgetMs: number): number =>
  * close()'s callback open until the deadline), and hard-kill on the
  * budget deadline. close()'s callback fires once every connection has
  * ended, so the last in-flight response landing settles the drain early.
+ * A `gracefulStop` injection swaps the stop-accepting verb (and skips the
+ * idle reaper); the settled/deadline/kill scaffolding is every call
+ * site's either way.
  *
  * @internal
  */
 export function drainHttpServer(server: DrainedServer, options: DrainOptions): void {
-  const { budgetMs, onHardKill, afterClose, onKill, settle } = options;
+  const { budgetMs, gracefulStop, onHardKill, afterClose, onKill, settle } = options;
   let settled = false;
   let reaper: ReturnType<typeof setInterval> | undefined;
   const hardKill = (): void => {
     server.closeAllConnections?.();
-    onHardKill?.();
+    onHardKill?.(finish);
   };
   const finish = (error?: Error | null): void => {
     if (settled) {
@@ -86,16 +103,24 @@ export function drainHttpServer(server: DrainedServer, options: DrainOptions): v
   const deadline = setTimeout(hardKill, budgetMs);
   onKill?.(hardKill);
   try {
-    // Stop accepting new connections. The callback fires once every
-    // connection has ended — in-flight responses finish and their sockets
-    // are reaped below.
-    server.close?.((error) => finish(error));
-    afterClose?.();
+    if (gracefulStop !== undefined) {
+      // The call site's own graceful verb (bun's stop(false)) — the
+      // settle it receives is the skeleton's, deadline and kill switch
+      // included.
+      gracefulStop(finish);
+    } else {
+      // Stop accepting new connections. The callback fires once every
+      // connection has ended — in-flight responses finish and their
+      // sockets are reaped below.
+      server.close?.((error) => finish(error));
+      afterClose?.();
+    }
   } catch (error) {
-    // A server refusing a second close() is already drained.
+    // A server refusing a second close() — or stop() — is already
+    // drained.
     finish(error as Error);
   }
-  if (!settled) {
+  if (!settled && gracefulStop === undefined) {
     // Keep-alive sockets that go idle mid-drain (their response just
     // finished) would otherwise hold close()'s callback open until the
     // deadline — reap continuously, not once.

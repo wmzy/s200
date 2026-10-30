@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -128,6 +128,39 @@ describe('serveStatic over the real filesystem', () => {
     const res = await handle(app, new Request('http://localhost/other'));
     (await res.text()).should.equal('route');
   });
+
+  // fs-containment's missOrNull contract: an IO failure is not masked as
+  // a 404 — an unreadable file (EACCES) must surface as a 500 through
+  // both reader modes. Skipped under root, which ignores permission bits.
+  it.skipIf(process.geteuid?.() === 0)(
+    'answers 500 for an unreadable file',
+    async () => {
+      const file = join(publicDir, 'unreadable.txt');
+      await writeFile(file, 'no dice');
+      await chmod(file, 0o000);
+      try {
+        for (const read of [
+          createFileReader(publicDir),
+          createFileReader(publicDir, { stream: true }),
+        ]) {
+          const app = createApp();
+          use(
+            app,
+            serveStatic({
+              read,
+              stat: createFileStat(publicDir),
+              readRange: createFileRangeReader(publicDir),
+            }),
+          );
+          all(app, '/*rest', (ctx) => text(ctx, 'fell-through'));
+          const res = await handle(app, new Request('http://localhost/unreadable.txt'));
+          res.status.should.equal(500);
+        }
+      } finally {
+        await chmod(file, 0o644);
+      }
+    }
+  );
 
   describe('symlink containment (on by default)', () => {
     it('rejects a symlink escaping the root, serves one staying inside', async () => {

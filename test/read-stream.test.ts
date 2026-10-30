@@ -145,7 +145,7 @@ describe('readStream', () => {
     };
     report.tag.should.equal('HttpError');
     report.status.should.equal(413);
-    report.message.should.equal('Payload too large');
+    report.message.should.equal('Request body too large');
     // Two 64-byte chunks fit under 150; the third crosses the budget and is
     // withheld — never more than limit + one chunk delivered.
     report.delivered.should.be.at.most(150 + 64);

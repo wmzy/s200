@@ -166,9 +166,10 @@ type FileStat = {
  * adapter injects its own flavor (node's `node:fs/promises` reads,
  * Bun's `Bun.file` windows) and keeps its public factories as thin
  * wrappers. `createStream` owns the `{ stream: true }` precheck — the one
- * place the runtimes genuinely differ (node re-stats and rejects
- * unreadable files via `access(R_OK)`, reading every precheck failure as
- * a miss; Bun runs the shared stat policy and streams) — while
+ * place the runtimes genuinely differ (node also probes readability via
+ * `access(R_OK)`, because a directory passes the stat check but its
+ * stream would die mid-response) — with both flavors funneling precheck
+ * failures through the shared miss policy (`missOrNull`), while
  * `createStreamUnchecked`/`createRangeStream` open blind, called only
  * after the skeleton's own `stat` already cleared the entry.
  *

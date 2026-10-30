@@ -183,47 +183,43 @@ export function lifecycle(
     });
 
   // Bun path: stop(false) is the graceful stop, stop() the immediate one.
-  // The graceful promise settles the wait when the runtime provides one;
-  // otherwise there is nothing observable to await — the stop is initiated
-  // and onShutdown proceeds. Never rejects.
+  // The settled/deadline/kill scaffolding is drain.ts's, injected twice —
+  // the graceful start runs stop(false) (the runtime's promise settles
+  // the wait on either branch; without one there is nothing observable to
+  // await, so the stop is initiated and onShutdown proceeds), and the
+  // hard kill runs stop(), itself terminal for a bun server: it settles
+  // through the skeleton's finish. Never rejects.
   const drainBun = (raw: RawServer): Promise<void> =>
     new Promise((resolve) => {
-      let settled = false;
-      const finish = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(deadline);
-        kill = undefined;
-        resolve();
-      };
-      const hardKill = (): void => {
-        try {
-          raw.stop?.();
-        } catch {
-          // Already stopped — nothing to force.
-        }
-        finish();
-      };
-      const deadline = setTimeout(hardKill, timeoutMs);
-      kill = hardKill;
-      let stopping: unknown;
-      try {
-        stopping = raw.stop?.(false);
-      } catch {
-        // A stop() that throws is a stopped server — nothing to wait for.
-        finish();
-        return;
-      }
-      if (stopping !== undefined && typeof (stopping as { then?: unknown }).then === 'function') {
-        (stopping as Promise<unknown>).then(
-          () => finish(),
-          () => finish()
-        );
-      } else {
-        finish();
-      }
+      drainHttpServer(raw, {
+        budgetMs: timeoutMs,
+        gracefulStop: (finish) => {
+          const stopping = raw.stop?.(false);
+          if (
+            stopping !== undefined &&
+            typeof (stopping as { then?: unknown }).then === 'function'
+          ) {
+            (stopping as Promise<unknown>).then(
+              () => finish(),
+              () => finish()
+            );
+          } else {
+            finish();
+          }
+        },
+        onHardKill: (finish) => {
+          try {
+            raw.stop?.();
+          } catch {
+            // Already stopped — nothing to force.
+          }
+          finish();
+        },
+        onKill: (killNow) => {
+          kill = killNow;
+        },
+        settle: () => resolve(),
+      });
     });
 
   const drainConnections = (): Promise<void> => {

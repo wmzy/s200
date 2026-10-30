@@ -6,8 +6,10 @@ import { describe, expectTypeOf, it } from 'vitest';
 import { createApp, get, handle, use } from '../src/app';
 import {
   html,
+  isByteBacked,
   json,
   resOf,
+  send,
   setHeader,
   stringResponse,
   text,
@@ -165,5 +167,30 @@ describe('the shared materialization tail', () => {
     const res = await handle(app, new Request('http://localhost/boom'));
     res.status.should.equal(500);
     (res.headers.get('x-deferred') ?? '').should.equal('rides-500');
+  });
+});
+
+describe('isByteBacked', () => {
+  it('reads exactly the explicit content-length the helpers stamp', async () => {
+    const app = createApp();
+    get(app, '/sized', (ctx) => text(ctx, 'hello'));
+    get(app, '/bare', () => new Response('bare'));
+    get(app, '/no-content', (ctx) => send(ctx, null, { status: 204 }));
+    get(app, '/streamed', (ctx) => send(ctx, new ReadableStream()));
+    isByteBacked(
+      await handle(app, new Request('http://localhost/sized'))
+    ).should.be.true;
+    // Platforms serialize content-length lazily — a bare Response carries none.
+    isByteBacked(
+      await handle(app, new Request('http://localhost/bare'))
+    ).should.be.false;
+    // Null-body statuses never advertise the empty size (RFC 9110 §8.6).
+    isByteBacked(
+      await handle(app, new Request('http://localhost/no-content'))
+    ).should.be.false;
+    // A streamed body has no known size to advertise.
+    isByteBacked(
+      await handle(app, new Request('http://localhost/streamed'))
+    ).should.be.false;
   });
 });

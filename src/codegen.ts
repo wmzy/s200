@@ -25,14 +25,14 @@ import type { App } from './app';
 
 import type { Segment } from './types';
 
-import { exampleToSchema, type SerializeSchema } from './serialize';
+import type { SerializeSchema } from './serialize';
 
 import {
   getRouteMeta,
   isMultipartBody,
   isQueryRequired,
+  mergedResponses,
   querySchemaOf,
-  throwsErrors,
   uniqueName,
 } from './meta';
 
@@ -401,26 +401,16 @@ export function generateClient(app: App, options: GenerateClientOptions = {}): s
       initParam = `init${bodyType === undefined ? '?' : ''}: ${typeBase}Init`;
     }
 
-    // — responses: meta.responses merged with the throws gates' branches
-    // (meta wins a status both declare — same rule the spec emitter
-    // applies), one Branch member per status, ascending.
+    // — responses: one Branch member per merged status
+    // (`mergedResponses` — the same single union the spec emitter
+    // renders), ascending.
     const branches: RouteBranch[] = [];
-    const metaStatuses = new Set<number>();
-    for (const [status, entry] of Object.entries(meta?.responses ?? {})) {
-      const code = Number(status);
-      metaStatuses.add(code);
+    for (const { status, schema } of mergedResponses(meta, route)) {
+      // No schema (undefined, a function, …) keeps the honest `unknown`.
       branches.push({
-        status: code,
-        body: entry.schema === undefined ? 'unknown' : schemaToTs(entry.schema),
+        status,
+        body: schema === undefined ? 'unknown' : schemaToTs(schema),
       });
-    }
-    for (const [status, example] of Object.entries(throwsErrors(route))) {
-      const code = Number(status);
-      if (metaStatuses.has(code)) continue;
-      // The one inference layer (`s200/serialize`), rendered here — no
-      // schema (undefined, a function, …) keeps the honest `unknown`.
-      const schema = exampleToSchema(example);
-      branches.push({ status: code, body: schema === undefined ? 'unknown' : schemaToTs(schema) });
     }
     let responseType = 'Response';
     if (branches.length > 0) {

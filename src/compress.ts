@@ -14,7 +14,7 @@ import { parseRanges } from './accepts';
 import { collectStream } from './bytes';
 import { byteBodyOf, bytesOf } from './light';
 import { withVary } from './raw-headers';
-import { rebuild } from './respond';
+import { isByteBacked, rebuild } from './respond';
 
 export type CompressOptions = {
   /**
@@ -133,7 +133,7 @@ export function compress(options: CompressOptions = {}): Middleware {
     if (length !== null && Number(length) < minBytes) return;
     // Brotli buffers whole bytes — byte-backed responses only, so a
     // streamed body never sits in memory for the injected encoder.
-    const brotliAllowed = brotli !== undefined && length !== null;
+    const brotliAllowed = brotli !== undefined && isByteBacked(res);
     const encoding = pickEncoding(
       ctx.req.headers.get('accept-encoding') ?? '',
       brotliAllowed

@@ -20,6 +20,11 @@ import {
   type HmacKeyCache,
 } from './crypto-util';
 
+/** One process-wide encoder — `encode()` still allocates a fresh output
+ * buffer per call, so signing/verifying pays no encoder allocation
+ * (respond.ts precedent). */
+const encoder = new TextEncoder();
+
 /** RFC 6265 token — cookie names live in a stricter alphabet than values. */
 const NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
@@ -120,7 +125,7 @@ const hmacCache: HmacKeyCache = lruStore(KEY_CACHE_LIMIT);
 /** HMAC-SHA256 over `value`, base64url — the cookie-signature convention.
  * The private cache above scopes the key import to this module. */
 export async function signCookie(value: string, secret: string): Promise<string> {
-  return hmacSign(new TextEncoder().encode(value), secret, { cache: hmacCache });
+  return hmacSign(encoder.encode(value), secret, { cache: hmacCache });
 }
 
 /**
@@ -133,7 +138,6 @@ export async function signCookie(value: string, secret: string): Promise<string>
  * it carries no secret bits.
  */
 export function timingSafeEqual(a: string, b: string): boolean {
-  const encoder = new TextEncoder();
   return equalBytes(encoder.encode(a), encoder.encode(b));
 }
 
@@ -144,7 +148,7 @@ export async function verifyCookieSignature(
   signature: string,
   secret: string
 ): Promise<boolean> {
-  return hmacVerify(new TextEncoder().encode(value), signature, secret, {
+  return hmacVerify(encoder.encode(value), signature, secret, {
     cache: hmacCache,
   });
 }

@@ -342,34 +342,43 @@ export function createScheduler(options: SchedulerOptions = {}): Scheduler {
         console.error(`scheduled job ${expr} failed:`, err);
       }),
   };
-  function cron(expr: string, fn: JobFn): void {
+  /** The registration spine `cron`/`interval` share: a stopped scheduler
+   * refuses the job (the kind names the refusal), the freshly built job
+   * files into the table, and an already-running loop arms it
+   * immediately. Building stays with the callers — each kind validates
+   * and constructs its own job. */
+  function register(kind: 'cron' | 'interval', build: () => Job): void {
     if (state.phase === 'stopped') {
-      throw new Error('Cannot register a cron job on a stopped scheduler');
+      throw new Error(
+        `Cannot register ${kind === 'cron' ? 'a cron' : 'an interval'} job on a stopped scheduler`
+      );
     }
-    const parsed = parseCron(expr);
-    // Eager probe: a parseable-but-unsatisfiable expression (`0 0 31 2 *`)
-    // fails here at registration, not later at start.
-    nextAfter(parsed, state.now());
-    const job: CronJob = {
-      kind: 'cron',
-      expr,
-      cron: parsed,
-      fn,
-      next: 0,
-      timer: undefined,
-      busy: undefined,
-    };
+    const job = build();
     state.jobs.push(job);
     if (state.phase === 'running') {
       launch(state, job);
     }
   }
+  function cron(expr: string, fn: JobFn): void {
+    register('cron', () => {
+      const parsed = parseCron(expr);
+      // Eager probe: a parseable-but-unsatisfiable expression (`0 0 31 2 *`)
+      // fails here at registration, not later at start.
+      nextAfter(parsed, state.now());
+      return {
+        kind: 'cron',
+        expr,
+        cron: parsed,
+        fn,
+        next: 0,
+        timer: undefined,
+        busy: undefined,
+      };
+    });
+  }
   function interval(ms: number, fn: JobFn): void {
     assertPositive('schedule', 'interval', ms);
-    if (state.phase === 'stopped') {
-      throw new Error('Cannot register an interval job on a stopped scheduler');
-    }
-    const job: IntervalJob = {
+    register('interval', () => ({
       kind: 'interval',
       expr: `interval:${String(ms)}`,
       ms,
@@ -377,11 +386,7 @@ export function createScheduler(options: SchedulerOptions = {}): Scheduler {
       next: 0,
       timer: undefined,
       busy: undefined,
-    };
-    state.jobs.push(job);
-    if (state.phase === 'running') {
-      launch(state, job);
-    }
+    }));
   }
   function start(): void {
     if (state.phase === 'running') {

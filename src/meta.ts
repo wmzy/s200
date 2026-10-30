@@ -16,7 +16,7 @@ import type { App } from './app';
 
 import type { Route } from './types';
 
-import { toJsonSchema, type SerializeSchema } from './serialize';
+import { exampleToSchema, toJsonSchema, type SerializeSchema } from './serialize';
 
 export type RouteMeta = {
   /** Short operation summary (the `summary` field of the path item). */
@@ -249,6 +249,59 @@ export function throwsErrors(route: Route): Record<number, unknown> {
     }
   }
   return merged;
+}
+
+/** One status's merged response annotation — what every status-typed
+ * surface (`s200/openapi`'s operation responses, `s200/codegen`'s
+ * `Branch` unions) renders per status: the schema that types it and the
+ * description it carries. */
+export type MergedResponse = {
+  readonly status: number;
+  /** The status's schema when one types it: the `responses` entry's own,
+   * or the gate's example inferred through `s200/serialize`'s
+   * `exampleToSchema` (the one inference layer); `undefined` on either
+   * side keeps renderers honest (no content / `unknown`). */
+  readonly schema: SerializeSchema | undefined;
+  /** The description the status renders with: the `responses` entry's
+   * own, or the gate branch's `'Error response'` fallback. */
+  readonly description: string;
+};
+
+/**
+ * Merges a route's response statuses into one ordered view — the single
+ * rule every status-typed surface renders: the metadata's `responses`
+ * declarations unioned with the `throws` gates' error branches
+ * ({@link throwsErrors}). Neither side clobbers the other — a status
+ * only one side declares is emitted; on conflict `meta.responses` wins
+ * (its description and schema were written for the spec, the gate's
+ * example is only an inference seed). `responses` entries keep their
+ * record order, gate branches follow, ascending within each record.
+ * The bare-200 success a route with no `responses` still answers with
+ * is the spec emitter's own policy, not part of the union.
+ */
+export function* mergedResponses(
+  meta: RouteMeta | undefined,
+  route: Route
+): Generator<MergedResponse> {
+  const taken = new Set<number>();
+  for (const [status, entry] of Object.entries(meta?.responses ?? {})) {
+    const code = Number(status);
+    taken.add(code);
+    yield {
+      status: code,
+      schema: entry.schema,
+      description: entry.description,
+    };
+  }
+  for (const [status, example] of Object.entries(throwsErrors(route))) {
+    const code = Number(status);
+    if (taken.has(code)) continue;
+    yield {
+      status: code,
+      schema: exampleToSchema(example),
+      description: 'Error response',
+    };
+  }
 }
 
 /**

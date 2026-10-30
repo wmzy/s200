@@ -243,7 +243,7 @@ function replayStream(
       cache.raw.then(
         (buffer) => {
           if (limit !== undefined && buffer.byteLength > limit) {
-            controller.error(httpError(413, 'Payload too large'));
+            controller.error(httpError(413, 'Request body too large'));
             return;
           }
           // A view over the cached buffer — byte-exact, no copy. Empty
@@ -323,7 +323,7 @@ function streamSource(
             // platform body is cancelled so the rest of the upload is
             // never received. Chunks already delivered stay delivered —
             // the consumer must discard them on error.
-            controller.error(httpError(413, 'Payload too large'));
+            controller.error(httpError(413, 'Request body too large'));
             void reader.cancel().catch(() => undefined);
             return;
           }

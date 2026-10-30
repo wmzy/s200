@@ -246,6 +246,18 @@ export function createSession(options: SessionOptions): {
     let destroyed = false;
     let deleted = false;
 
+    // The old id dies in the store at most once: `deleted` is the
+    // one-shot guard shared by regenerate()/destroy() and the unwind
+    // below — regenerate() resets it for the fresh id, whose entry is
+    // only written at the unwind. Reads `id` live, so it always deletes
+    // the id current at call time.
+    const deleteCurrent = async (): Promise<void> => {
+      if (id !== undefined && !deleted) {
+        deleted = true;
+        await store.delete(id);
+      }
+    };
+
     const session: Session = {
       id,
       isNew: id === undefined,
@@ -274,10 +286,7 @@ export function createSession(options: SessionOptions): {
         // Anti-replay first: the old id dies in the store now, not at
         // the unwind — a stolen cookie is worthless even if this
         // response never lands.
-        if (id !== undefined && !deleted) {
-          deleted = true;
-          await store.delete(id);
-        }
+        await deleteCurrent();
         // Copy on rotate (the restore contract): post-regeneration
         // mutations rewrite the bag, never alias the old one's store
         // entry.
@@ -293,10 +302,7 @@ export function createSession(options: SessionOptions): {
       },
       destroy: async () => {
         destroyed = true;
-        if (id !== undefined && !deleted) {
-          deleted = true;
-          await store.delete(id);
-        }
+        await deleteCurrent();
       },
     };
     ctx.state[stateKey] = session;
@@ -306,10 +312,7 @@ export function createSession(options: SessionOptions): {
     // now (the chain materializes 404/405/500 fallbacks in-chain), so
     // the cookie writes below always have a response to ride on.
     if (destroyed) {
-      if (id !== undefined && !deleted) {
-        deleted = true;
-        await store.delete(id);
-      }
+      await deleteCurrent();
       // Same attributes, Max-Age=0: a browser only deletes the cookie
       // the original attributes match (path/domain).
       await setSignedCookie(ctx, cookieName, '', options.secret, {
