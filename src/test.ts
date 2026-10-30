@@ -14,6 +14,7 @@ import type { RouteDef, Segment, State } from './types';
 
 import { handle } from './app';
 import { createClient } from './client';
+import { fillSegments } from './pattern-fill';
 
 
 /**
@@ -80,15 +81,12 @@ const DEFAULT_METHODS_FOR_ALL: readonly string[] = ['GET', 'POST'];
  * no route needs a hand-written fixture.
  */
 function probePath(segments: readonly Segment[]): string {
-  let path = '';
-  for (const segment of segments) {
-    if (segment._tag === 'static') {
-      path += `/${segment.value}`;
-    } else {
-      path += `/p${segment.name}`;
-    }
-  }
-  return path === '' ? '/' : path;
+  // The shared fill (pattern-fill): 'p' + name is encode-inert, so every
+  // capture kind gets the same placeholder and a required capture is
+  // never absent (`??` covers the impossible undefined). The root pattern
+  // fills to '' — probes spell it '/'.
+  const filled = fillSegments(segments, (name) => `p${name}`) ?? '';
+  return filled === '' ? '/' : filled;
 }
 
 /**

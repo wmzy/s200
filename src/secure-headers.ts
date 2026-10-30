@@ -138,26 +138,18 @@ export function secureHeaders(options: SecureHeadersOptions = {}): Middleware {
       typeof value === 'string' ? value : serializeDirectives(value)
     );
   };
-  if (options.xContentTypeOptions !== false) {
-    wanted.set('x-content-type-options', options.xContentTypeOptions ?? 'nosniff');
-  }
-  if (options.xFrameOptions !== false) {
-    wanted.set('x-frame-options', options.xFrameOptions ?? 'DENY');
-  }
-  if (options.referrerPolicy !== false) {
-    wanted.set('referrer-policy', options.referrerPolicy ?? 'strict-origin-when-cross-origin');
-  }
+  // The single-value defaults: `false` opts out, a string overrides,
+  // otherwise the hardcoded default wins.
+  const addDefault = (name: string, value: string | false | undefined, fallback: string): void => {
+    if (value === false) return;
+    wanted.set(name, value ?? fallback);
+  };
+  addDefault('x-content-type-options', options.xContentTypeOptions, 'nosniff');
+  addDefault('x-frame-options', options.xFrameOptions, 'DENY');
+  addDefault('referrer-policy', options.referrerPolicy, 'strict-origin-when-cross-origin');
   addDirectives('strict-transport-security', options.strictTransportSecurity);
-  if (
-    options.crossOriginOpenerPolicy !== false
-  ) {
-    wanted.set('cross-origin-opener-policy', options.crossOriginOpenerPolicy ?? 'same-origin');
-  }
-  if (
-    options.crossOriginResourcePolicy !== false
-  ) {
-    wanted.set('cross-origin-resource-policy', options.crossOriginResourcePolicy ?? 'same-origin');
-  }
+  addDefault('cross-origin-opener-policy', options.crossOriginOpenerPolicy, 'same-origin');
+  addDefault('cross-origin-resource-policy', options.crossOriginResourcePolicy, 'same-origin');
   addDirectives('cross-origin-embedder-policy', options.crossOriginEmbedderPolicy);
   addDirectives('x-dns-prefetch-control', options.xDnsPrefetchControl);
   // The nonce shape is per-request (the placeholder is spliced in on the

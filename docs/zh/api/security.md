@@ -242,7 +242,7 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 | --- | --- | --- |
 | `windowMs` | `60_000` | 窗口长度（毫秒） |
 | `limit` | `60` | 每窗口每密钥请求数 |
-| `key` | 首个 `x-forwarded-for` 跳 | 身份选择器 `(ctx) => string` —— 传你自己的（以及测试用的 `now` 时钟） |
+| `key` | 首个非空 `x-forwarded-for` 跳 | 身份选择器 `(ctx) => string` —— 传你自己的（以及测试用的 `now` 时钟） |
 | `skip` | — | `(ctx) => boolean` —— `true` 完全豁免该请求：不算密钥、不碰 store、不计数、永不拦截，`next()` 立即执行（健康检查、内部网段） |
 | `now` | `Date.now` | 时钟覆盖 |
 | `store` | 每密钥进程内双端队列 | 跨实例共享计数：一个 `RateLimitStore` —— `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` —— 必须按键原子（Redis INCR + PEXPIRE 形状） |

@@ -20,6 +20,7 @@ import type { Ctx, Middleware } from './types';
 import { assertPositive } from './assert';
 import { httpError, retryAfterSeconds } from './errors';
 import { pushSlidingTimestamps } from './bounded-collections';
+import { splitList } from './raw-headers';
 
 export type RateLimitOptions = {
   /** Window length in milliseconds; default 60_000. */
@@ -117,9 +118,10 @@ function memoryStore(): RateLimitStore {
 }
 
 function defaultKey(ctx: Ctx): string {
-  const forwarded = ctx.req.headers.get('x-forwarded-for');
-  const first = forwarded?.split(',')[0]?.trim();
-  return first === undefined || first === '' ? 'unknown' : first;
+  // splitList (raw-headers) trims and drops empty segments — the same
+  // parse trust-proxy applies to this header — so 'unknown' only remains
+  // for a request with no usable forwarding entry at all.
+  return splitList(ctx.req.headers.get('x-forwarded-for') ?? '')[0] ?? 'unknown';
 }
 
 /**

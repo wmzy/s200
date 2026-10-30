@@ -454,7 +454,6 @@ export async function verifyJwt<T = Record<string, unknown>>(
   const parts = token.split('.');
   const header = headerFromParts(parts);
   const [headerText, payloadText, sigText] = parts;
-  const sigBytes = b64urlDecode(sigText ?? '');
   if (
     typeof header.alg !== 'string' ||
     !(header.alg in ALG_INFO) ||
@@ -478,6 +477,14 @@ export async function verifyJwt<T = Record<string, unknown>>(
       throw jwtError('invalid signature');
     }
   } else {
+    // The signature segment decodes here, lazily: an undecodable segment
+    // is an invalid signature (JwtError → 401 through jwtAuth), not the
+    // plain Error the module-local decoder would throw past the contract.
+    // The HMAC twin reaches the same verdict by decoding inside hmacVerify.
+    const sigBytes = decodeB64url(sigText ?? '');
+    if (sigBytes === null) {
+      throw jwtError('invalid signature');
+    }
     const ok = await crypto.subtle.verify(
       asymParams(info),
       verifyingKey,

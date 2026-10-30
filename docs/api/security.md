@@ -242,7 +242,7 @@ use(app, rateLimit({ windowMs: 60_000, limit: 100 }));
 | --- | --- | --- |
 | `windowMs` | `60_000` | Window length in ms |
 | `limit` | `60` | Requests per window per key |
-| `key` | first `x-forwarded-for` hop | Identity selector `(ctx) => string` — pass your own (and a `now` clock for tests) |
+| `key` | first non-empty `x-forwarded-for` hop | Identity selector `(ctx) => string` — pass your own (and a `now` clock for tests) |
 | `skip` | — | `(ctx) => boolean` — `true` exempts the request entirely: no key computed, no store hit, nothing counted, never blocked — `next()` runs immediately (health checks, internal CIDRs) |
 | `now` | `Date.now` | Clock override |
 | `store` | in-process deque per key | Shared counters across instances: a `RateLimitStore` — `hit(key, now, limit, windowMs) => RateLimitHit \| Promise<RateLimitHit>` — must be atomic per key (the Redis INCR + PEXPIRE shape) |

@@ -299,21 +299,24 @@ function invocationRequest(
   return new Request(url, body === undefined ? { method, headers } : { method, headers, body });
 }
 
-/** One JSON-RPC success reply — always `200`, `application/json`. */
-function rpcResult(id: unknown, result: unknown): Response {
-  return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
-    status: 200,
+/** One JSON-RPC reply envelope: `application/json`, HTTP 200 unless the
+ * caller says otherwise (malformed envelopes also report 400). */
+function rpcReply(id: unknown, body: Record<string, unknown>, status = 200): Response {
+  return new Response(JSON.stringify({ jsonrpc: '2.0', id, ...body }), {
+    status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+/** One JSON-RPC success reply — always `200`, `application/json`. */
+function rpcResult(id: unknown, result: unknown): Response {
+  return rpcReply(id, { result });
 }
 
 /** One JSON-RPC error reply. `status` stays 200 for RPC-level errors;
  * malformed envelopes (parse/invalid request) report HTTP 400 as well. */
 function rpcError(id: unknown, code: number, message: string, status = 200): Response {
-  return new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
+  return rpcReply(id, { error: { code, message } }, status);
 }
 
 /**

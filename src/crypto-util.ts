@@ -8,7 +8,7 @@
  * @internal
  */
 
-import { lruStore } from './bounded-collections';
+import { evictOldest, lruStore } from './bounded-collections';
 
 /** One process-wide encoder — `encode()` still allocates a fresh output
  * buffer per call, so hoisting the encoder itself (respond.ts precedent)
@@ -224,10 +224,10 @@ function secretDigest(secret: string | Uint8Array): Promise<string> {
       throw error;
     });
     stringSecretDigests.set(secret, digest);
+    // Evict-after-insert = FIFO over the plain insertion-ordered Map —
+    // the shared contract in bounded-collections.
     while (stringSecretDigests.size > SECRET_DIGEST_MEMO_LIMIT) {
-      const oldest = stringSecretDigests.keys().next().value;
-      if (oldest === undefined) break;
-      stringSecretDigests.delete(oldest);
+      evictOldest(stringSecretDigests);
     }
   }
   return digest;

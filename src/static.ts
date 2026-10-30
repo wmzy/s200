@@ -492,6 +492,9 @@ export function serveStatic(options: ServeStaticOptions): Middleware {
     if (!directoryPath && redirectToSlash) {
       const dirIndex = resolveUnderRoot(root, `${rest}/${index}`);
       if (dirIndex !== undefined) {
+        // Without an injected `stat`, existence is probed by a full read
+        // of the index (bytes discarded) — the cheap price of staying on
+        // the reader-only surface; inject `stat` to probe by lookup.
         const probe =
           stat !== undefined
             ? await stat(dirIndex)

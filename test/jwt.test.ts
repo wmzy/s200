@@ -46,6 +46,14 @@ describe('jwt', () => {
       /signature/
     );
 
+    // A signature segment that is not base64url at all is still a JwtError
+    // ('invalid signature' — the segment decodes lazily inside each verify
+    // path), never a plain decoding Error escaping past the contract.
+    const undecodable = `${header}.${payload}.!!!`;
+    const undecodableErr = (await rejectionOf(verifyJwt(undecodable, SECRET))) as Error;
+    undecodableErr.message.should.match(/signature/);
+    isJwtError(undecodableErr).should.be.true;
+
     const signed = await signJwt({ a: 1 }, SECRET);
     ((await rejectionOf(verifyJwt(signed, 'other-secret'))) as Error).message.should.match(
       /signature/
@@ -158,6 +166,18 @@ describe('jwt', () => {
 
     const missing = await handle(app, new Request('http://localhost/me'));
     missing.status.should.equal(401);
+
+    // A structurally broken signature is the client's fault (401), not a
+    // server error — jwtAuth rethrows only non-JwtError failures.
+    const broken = await handle(
+      app,
+      new Request('http://localhost/me', {
+        headers: {
+          authorization: `Bearer ${b64url('{"alg":"HS256"}')}.${b64url('{}')}.!!!`,
+        },
+      })
+    );
+    broken.status.should.equal(401);
 
     const token = await signJwt({ sub: 'u1' }, SECRET);
     const ok = await handle(

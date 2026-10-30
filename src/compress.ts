@@ -47,7 +47,9 @@ const DEFAULT_MIN_BYTES = 1024;
  * acceptable is offered. The q grammar is shared with the accepts
  * family (`parseRanges`): q is clamped to [0, 1] and an unparseable q
  * parameter is ignored (q stays 1). Later occurrences of a name win —
- * pickEncoding's own rule, a plain per-name assignment.
+ * pickEncoding's own rule, a plain per-name assignment (the accepts
+ * family's pick instead keeps the earlier range at equal specificity,
+ * per its header-order rule).
  */
 function pickEncoding(
   header: string,

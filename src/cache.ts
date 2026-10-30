@@ -175,7 +175,7 @@ export function cache(options: CacheOptions = {}): Middleware {
     res.headers.forEach((value, name) => {
       headers.push([name, value]);
     });
-    if (res.headers.get('content-length') === null) {
+    if (declared === null) {
       // The store reconstructs Responses from bytes; advertise the size
       // explicitly so HEAD/etag/compress see it (respond helpers already
       // set it — this covers bare `new Response(...)` bodies).

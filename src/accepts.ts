@@ -25,9 +25,9 @@ export type Range = {
   /**
    * The entry's non-q parameters (`;k=v`), lowercased-keyed; a quoted
    * value is unquoted with backslash escapes unfolded. Later occurrences
-   * of a name win, matching `pickEncoding`'s per-name assignment rule.
-   * Version negotiation is the consumer: it reads the `version`
-   * parameter off vendor media types. Empty when the entry carries none.
+   * of a param name win. Version negotiation is the consumer: it reads
+   * the `version` parameter off vendor media types. Empty when the entry
+   * carries none.
    */
   readonly params: ReadonlyMap<string, string>;
 };

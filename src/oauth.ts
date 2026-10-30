@@ -19,6 +19,9 @@
 import { httpError } from './errors';
 import { b64Encode, b64urlEncode, randomToken } from './crypto-util';
 
+/** One process-wide encoder — the module hoist precedent (respond.ts). */
+const encoder = new TextEncoder();
+
 /** RFC 7636 §4.2 S256: base64url(SHA-256(verifier)). */
 async function s256(text: string): Promise<string> {
   return b64urlEncode(
@@ -27,8 +30,6 @@ async function s256(text: string): Promise<string> {
 }
 
 /** Space-joins an array scope; a string scope passes through as-is. */
-const encoder = new TextEncoder();
-
 function joinScope(scope: string | readonly string[]): string {
   return typeof scope === 'string' ? scope : scope.join(' ');
 }
