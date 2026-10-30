@@ -410,8 +410,11 @@ const spawnProcessUnit = (unit: Unit, onSettled?: () => void): void => {
   unit.child = child;
   let stderrTail = '';
   child.stderr?.on('data', (chunk: Buffer) => {
-    const lines = String(chunk).trim().split('\n');
-    stderrTail = lines[lines.length - 1] ?? stderrTail;
+    // Roll the last stderr line across chunk boundaries — a pipe may
+    // split one line mid-flight, and the boot-failure diagnostic below
+    // should quote it whole — and cap it so a newline-less flood cannot
+    // grow the tail unboundedly.
+    stderrTail = ((stderrTail + String(chunk)).trimEnd().split('\n').pop() ?? '').slice(-200);
   });
   child.on('message', (message: unknown) => {
     if ((message as { type?: string }).type === 'ready') {

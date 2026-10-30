@@ -86,15 +86,18 @@ export async function mapError<S extends State = State>(
   ctx: Ctx<Params, S>,
   error: unknown
 ): Promise<void> {
+  // HttpErrors are intentional client errors mapped to responses; only
+  // unexpected failures need surfacing — a silently swallowed 500 is
+  // undebuggable in production. The sink is injectable per app. One
+  // exception: an HttpError carrying a `cause` asked for it — the
+  // wrapped origin is operator diagnostics, so it flows to the sink
+  // while still mapping to its (client-safe) status. One predicate and
+  // one sink binding serve every path below.
+  const surfaces = (e: unknown): boolean => !isHttpError(e) || e.cause !== undefined;
+  const log = app.logError ?? defaultLogError;
   if (app.onError === undefined) {
-    // HttpErrors are intentional client errors mapped to responses; only
-    // unexpected failures need surfacing — a silently swallowed 500 is
-    // undebuggable in production. The sink is injectable per app. One
-    // exception: an HttpError carrying a `cause` asked for it — the
-    // wrapped origin is operator diagnostics, so it flows to the sink
-    // while still mapping to its (client-safe) status.
-    if (!isHttpError(error) || error.cause !== undefined) {
-      (app.logError ?? defaultLogError)(error, ctx);
+    if (surfaces(error)) {
+      log(error, ctx);
     }
     adoptResponse(ctx, toErrorResponse(error));
   } else {
@@ -116,11 +119,11 @@ export async function mapError<S extends State = State>(
         error instanceof Error &&
         error.cause === undefined;
       if (attachable) handlerError.cause = error;
-      if (!isHttpError(handlerError) || handlerError.cause !== undefined) {
-        (app.logError ?? defaultLogError)(handlerError, ctx);
+      if (surfaces(handlerError)) {
+        log(handlerError, ctx);
       }
       if (!attachable) {
-        (app.logError ?? defaultLogError)(error, ctx);
+        log(error, ctx);
       }
       adoptResponse(ctx, toErrorResponse(handlerError));
     }

@@ -54,6 +54,23 @@ export function lruStore<K, V>(limit: number): {
   };
 }
 
+/** Drops the expired prefix of a sliding-window timestamp deque in one
+ * splice — every entry at or before `cutoff` goes. The clip half of
+ * {@link pushSlidingTimestamps}, shared with rate-limit's janitor sweep
+ * (which must trim many buckets without landing a hit in any of them).
+ * Mutates `timestamps` in place.
+ *
+ * @internal */
+export function dropExpired(timestamps: number[], cutoff: number): void {
+  let drop = 0;
+  while (drop < timestamps.length && (timestamps[drop] ?? 0) <= cutoff) {
+    drop += 1;
+  }
+  if (drop > 0) {
+    timestamps.splice(0, drop);
+  }
+}
+
 /** Trims a sliding-window timestamp deque to entries newer than
  * `windowMs` (an entry expires exactly `windowMs` after it landed), then
  * pushes `now` — the shared clip between rate-limit's per-key buckets and
@@ -65,13 +82,6 @@ export function pushSlidingTimestamps(
   now: number,
   windowMs: number
 ): void {
-  const cutoff = now - windowMs;
-  let drop = 0;
-  while (drop < timestamps.length && (timestamps[drop] ?? 0) <= cutoff) {
-    drop += 1;
-  }
-  if (drop > 0) {
-    timestamps.splice(0, drop);
-  }
+  dropExpired(timestamps, now - windowMs);
   timestamps.push(now);
 }

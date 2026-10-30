@@ -15,6 +15,12 @@ import { evictOldest, lruStore } from './bounded-collections';
  * leaves per-request work unchanged and removes the per-call allocation. */
 const encoder = new TextEncoder();
 
+/** UTF-8 bytes of a string — the one hoisted-encoder entry point the
+ * auth batteries share. */
+export function utf8Bytes(text: string): Uint8Array<ArrayBuffer> {
+  return encoder.encode(text);
+}
+
 /** Base64url alphabet and its decode table — built once at module load
  * so per-request token mint/verify paths allocate nothing for them. */
 const B64_ALPHABET =

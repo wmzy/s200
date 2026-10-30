@@ -9,7 +9,7 @@
 
 import type { Ctx } from './types';
 
-import { splitParams, unquoteParam } from './raw-headers';
+import { splitList, splitParams, unquoteParam } from './raw-headers';
 
 /**
  * One parsed Accept-family entry: the lowercased value, its quality, and
@@ -47,10 +47,8 @@ export type Range = {
 export function parseRanges(header: string | null): Range[] {
   if (header === null) return [];
   const ranges: Range[] = [];
-  for (const part of header.split(',')) {
-    const trimmed = part.trim();
-    if (trimmed === '') continue;
-    const pieces = splitParams(trimmed);
+  for (const part of splitList(header)) {
+    const pieces = splitParams(part);
     const value = (pieces[0] ?? '').trim().toLowerCase();
     if (value === '') continue;
     let q = 1;
@@ -58,16 +56,15 @@ export function parseRanges(header: string | null): Range[] {
     for (const param of pieces.slice(1)) {
       const kv = param.trim();
       if (kv.toLowerCase().startsWith('q=')) {
-        const parsed = Number(kv.slice(2));
+        // `q=` (empty) is as unparseable as `q=abc` — Number('') is 0,
+        // which would silently turn the malformed param into a q=0 ban.
+        const parsed = kv.length > 2 ? Number(kv.slice(2)) : Number.NaN;
         q = Number.isNaN(parsed) ? 1 : Math.min(1, Math.max(0, parsed));
         continue;
       }
       const eq = kv.indexOf('=');
       if (eq === -1) continue;
-      params.set(
-        kv.slice(0, eq).trim().toLowerCase(),
-        unquoteParam(kv.slice(eq + 1).trim())
-      );
+      params.set(kv.slice(0, eq).trim().toLowerCase(), unquoteParam(kv.slice(eq + 1)));
     }
     ranges.push({ value, q, params });
   }

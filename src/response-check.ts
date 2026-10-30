@@ -36,21 +36,13 @@ import type { SchemaIssue, SerializeSchema } from './serialize';
 
 import { httpError } from './errors';
 import { getRouteMeta } from './meta';
-import { mediaTypeOf } from './raw-headers';
+import { isJsonMedia } from './raw-headers';
 import { isByteBacked, rebuild } from './respond';
 import { checkSchema } from './serialize';
 import { formatIssuePath } from './validate';
 
 /** The `'fail'` mode's message and envelope key. */
 const MISMATCH = 'Response schema mismatch';
-
-/** JSON media test: `application/json` (parameters ignored) or any
- * `…+json` vendor type, case-insensitively. An absent content-type is
- * not JSON (`mediaTypeOf` reads it as `''`). */
-function isJson(contentType: string | null): boolean {
-  const media = mediaTypeOf(contentType);
-  return media === 'application/json' || media.endsWith('+json');
-}
 
 /** Parses and checks a JSON body text; a parse failure is itself a
  * root-level mismatch — a JSON-typed response that is not JSON breaks
@@ -132,7 +124,7 @@ export function responseCheck(
     if (res === undefined || ctx.route === undefined) return;
     const schema = getRouteMeta(ctx.route)?.responses?.[res.status]?.schema;
     if (schema === undefined) return;
-    if (!isJson(res.headers.get('content-type'))) return;
+    if (!isJsonMedia(res.headers.get('content-type'))) return;
     if (res.body === null) return;
     // Byte-backed detection, the etag contract: streamed bodies carry no
     // explicit content-length — skip them, never buffer.

@@ -58,6 +58,13 @@ describe('accepts', () => {
     picked!.should.equal('application/json');
   });
 
+  it('ignores an unparseable q parameter — including the empty value — instead of banning the range', async () => {
+    // `q=` must not fall into Number('') === 0: a malformed q leaves the
+    // range at q=1 (the parseRanges contract), so the earlier range wins.
+    (await pick('text/html;q=abc, application/json', ['text/html', 'application/json'], 'type'))!.should.equal('text/html');
+    (await pick('text/html;q=, application/json', ['text/html', 'application/json'], 'type'))!.should.equal('text/html');
+  });
+
   it('returns undefined when nothing matches or is acceptable', async () => {
     (await pick('image/png', ['application/json'], 'type') === undefined).should.be.true;
     (await pick('text/html;q=0', ['text/html'], 'type') === undefined).should.be.true;

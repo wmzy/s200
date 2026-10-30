@@ -178,11 +178,11 @@ export async function readText(
   options: BodyOptions = {}
 ): Promise<string> {
   const cache = cacheFor(ctx, options.limit);
-  // Await even when text is cached: a later limited read wraps `raw` with
-  // the post-hoc size check, and that rejection must surface here.
-  await cache.raw;
+  // Awaiting `raw` here surfaces a later limited read's post-hoc size
+  // rejection even when text is already cached.
+  const bytes = await cache.raw;
   if (cache.text === undefined) {
-    cache.text = textDecoder.decode(await cache.raw);
+    cache.text = textDecoder.decode(bytes);
   }
   return cache.text;
 }

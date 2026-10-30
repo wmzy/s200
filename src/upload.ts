@@ -173,15 +173,15 @@ export type UploadResult = {
 
 /**
  * Prefix allowlist match — media types are case-insensitive (RFC 9110
- * §8.3.1), so both sides fold. A part that declared no Content-Type
- * matches no prefix; the callback form makes its own call.
+ * §8.3.1): the declared type folds here, the prefixes arrive already
+ * lowercase (`uploadForm` folds its `accept` list once). A part that
+ * declared no Content-Type matches no prefix; the callback form makes
+ * its own call.
  */
 function accepted(part: FormPart, accept: UploadAccept): boolean {
   if (typeof accept === 'function') return accept(part);
   const type = part.contentType?.toLowerCase();
-  return (
-    type !== undefined && accept.some((prefix) => type.startsWith(prefix.toLowerCase()))
-  );
+  return type !== undefined && accept.some((prefix) => type.startsWith(prefix));
 }
 
 /**
@@ -244,8 +244,14 @@ export async function uploadForm(
   sink: UploadSink,
   options: UploadOptions = {}
 ): Promise<UploadResult> {
-  const { accept, limit, maxFiles, maxFileSize, maxParts, sniff } = options;
+  const { limit, maxFiles, maxFileSize, maxParts, sniff } = options;
   const sniffBytes = options.sniffBytes ?? DEFAULT_SNIFF_BYTES;
+  // Prefixes fold to lowercase once here — `accepted` then runs a bare
+  // startsWith per file part instead of re-lowering every prefix each time.
+  const accept =
+    options.accept === undefined || typeof options.accept === 'function'
+      ? options.accept
+      : options.accept.map((prefix) => prefix.toLowerCase());
   assertNonNegativeInteger('upload', 'sniffBytes', sniffBytes);
   const files: UploadedFile[] = [];
   // Null prototype, same reason as `parseQuery`: `__proto__` must land as

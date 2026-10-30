@@ -432,7 +432,7 @@ export function openapiSpec(app: App, options: OpenApiSpecOptions): OpenApiDocum
 export function openapiJson(ctx: Ctx, app: App, options?: OpenApiSpecOptions): Response {
   const appMeta = getAppMeta(app);
   return json(ctx, openapiSpec(app, {
-    ...(options === undefined ? {} : options),
+    ...(options ?? {}),
     title: options?.title ?? appMeta?.title ?? 'API',
     version: options?.version ?? appMeta?.version ?? '0.0.0',
     description: options?.description ?? appMeta?.description,

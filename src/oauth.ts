@@ -17,15 +17,12 @@
  */
 
 import { httpError } from './errors';
-import { b64Encode, b64urlEncode, randomToken } from './crypto-util';
-
-/** One process-wide encoder — the module hoist precedent (respond.ts). */
-const encoder = new TextEncoder();
+import { b64Encode, b64urlEncode, randomToken, utf8Bytes } from './crypto-util';
 
 /** RFC 7636 §4.2 S256: base64url(SHA-256(verifier)). */
 async function s256(text: string): Promise<string> {
   return b64urlEncode(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text)))
+    new Uint8Array(await crypto.subtle.digest('SHA-256', utf8Bytes(text)))
   );
 }
 
@@ -153,7 +150,7 @@ async function postTokenGrant(
     // RFC 7617 §2: Basic's credentials are standard RFC 4648 §4 base64
     // (`+` `/`, padded) — NOT the url-safe alphabet, whose `-`/`_` and
     // stripped `=` would corrupt credentials at strict IdPs.
-    const encoded = encoder.encode(`${options.clientId}:${options.clientSecret}`);
+    const encoded = utf8Bytes(`${options.clientId}:${options.clientSecret}`);
     headers.authorization = `Basic ${b64Encode(encoded)}`;
   } else {
     body.set('client_id', options.clientId);

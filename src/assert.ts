@@ -39,3 +39,19 @@ export function assertNonNegativeInteger(
     );
   }
 }
+
+/** Throws when `value` is not a safe integer ≥ 1 — same house format as
+ * {@link assertPositive} for the bounds where zero is a configuration
+ * mistake (a whole-unit floor of at least one): `` Invalid ${module}
+ * ${name} ${String(value)}: must be a positive integer ``. */
+export function assertPositiveInteger(
+  module: string,
+  name: string,
+  value: number
+): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      `Invalid ${module} ${name} ${String(value)}: must be a positive integer`
+    );
+  }
+}

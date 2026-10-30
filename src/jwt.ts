@@ -34,13 +34,9 @@ import {
   hmacVerify,
   materialDigest,
   type HmacKeyCache,
+  utf8Bytes,
 } from './crypto-util';
 import { lruStore } from './bounded-collections';
-
-/** One process-wide encoder — `encode()` still allocates a fresh output
- * buffer per call; signJwt/verifyJwt used to allocate the encoder itself
- * per token (respond.ts precedent for the hoist). */
-const encoder = new TextEncoder();
 
 /** Decoding that keeps this module's throw-site contract: any invalid
  * input (padding, out-of-alphabet char, impossible length) surfaces as
@@ -252,8 +248,7 @@ async function resolveKey(
   key: JwtKey,
   alg: JwtAlgorithm,
   usages: readonly KeyUsage[],
-  store: JwtKeyStore,
-  errPrefix: string
+  store: JwtKeyStore
 ): Promise<CryptoKey> {
   const info = ALG_INFO[alg];
   if (info.kind === 'ed') {
@@ -261,7 +256,7 @@ async function resolveKey(
   }
   if (info.kind === 'hmac') {
     if (!isSecretKey(key)) {
-      throw jwtError(`${errPrefix}HMAC algorithm ${alg} requires a secret string or Uint8Array`);
+      throw jwtError(`HMAC algorithm ${alg} requires a secret string or Uint8Array`);
     }
     const hmacUsages: readonly KeyUsage[] = usages.includes('verify')
       ? ['sign', 'verify']
@@ -272,39 +267,19 @@ async function resolveKey(
   }
   if (key instanceof CryptoKey) {
     if (!keyMatches(key, info)) {
-      throw jwtError(`${errPrefix}key does not match algorithm ${alg}`);
+      throw jwtError(`key does not match algorithm ${alg}`);
     }
     return key;
   }
   const jwk = key as JsonWebKey;
   const expected = info.kind === 'rsa' ? 'RSA' : info.kind === 'ec' ? 'EC' : 'OKP';
   if (jwk.kty !== expected) {
-    throw jwtError(`${errPrefix}key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
+    throw jwtError(`key kty '${String(jwk.kty)}' does not match algorithm ${alg}`);
   }
   if (info.kind === 'ed' && jwk.crv !== 'Ed25519') {
-    throw jwtError(`${errPrefix}key crv '${String(jwk.crv)}' does not match algorithm ${alg} (Ed25519 only)`);
+    throw jwtError(`key crv '${String(jwk.crv)}' does not match algorithm ${alg} (Ed25519 only)`);
   }
   return importAsymKey(jwk, alg, usages, store);
-}
-
-/** Resolves signing key material for an algorithm, rejecting mismatches. */
-function getSignKey(
-  key: JwtKey,
-  alg: JwtAlgorithm,
-  store: JwtKeyStore
-): Promise<CryptoKey> {
-  return resolveKey(key, alg, ['sign'], store, '');
-}
-
-/** Resolves verification key material, rejecting family mismatches (this
- * is the algorithm-confusion defense: an RS header can never be verified
- * with HMAC secret bytes, and vice versa). */
-function getVerifyKey(
-  key: JwtKey,
-  alg: JwtAlgorithm,
-  store: JwtKeyStore
-): Promise<CryptoKey> {
-  return resolveKey(key, alg, ['verify'], store, '');
 }
 
 export type JwtSignOptions = {
@@ -382,10 +357,10 @@ export async function signJwt(
   if (options.jwtId !== undefined) {
     claims.jti = options.jwtId;
   }
-  const headerText = b64urlEncode(encoder.encode(JSON.stringify({ alg, typ: 'JWT' })));
-  const payloadText = b64urlEncode(encoder.encode(JSON.stringify(claims)));
-  const signingKey = await getSignKey(key, alg, options.keyStore ?? defaultKeyStore);
-  const data = encoder.encode(`${headerText}.${payloadText}`);
+  const headerText = b64urlEncode(utf8Bytes(JSON.stringify({ alg, typ: 'JWT' })));
+  const payloadText = b64urlEncode(utf8Bytes(JSON.stringify(claims)));
+  const signingKey = await resolveKey(key, alg, ['sign'], options.keyStore ?? defaultKeyStore);
+  const data = utf8Bytes(`${headerText}.${payloadText}`);
   const sig = new Uint8Array(
     await crypto.subtle.sign(signatureParams(info), signingKey, data)
   );
@@ -463,12 +438,10 @@ export async function verifyJwt<T = Record<string, unknown>>(
   }
   const alg = header.alg as JwtAlgorithm;
   const info = ALG_INFO[alg];
-  const verifyingKey = await getVerifyKey(
-    key,
-    alg,
-    options.keyStore ?? defaultKeyStore
-  );
-  const data = encoder.encode(`${headerText}.${payloadText}`);
+  // The confusion defense lives in resolveKey: an RS header can never be
+  // verified with HMAC secret bytes, and vice versa.
+  const verifyingKey = await resolveKey(key, alg, ['verify'], options.keyStore ?? defaultKeyStore);
+  const data = utf8Bytes(`${headerText}.${payloadText}`);
   if (info.kind === 'hmac') {
     // hmacVerify re-signs and compares constant-time. The resolved key
     // (imported 'sign'+'verify' above) passes through untouched — the

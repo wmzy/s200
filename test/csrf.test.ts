@@ -234,6 +234,20 @@ describe('csrf', () => {
       })
     );
     res.status.should.equal(403);
+    ((await res.json()) as { error: string }).error.should.equal('CSRF check failed: Origin mismatch');
+  });
+
+  it('rejects a malformed Origin header as malformed, not as a mismatch', async () => {
+    const { app } = build();
+    const res = await handle(
+      app,
+      new Request('http://localhost/submit', {
+        method: 'POST',
+        headers: { origin: 'not a url' },
+      })
+    );
+    res.status.should.equal(403);
+    ((await res.json()) as { error: string }).error.should.equal('CSRF check failed: malformed Origin');
   });
 
   it('passes a same-origin request with Origin present', async () => {

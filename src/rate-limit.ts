@@ -19,7 +19,7 @@ import type { Ctx, Middleware } from './types';
 
 import { assertPositive } from './assert';
 import { httpError, retryAfterSeconds } from './errors';
-import { pushSlidingTimestamps } from './bounded-collections';
+import { dropExpired, pushSlidingTimestamps } from './bounded-collections';
 import { splitList } from './raw-headers';
 
 export type RateLimitOptions = {
@@ -95,13 +95,12 @@ function memoryStore(): RateLimitStore {
       hits += 1;
       if (buckets.size > MAX_BUCKETS && (count > limit || hits % 256 === 0)) {
         // Not pushSlidingTimestamps: this is a many-bucket janitor pass —
-        // it only drops expired entries and must not land a hit in
+        // it only drops expired entries (the shared clip, one splice per
+        // bucket instead of per-entry shifts) and must not land a hit in
         // buckets whose keys were never touched.
         const cutoff = now - windowMs;
         for (const [candidate, entries] of buckets) {
-          while (entries.length > 0 && (entries[0] ?? 0) <= cutoff) {
-            entries.shift();
-          }
+          dropExpired(entries, cutoff);
           if (entries.length === 0) {
             buckets.delete(candidate);
           }

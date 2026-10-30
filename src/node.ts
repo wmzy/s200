@@ -438,6 +438,16 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
   const host = isSafeHost(candidate) ? candidate : 'localhost';
   const url = `http://${host}${req.url ?? '/'}`;
   const method = req.method ?? 'GET';
+  // GET/HEAD must stay bodyless — the platform rejects a request body
+  // there. Both server kinds hand out node Readables for the request, so
+  // the web-stream bridge happens once here; the light and platform
+  // branches only differ in how they wrap it.
+  const body =
+    method !== 'GET' && method !== 'HEAD'
+      ? (Readable.toWeb(
+          req as unknown as import('node:stream').Readable
+        ) as unknown as ReadableStream)
+      : null;
   if (light) {
     const request = new LightRequest({
       method,
@@ -447,12 +457,7 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
       // so the hot paths that never read request headers pay nothing for
       // header parsing (pseudo-header dropping happens there too).
       headers: LightHeaders.fromRaw(req.rawHeaders),
-      body:
-        method !== 'GET' && method !== 'HEAD'
-          ? (Readable.toWeb(
-              req as unknown as import('node:stream').Readable
-            ) as unknown as ReadableStream<Uint8Array>)
-          : null,
+      body,
       signal,
     });
     setCachedUrl(request as unknown as Request, new URL(url));
@@ -467,13 +472,9 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
     headers: headerPairs,
     redirect: 'manual',
   };
-  if (method !== 'GET' && method !== 'HEAD') {
-    // A streaming body needs duplex: 'half'; GET/HEAD must stay bodyless —
-    // the platform rejects a request body there. Both server kinds hand
-    // out node Readables for the request.
-    init.body = Readable.toWeb(
-      req as unknown as import('node:stream').Readable
-    ) as unknown as ReadableStream;
+  if (body !== null) {
+    // A streaming body needs duplex: 'half'.
+    init.body = body;
     init.duplex = 'half';
   }
   // The disconnect signal is NOT passed as init.signal. undici's Request

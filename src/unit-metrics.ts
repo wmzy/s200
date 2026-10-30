@@ -95,22 +95,20 @@ export function createUnitMetrics(options: UnitMetricsOptions = {}): {
   // (see the twin note there); both lean on the in-chain error boundary:
   // a settled `next()` implies a materialized response, and the
   // `finally` balances the gauge even when a sibling throws past it.
-  const middleware: Middleware = (_ctx, next) => {
+  const middleware: Middleware = async (_ctx, next) => {
     inFlight += 1;
     if (inFlight > maxInFlight) {
       maxInFlight = inFlight;
     }
-    return (async () => {
-      try {
-        await next();
-      } finally {
-        inFlight -= 1;
-        requests += 1;
-        if (requests >= warmAfter) {
-          warm = true;
-        }
+    try {
+      await next();
+    } finally {
+      inFlight -= 1;
+      requests += 1;
+      if (requests >= warmAfter) {
+        warm = true;
       }
-    })();
+    }
   };
 
   const snapshot = (): UnitMetrics => {

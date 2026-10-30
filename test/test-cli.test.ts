@@ -786,16 +786,121 @@ describe('isMainEntry (bin self-run guard)', () => {
 describe('stampGraphUrl (whole-graph reload stamping)', () => {
   it('stamps project modules only — never node_modules', () => {
     const root = pathToFileURL(`${resolve('proj')}/`).href;
-    const stamped = stampGraphUrl(`${root}src/app.ts`, [root]);
-    stamped!.should.contain('s200epoch=');
+    const stamped = stampGraphUrl(`${root}src/app.ts`, [root], 3);
+    stamped!.should.contain('s200epoch=3');
     // Already stamped: re-stamping would duplicate the query.
-    (stampGraphUrl(stamped!, [root]) === undefined).should.be.true;
+    (stampGraphUrl(stamped!, [root], 4) === undefined).should.be.true;
     // The watcher ignores node_modules, so the epoch must too — stamping
     // would re-evaluate and re-instantiate every dependency per reload.
-    (stampGraphUrl(`${root}node_modules/dep/index.js`, [root]) === undefined).should.be.true;
+    (stampGraphUrl(`${root}node_modules/dep/index.js`, [root], 3) === undefined).should.be.true;
     // Outside every watched root / not a file URL: untouched.
-    (stampGraphUrl(`${root}src/app.ts`, []) === undefined).should.be.true;
-    (stampGraphUrl('node:fs', [root]) === undefined).should.be.true;
+    (stampGraphUrl(`${root}src/app.ts`, [], 3) === undefined).should.be.true;
+    (stampGraphUrl('node:fs', [root], 3) === undefined).should.be.true;
+  });
+});
+
+describe('runDev graph resolve hook (per-call registration, .ts fallback)', () => {
+  // Vitest resolves the test graph itself, which would mask node's
+  // loader — but data: URL modules are externalized to the NATIVE
+  // loader, so an import made from inside one observes exactly the
+  // resolve hooks the live runDev call registered.
+  const nativeImport = async (specifier: string): Promise<unknown> => {
+    const src = `export async function go() { return import(${JSON.stringify(specifier)}); }`;
+    const mod = (await import(`data:text/javascript,${encodeURIComponent(src)}`)) as {
+      go: () => Promise<unknown>;
+    };
+    return await mod.go();
+  };
+  const urlOf = async (specifier: string): Promise<string> =>
+    ((await nativeImport(specifier)) as { url: string }).url;
+  const writeSelfUrl = async (dir: string): Promise<string> => {
+    const file = join(dir, 'dep.ts');
+    await writeFile(file, 'export const url = import.meta.url;\n', 'utf8');
+    return pathToFileURL(file).href;
+  };
+
+  it('retries failing specifiers with .ts while the server runs, and deregisters on close', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 's200-cli-fallback-'));
+    try {
+      const dep = await writeSelfUrl(dir);
+      const dev = await runDev([join(dir, 'app.ts')], {
+        load: async () => appA,
+        port: 0,
+        watch: stubWatch,
+      });
+      try {
+        // Extensionless on purpose: plain node rejects it, the hook's
+        // `.ts` retry (the executor-child fallback) resolves it.
+        (await urlOf(dep.replace(/\.ts$/, ''))).should.contain('s200epoch=1');
+      } finally {
+        await dev.close();
+      }
+      // With the server closed its hook is gone: the same extensionless
+      // specifier fails again — no `.ts` retry left behind.
+      const error = (await rejectionOf(nativeImport(dep.replace(/\.ts$/, '')))) as Error;
+      error.message.should.not.contain('dep.ts');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('deregisters when the boot itself fails (a leaked hook would shadow later servers)', async () => {
+    const error = (await rejectionOf(
+      runDev(['--host', 'no-such-host.s200.invalid'], {
+        load: async () => appA,
+        port: 0,
+        watch: stubWatch,
+      })
+    )) as Error;
+    error.message.should.contain('no-such-host');
+    const dir = await mkdtemp(join(tmpdir(), 's200-cli-bootfail-'));
+    try {
+      const dep = await writeSelfUrl(dir);
+      const failed = (await rejectionOf(nativeImport(dep.replace(/\.ts$/, '')))) as Error;
+      failed.message.should.not.contain('dep.ts');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stamps per-call roots and epoch — concurrent servers never stomp each other', async () => {
+    const dirA = await mkdtemp(join(tmpdir(), 's200-cli-graph-a-'));
+    const dirB = await mkdtemp(join(tmpdir(), 's200-cli-graph-b-'));
+    try {
+      const depA = await writeSelfUrl(dirA);
+      const depB = await writeSelfUrl(dirB);
+      // Entries under dirA/dirB make those the servers' watched roots;
+      // the load seam keeps the boots file-free.
+      const devA = await runDev([join(dirA, 'app.ts')], {
+        load: async () => appA,
+        port: 0,
+        watch: stubWatch,
+      });
+      const devB = await runDev([join(dirB, 'app.ts')], {
+        load: async () => appA,
+        port: 0,
+        watch: stubWatch,
+      });
+      try {
+        (await urlOf(depA)).should.contain('s200epoch=1'); // A's first load
+        (await urlOf(depB)).should.contain('s200epoch=1'); // B's OWN counter — a shared one would be 2
+
+        // A reload of B (the watcher seam stubWatch captured last) bumps
+        // only B's epoch; A's stamps stay frozen at 1.
+        await captured.load!();
+        (await urlOf(depB)).should.contain('s200epoch=2');
+        (await urlOf(depA)).should.contain('s200epoch=1');
+      } finally {
+        await devA.close();
+        await devB.close();
+      }
+      // Both hooks deregistered: modules under the old roots resolve
+      // plain again, no epoch query.
+      (await urlOf(depA)).should.not.contain('s200epoch');
+    } finally {
+      await rm(dirA, { recursive: true, force: true });
+      await rm(dirB, { recursive: true, force: true });
+    }
   });
 });
 

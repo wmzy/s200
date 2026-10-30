@@ -119,7 +119,7 @@ Dev battery, not hot path: every default-404 body is cloned and parsed, and ever
 
 ### The dev runner & CLI
 
-`s200 dev` (the `s200` bin) wires the hot-reload core into a runner: one server identity for the whole session, and the first load prints the route table — a count line plus the aligned `METHOD  PATTERN` lines (`createRouteTable` + `formatRouteTable`, registration order). Every reload keeps the one-line `reloaded (N routes)` count.
+`s200 dev` (the `s200` bin) wires the hot-reload core into a runner: one server identity for the whole session, and the first load prints the route table — a count line plus the aligned `METHOD  PATTERN` lines (`createRouteTable` + `formatRouteTable`, registration order). Every reload keeps the one-line `reloaded (N routes)` count. While a dev server runs, specifiers that fail to resolve as written are retried with a `.ts` suffix (the shard executor's child-realm fallback, `installShardResolution`): source layouts keep extensionless relative imports, and only failing specifiers are retried — explicit-extension layouts are unaffected.
 
 ```sh
 s200 dev ./app.ts --port 3000 --overlay
@@ -152,7 +152,7 @@ The runner-facing `s200/dev` exports:
 
 `DevEvent`: `{ type: 'reload' } | { type: 'error'; message: string; stack?: string }`. `DevEventBus`: `{ publish(event: DevEvent): void; subscribe(listener: (event: DevEvent) => void): () => void }`.
 
-Beyond `dev`, two one-shot subcommands load their entry with the same loader (default export or named `app`, default `./app.ts`) and the same TypeScript floor:
+Beyond `dev`, two one-shot subcommands load their entry with the same loader (a named `app` export, a default export, or a `createApp()` call — the shard executor's convention; default `./app.ts`) and the same TypeScript floor:
 
 ```sh
 s200 routes ./app.ts --json

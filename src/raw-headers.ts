@@ -203,3 +203,16 @@ export function mediaTypeOf(header: string | null | undefined): string {
   const semi = header.indexOf(';');
   return (semi < 0 ? header : header.slice(0, semi)).trim().toLowerCase();
 }
+
+/** JSON media test on a raw content-type header: `application/json`
+ * (parameters ignored) or any `…+json` vendor type, case-insensitively —
+ * decided through {@link mediaTypeOf}, so an absent content-type is not
+ * JSON. One spelling of the vendor-type rule for the response-check
+ * battery's gate and the lambda adapter's textual test.
+ *
+ * @internal
+ */
+export function isJsonMedia(contentType: string | null | undefined): boolean {
+  const media = mediaTypeOf(contentType);
+  return media === 'application/json' || media.endsWith('+json');
+}

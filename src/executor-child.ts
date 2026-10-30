@@ -172,13 +172,13 @@ function loadCore(): Promise<typeof import('./app')> {
   return core;
 }
 
-// The shared drain skeleton (drain.ts) and the shared Response→node-res
-// writer (node-bridge.ts — the raw-headers header mapping rides inside
-// it), each loaded lazily for the same link-time reason as the core
-// dispatcher: this module must evaluate under plain node (as a forked
-// shim main) without touching relative imports at link time, and both
-// only ever run long after installShardResolution() has settled in this
-// realm.
+// The shared drain skeleton (drain.ts), the shared Response→node-res
+// writer (node-bridge.ts), and the shared wire-order header mapping
+// (raw-headers.ts — a dependency-free leaf), each loaded lazily for the
+// same link-time reason as the core dispatcher: this module must evaluate
+// under plain node (as a forked shim main) without touching relative
+// imports at link time, and all three only ever run long after
+// installShardResolution() has settled in this realm.
 let drainKit: Promise<typeof import('./drain')> | undefined;
 
 function loadDrainKit(): Promise<typeof import('./drain')> {
@@ -193,9 +193,19 @@ function loadBridgeKit(): Promise<typeof import('./node-bridge')> {
   return bridgeKit;
 }
 
+let headersKit: Promise<typeof import('./raw-headers')> | undefined;
+
+function loadHeadersKit(): Promise<typeof import('./raw-headers')> {
+  headersKit ??= import('./raw-headers');
+  return headersKit;
+}
+
 /**
  * Resolves the shard app from a user entry: `app` export, then `default`,
  * then calling `createApp()` — the contract every executor realm uses.
+ * cli.ts's `appFromModule` speaks the same convention for `s200 dev`
+ * (USAGE promises "the same convention"); link-time isolation keeps this
+ * copy local, so keep the two spellings in sync.
  */
 export async function appFromEntry(entry: string): Promise<App> {
   const mod = (await import(entry)) as {
@@ -230,24 +240,15 @@ export function createShardServer(app: App): HttpServer {
 async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const { handle } = await loadCore();
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(req.headers)) {
-      if (value === undefined) {
-        continue;
-      }
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          headers.append(name, item);
-        }
-      } else {
-        headers.set(name, value);
-      }
-    }
+    // Wire-order header pairs through the shared raw-headers mapping —
+    // duplicates stay pairs, the Request constructor folds them. Same
+    // mapping `s200/node`'s toRequest feeds its RequestInit.
+    const { rawHeaderPairs } = await loadHeadersKit();
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
     const url = 'http://127.0.0.1:' + String(req.socket.localPort ?? 0) + (req.url ?? '/');
     const request = new Request(url, {
       method: req.method,
-      headers,
+      headers: rawHeaderPairs(req.rawHeaders),
       ...(hasBody
         ? {
             body: Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>,

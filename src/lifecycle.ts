@@ -18,7 +18,7 @@
  * @module
  */
 
-import { drainHttpServer } from './drain';
+import { drainHttpServer, type DrainOptions } from './drain';
 import { finishersIdle } from './finish';
 
 /**
@@ -165,13 +165,15 @@ export function lifecycle(
     }
   };
 
-  // Node path: stop accepting new connections, reap keep-alive sockets
-  // that go idle mid-drain, force-close on deadline. The skeleton is
-  // drain.ts's, shared with the node adapter's close() and the shard
-  // executor's child realms; this wiring only adds the second-signal
-  // kill switch. Resolves when the server's close callback fires — never
-  // rejects (a close() error here means already-drained).
-  const drainNode = (raw: RawServer): Promise<void> =>
+  // Shared wrapper for both paths: the budget, the second-signal kill
+  // switch, and the resolve-on-settle Promise wiring are identical —
+  // only the runtime-specific stop injection differs, passed as `extra`.
+  // The drain skeleton itself is drain.ts's, shared with the node
+  // adapter's close() and the shard executor's child realms.
+  const startDrain = (
+    raw: RawServer,
+    extra: Partial<DrainOptions> = {}
+  ): Promise<void> =>
     new Promise((resolve) => {
       drainHttpServer(raw, {
         budgetMs: timeoutMs,
@@ -179,8 +181,16 @@ export function lifecycle(
           kill = killNow;
         },
         settle: () => resolve(),
+        ...extra,
       });
     });
+
+  // Node path: stop accepting new connections, reap keep-alive sockets
+  // that go idle mid-drain, force-close on deadline; this wiring only
+  // adds the second-signal kill switch. Resolves when the server's close
+  // callback fires — never rejects (a close() error here means
+  // already-drained).
+  const drainNode = (raw: RawServer): Promise<void> => startDrain(raw);
 
   // Bun path: stop(false) is the graceful stop, stop() the immediate one.
   // The settled/deadline/kill scaffolding is drain.ts's, injected twice —
@@ -190,36 +200,29 @@ export function lifecycle(
   // hard kill runs stop(), itself terminal for a bun server: it settles
   // through the skeleton's finish. Never rejects.
   const drainBun = (raw: RawServer): Promise<void> =>
-    new Promise((resolve) => {
-      drainHttpServer(raw, {
-        budgetMs: timeoutMs,
-        gracefulStop: (finish) => {
-          const stopping = raw.stop?.(false);
-          if (
-            stopping !== undefined &&
-            typeof (stopping as { then?: unknown }).then === 'function'
-          ) {
-            (stopping as Promise<unknown>).then(
-              () => finish(),
-              () => finish()
-            );
-          } else {
-            finish();
-          }
-        },
-        onHardKill: (finish) => {
-          try {
-            raw.stop?.();
-          } catch {
-            // Already stopped — nothing to force.
-          }
+    startDrain(raw, {
+      gracefulStop: (finish) => {
+        const stopping = raw.stop?.(false);
+        if (
+          stopping !== undefined &&
+          typeof (stopping as { then?: unknown }).then === 'function'
+        ) {
+          (stopping as Promise<unknown>).then(
+            () => finish(),
+            () => finish()
+          );
+        } else {
           finish();
-        },
-        onKill: (killNow) => {
-          kill = killNow;
-        },
-        settle: () => resolve(),
-      });
+        }
+      },
+      onHardKill: (finish) => {
+        try {
+          raw.stop?.();
+        } catch {
+          // Already stopped — nothing to force.
+        }
+        finish();
+      },
     });
 
   const drainConnections = (): Promise<void> => {

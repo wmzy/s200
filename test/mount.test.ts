@@ -66,7 +66,7 @@ describe('mount', function () {
 
   it('rejects a prefix without a leading slash', function () {
     const app = createApp();
-    (() => mount(app, 'v1', createApp())).should.throw(/must be empty or start with/);
+    (() => mount(app, 'v1', createApp())).should.throw(/must start with/);
   });
 
   it('keeps sub route-scoped middlewares after the sub-app chain', async function () {

@@ -48,8 +48,8 @@ commands:
                                                     print a typed client module
 
 dev options:
-  entry     app module exporting the app as default or as a named export "app"
-            (default ./app.ts)
+  entry     app module exporting the app as a named export "app", as
+            default, or via a createApp() call (default ./app.ts)
   --port    listen port (default $PORT or 3000; 0 picks a free port)
   --host    listen host (default: all interfaces)
   --watch   extra directory to watch for reloads (repeatable; the entry's
@@ -60,9 +60,12 @@ dev options:
   --no-hints   disable the 404 route-hints middleware (on by default)
   --overlay    enable the browser error overlay (off by default)
 
-Every command loads its entry with the same convention (default export or a
-named export "app"; default ./app.ts). TypeScript entries need Node >= 22.18
-(or >= 22.6 with --experimental-strip-types).`;
+Every command loads its entry with the same convention as the shard executor (a
+named export "app", a default export, or a createApp() call; default
+./app.ts). TypeScript entries need Node >= 22.18
+(or >= 22.6 with --experimental-strip-types).
+dev retries imports that fail to resolve as written with a .ts suffix, so
+source layouts keep extensionless relative imports.`;
 
 // --- Shared argv grammar -----------------------------------------------------
 //
@@ -252,16 +255,22 @@ const isApp = (value: unknown): value is App =>
   value !== null &&
   Array.isArray((value as { routes?: unknown }).routes);
 
-/** Extracts the app a dev entry exports — default export or named `app`. */
-function appFromModule(entry: string, mod: unknown): App {
-  const candidate = (mod as { default?: unknown; app?: unknown }).default;
-  const named = (mod as { app?: unknown }).app;
-  const app = candidate ?? named;
-  if (isApp(app)) {
-    return app;
+/** Extracts the app a dev entry exports — the same convention the shard
+ * executor's `appFromEntry` speaks (USAGE promises "the same
+ * convention"): named `app`, then `default`, then calling `createApp()`.
+ * Keep in sync with executor-child.ts's copy (link-time isolation keeps
+ * that one local). */
+async function appFromModule(entry: string, mod: unknown): Promise<App> {
+  const record = mod as { app?: unknown; default?: unknown; createApp?: () => unknown };
+  const candidate =
+    record.app ??
+    record.default ??
+    (typeof record.createApp === 'function' ? await record.createApp() : undefined);
+  if (isApp(candidate)) {
+    return candidate;
   }
   throw new Error(
-    `s200 dev: ${entry} exports no app — export it as default or as a named export "app"`
+    `s200 dev: ${entry} exports no app — export it as a named export "app", as default, or via createApp()`
   );
 }
 
@@ -270,7 +279,7 @@ function appFromModule(entry: string, mod: unknown): App {
 const loadFromEntry =
   (entry: string) =>
   async (): Promise<App> =>
-    appFromModule(entry, await importFresh(entry));
+    await appFromModule(entry, await importFresh(entry));
 
 /** The default reload report — one line, honest route count. */
 const defaultOnReload = (app: App): void => {
@@ -289,17 +298,15 @@ const watchDefault = (options: WatchOptions): WatchAndReloadHandle =>
 // "reloaded" while still serving stale code. When `module.registerHooks`
 // (Node >= 22.15) is available, every module resolved under the watched
 // roots gets an epoch query stamped onto its URL, so one reload
-// re-evaluates the whole project graph. Older Nodes degrade honestly:
-// entry-only reloads plus a one-time warning.
+// re-evaluates the whole project graph. The roots and the epoch counter
+// live in each `runDev` call's closure: every server registers its own
+// resolve hook before its first load and deregisters it on close (or on a
+// failed boot), so repeat or concurrent `runDev` calls never share — or
+// stomp — stamping state. Older Nodes degrade honestly: entry-only
+// reloads plus a one-time warning.
 
 /** Query key carrying the reload epoch through module URLs. */
 const EPOCH_KEY = 's200epoch';
-
-/** File-URL prefixes (trailing slash included) of the watched directories. */
-const watchRoots: string[] = [];
-
-/** Bumped once per load; modules under {@link watchRoots} cache per epoch. */
-let reloadEpoch = 0;
 
 /** True when this Node offers `module.registerHooks` (>= 22.15). */
 const canBustGraph = typeof nodeModule.registerHooks === 'function';
@@ -310,11 +317,13 @@ const canBustGraph = typeof nodeModule.registerHooks === 'function';
  * re-evaluated; `node_modules` never is — the watcher ignores it, and
  * stamping would re-evaluate (and re-instantiate) every dependency on
  * each reload. An already-stamped URL is left alone so a resolution pass
- * cannot stamp twice.
+ * cannot stamp twice. Pure: the caller owns `roots` and `epoch` — no
+ * module state is read (each `runDev` call closes over its own pair).
  */
 export function stampGraphUrl(
   url: string,
-  roots: readonly string[] = watchRoots
+  roots: readonly string[] = [],
+  epoch = 0
 ): string | undefined {
   if (
     !url.startsWith('file:') ||
@@ -324,21 +333,7 @@ export function stampGraphUrl(
   ) {
     return undefined;
   }
-  return appendQueryPair(url, EPOCH_KEY, reloadEpoch);
-}
-
-if (canBustGraph) {
-  nodeModule.registerHooks({
-    resolve(specifier, context, nextResolve) {
-      const resolved = nextResolve(specifier, context);
-      const url = resolved?.url;
-      const stamped = typeof url === 'string' ? stampGraphUrl(url) : undefined;
-      if (stamped !== undefined) {
-        return { ...resolved, url: stamped };
-      }
-      return resolved;
-    },
-  });
+  return appendQueryPair(url, EPOCH_KEY, epoch);
 }
 
 /** One-time-honest flag for the entry-only fallback on old Nodes. */
@@ -451,15 +446,40 @@ export async function runDev(
     ...(opts.watchDirs ?? []),
     ...parsed.watch,
   ];
-  // Populate the graph roots before the first load so even the initial
-  // import carries the epoch stamp — reloads then re-evaluate every module
-  // under these roots, not just the entry.
-  if (canBustGraph) {
-    watchRoots.length = 0;
-    for (const dir of watchDirs) {
-      watchRoots.push(pathToFileURL(`${resolve(dir)}/`).href);
-    }
-  }
+  // Graph-busting state is THIS call's closure: the server's own roots
+  // and its own epoch counter. The resolve hook below is registered per
+  // call — before the first load, so even the initial import carries the
+  // epoch stamp and reloads re-evaluate every module under these roots,
+  // not just the entry — and deregistered in close(); a failed boot
+  // deregisters too, because a leaked hook would keep stamping with this
+  // call's frozen epoch and shadow later servers' stamps. Repeat or
+  // concurrent runDev calls therefore never share stamping state (the
+  // old module-level roots/epoch pair was last-writer-wins).
+  const watchRoots = canBustGraph
+    ? watchDirs.map((dir) => pathToFileURL(`${resolve(dir)}/`).href)
+    : [];
+  let reloadEpoch = 0;
+  const graphHooks = canBustGraph
+    ? nodeModule.registerHooks({
+        resolve(specifier, context, nextResolve) {
+          // Plain resolution first — explicit-extension layouts (the
+          // published package) never hit the fallback. Only a specifier
+          // that would fail outright is retried with a `.ts` suffix, the
+          // same extensionless-relative-import fallback the shard
+          // executor's child realms install (`installShardResolution`),
+          // so source layouts keep working without explicit extensions
+          // everywhere.
+          let resolved: nodeModule.ResolveFnOutput;
+          try {
+            resolved = nextResolve(specifier, context);
+          } catch {
+            resolved = nextResolve(specifier + '.ts', context);
+          }
+          const stamped = stampGraphUrl(resolved.url, watchRoots, reloadEpoch);
+          return stamped === undefined ? resolved : { ...resolved, url: stamped };
+        },
+      })
+    : undefined;
   const loader = async (): Promise<App> => {
     if (canBustGraph) {
       reloadEpoch += 1;
@@ -472,69 +492,78 @@ export async function runDev(
     return baseLoader();
   };
 
-  const first = await loader();
-  const hot = createHotApp(first);
-  // Startup report: the aligned table (registration order) after a count
-  // line — reloads keep the one-line count (see defaultOnReload).
-  const table = createRouteTable(first);
-  console.log(`s200 dev: ${table.routes.length} routes`);
-  if (table.routes.length > 0) {
-    console.log(formatRouteTable(table));
-  }
-  // Dev extras wrap every loaded table WITHOUT touching the user's app
-  // data: each load yields a derived copy (see withRouteHints and
-  // withDevOverlay), and the live hot identity stays the only object the
-  // runner mutates — through hot.reload, as before. routeHints closes over
-  // the live app, so reloads need no re-registration of anything.
-  const bus: DevEventBus | undefined = overlay ? createDevEventBus() : undefined;
-  const decorate = (userApp: App): App => {
-    let decorated = userApp;
-    if (hints) {
-      decorated = withRouteHints(decorated, hot.app);
+  try {
+    const first = await loader();
+    const hot = createHotApp(first);
+    // Startup report: the aligned table (registration order) after a count
+    // line — reloads keep the one-line count (see defaultOnReload).
+    const table = createRouteTable(first);
+    console.log(`s200 dev: ${table.routes.length} routes`);
+    if (table.routes.length > 0) {
+      console.log(formatRouteTable(table));
     }
-    if (bus !== undefined) {
-      decorated = withDevOverlay(decorated, bus);
+    // Dev extras wrap every loaded table WITHOUT touching the user's app
+    // data: each load yields a derived copy (see withRouteHints and
+    // withDevOverlay), and the live hot identity stays the only object the
+    // runner mutates — through hot.reload, as before. routeHints closes over
+    // the live app, so reloads need no re-registration of anything.
+    const bus: DevEventBus | undefined = overlay ? createDevEventBus() : undefined;
+    const decorate = (userApp: App): App => {
+      let decorated = userApp;
+      if (hints) {
+        decorated = withRouteHints(decorated, hot.app);
+      }
+      if (bus !== undefined) {
+        decorated = withDevOverlay(decorated, bus);
+      }
+      return decorated;
+    };
+    const decoratedFirst = decorate(first);
+    if (decoratedFirst !== first) {
+      hot.reload(decoratedFirst);
     }
-    return decorated;
-  };
-  const decoratedFirst = decorate(first);
-  if (decoratedFirst !== first) {
-    hot.reload(decoratedFirst);
+
+    const onReload = opts.onReload ?? defaultOnReload;
+    const reportError = (error: unknown): void => {
+      console.error(error);
+      bus?.publish(devErrorOf(error));
+    };
+    // watchAndReload only knows `hot.reload` — hand it a wrapper so every
+    // successful swap also reports through onReload (default: the log line)
+    // and tells the overlay's browsers to reload.
+    const reporting: HotApp = {
+      app: hot.app,
+      reload(next: App): void {
+        hot.reload(decorate(next));
+        onReload(next);
+        bus?.publish({ type: 'reload' });
+      },
+    };
+
+    const server = await serve(hot.app, { port, host });
+    const watcher = (opts.watch ?? watchDefault)({
+      dirs: watchDirs,
+      hot: reporting,
+      load: loader,
+      onError: reportError,
+    });
+
+    return {
+      url: new URL(server.url),
+      server,
+      async close(): Promise<void> {
+        await watcher.close();
+        await server.close();
+        graphHooks?.deregister();
+      },
+    };
+  } catch (error) {
+    // A failed boot must not leave its stamping hook behind: it would keep
+    // resolving project modules with this call's frozen epoch and shadow
+    // the next runDev call's stamps.
+    graphHooks?.deregister();
+    throw error;
   }
-
-  const onReload = opts.onReload ?? defaultOnReload;
-  const reportError = (error: unknown): void => {
-    console.error(error);
-    bus?.publish(devErrorOf(error));
-  };
-  // watchAndReload only knows `hot.reload` — hand it a wrapper so every
-  // successful swap also reports through onReload (default: the log line)
-  // and tells the overlay's browsers to reload.
-  const reporting: HotApp = {
-    app: hot.app,
-    reload(next: App): void {
-      hot.reload(decorate(next));
-      onReload(next);
-      bus?.publish({ type: 'reload' });
-    },
-  };
-
-  const server = await serve(hot.app, { port, host });
-  const watcher = (opts.watch ?? watchDefault)({
-    dirs: watchDirs,
-    hot: reporting,
-    load: loader,
-    onError: reportError,
-  });
-
-  return {
-    url: new URL(server.url),
-    server,
-    async close(): Promise<void> {
-      await watcher.close();
-      await server.close();
-    },
-  };
 }
 
 /** Shapes any thrown value into the overlay's `error` event. */

@@ -30,9 +30,8 @@ import type { SerializeSchema } from './serialize';
 import {
   getRouteMeta,
   isMultipartBody,
-  isQueryRequired,
   mergedResponses,
-  querySchemaOf,
+  queryEntries,
   uniqueName,
 } from './meta';
 
@@ -382,9 +381,10 @@ export function generateClient(app: App, options: GenerateClientOptions = {}): s
     if (bodyType !== undefined) {
       typedBodies = true;
     }
-    const queryMembers = Object.entries(meta?.query ?? {}).map(
-      ([key, entry]) =>
-        `${propertyKey(key)}${isQueryRequired(entry) ? '' : '?'}: ${schemaToTs(querySchemaOf(entry))}`
+    const queryMembers = Array.from(
+      queryEntries(meta?.query),
+      ({ name, schema, required }) =>
+        `${propertyKey(name)}${required ? '' : '?'}: ${schemaToTs(schema)}`
     );
     const hasQuery = queryMembers.length > 0;
     let initParam = 'init?: ClientInit';

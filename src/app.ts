@@ -168,6 +168,17 @@ type PrefixedScoped<
   Ms extends readonly unknown[]
 > = Prefix extends '' | '/' ? G : ScopedPush<G, Prefix, StateOf<Ms>>;
 
+/** Validates and normalizes a `use`/`mount` prefix: the root forms (`''`,
+ * `'/'`) read as no prefix, anything else must start with '/', and
+ * trailing slashes collapse (they would double up against the pattern's
+ * leading slash). */
+function basePrefixOf(prefix: string): string {
+  if (prefix !== '' && !prefix.startsWith('/')) {
+    throw new Error(`Invalid prefix '${prefix}': must start with '/'`);
+  }
+  return prefix === '' || prefix === '/' ? '' : prefix.replace(/\/+$/, '');
+}
+
 /**
  * Prefix-scoped middlewares: the group runs only for requests whose
  * pathname falls under `prefix` (`/admin` matches `/admin`, `/admin/…`; a
@@ -255,12 +266,7 @@ export function use<S extends State = State>(
       const [first, ...rest] = middlewares;
       return use(app, first as Middleware<S>, ...rest);
     }
-    if (!prefix.startsWith('/')) {
-      throw new Error(
-        `Invalid middleware prefix '${prefix}': must start with '/'`
-      );
-    }
-    const base = prefix.replace(/\/+$/, '');
+    const base = basePrefixOf(prefix);
     // Static prefixes get a plain string check (no per-request split);
     // param/wildcard prefixes use the router's own matcher.
     const dynamic = base.includes(':') || base.includes('*');
@@ -402,12 +408,9 @@ export function mount<
   prefix: Prefix,
   sub: App<S, R2, G2>
 ): App<S, [...R, ...MountedDefs<R2, MountBase<Prefix>>], [...G, ...MountedScoped<G2, MountBase<Prefix>>]> {
-  if (prefix !== '' && !prefix.startsWith('/')) {
-    throw new Error(`Invalid mount prefix '${prefix}': must be empty or start with '/'`);
-  }
   // Normalize: '' and '/' are no-prefix; a trailing slash would double up
   // against the pattern's leading slash.
-  const base = prefix === '' || prefix === '/' ? '' : prefix.replace(/\/+$/, '');
+  const base = basePrefixOf(prefix);
   if (sub.onNotFound !== undefined || !defaultMatchers.has(sub.match)) {
     console.warn(
       '[s200] mount: sub-app onNotFound/match are not carried by mount() — ' +

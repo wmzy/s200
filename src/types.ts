@@ -191,6 +191,18 @@ export type UnionToIntersection<T> = (T extends unknown ? (x: T) => void : never
   ? I
   : never;
 
+/** The collect-intersect scaffold every brand collector shares
+ * ({@link ChainIn}, {@link ChainErrors}, {@link StateOf}, {@link ScopedOf}):
+ * take the members' brand union (the caller's extractor already mapped
+ * unbranded members to `never`), intersect it, and collapse to `Empty`
+ * when nothing survives — a raw `never` would poison every downstream
+ * intersection. */
+type IntersectBrands<X, Empty> = [X] extends [infer U]
+  ? [U] extends [never]
+    ? Empty
+    : UnionToIntersection<U>
+  : never;
+
 /** The phantom `_in` a chain member carries, `never` when it has none. */
 type PhantomIn<M> = M extends { readonly _in?: infer X } ? X : never;
 
@@ -203,11 +215,10 @@ type PhantomIn<M> = M extends { readonly _in?: infer X } ? X : never;
  * every downstream intersection), so plain routes stay untyped on the
  * input side.
  */
-export type ChainIn<Ms extends readonly unknown[]> = [PhantomIn<Ms[number]>] extends [infer U]
-  ? [U] extends [never]
-    ? unknown
-    : UnionToIntersection<U>
-  : never;
+export type ChainIn<Ms extends readonly unknown[]> = IntersectBrands<
+  PhantomIn<Ms[number]>,
+  unknown
+>;
 
 /** The phantom `_errors` a chain member carries, `never` when it has none. */
 type PhantomErrors<M> = M extends { readonly _errors?: infer E } ? E : never;
@@ -221,13 +232,10 @@ type PhantomErrors<M> = M extends { readonly _errors?: infer E } ? E : never;
  * `keyof`/value lookups stay neutral downstream), so plain routes are
  * untouched on the error side.
  */
-export type ChainErrors<Ms extends readonly unknown[]> = [PhantomErrors<Ms[number]>] extends [
-  infer U
-]
-  ? [U] extends [never]
-    ? Record<never, never>
-    : UnionToIntersection<U>
-  : never;
+export type ChainErrors<Ms extends readonly unknown[]> = IntersectBrands<
+  PhantomErrors<Ms[number]>,
+  Record<never, never>
+>;
 
 /**
  * A state-injecting middleware's compile-time identity: the ordinary
@@ -256,11 +264,10 @@ type PhantomState<M> = M extends { readonly _state?: infer X } ? X : never;
  * `unknown` (the intersection identity), so plain middleware chains leave
  * the app's `S` untouched.
  */
-export type StateOf<Ms extends readonly unknown[]> = [PhantomState<Ms[number]>] extends [infer U]
-  ? [U] extends [never]
-    ? unknown
-    : UnionToIntersection<U>
-  : never;
+export type StateOf<Ms extends readonly unknown[]> = IntersectBrands<
+  PhantomState<Ms[number]>,
+  unknown
+>;
 
 /**
  * One prefix-scoped state injection in {@link App}'s phantom `G` log: the
@@ -327,12 +334,10 @@ type ScopedBrand<SS extends ScopedState, P extends string> =
  * whose prefix matches pattern `P`, intersected — `unknown` (the identity)
  * when none matches, so routes outside every scope keep the plain app `S`.
  */
-export type ScopedOf<G extends readonly ScopedState[], P extends string> =
-  [ScopedBrand<G[number], P>] extends [infer U]
-    ? [U] extends [never]
-      ? unknown
-      : UnionToIntersection<U>
-    : never;
+export type ScopedOf<G extends readonly ScopedState[], P extends string> = IntersectBrands<
+  ScopedBrand<G[number], P>,
+  unknown
+>;
 
 /**
  * The scoped log after one prefix-scoped `use` call appends its combined

@@ -27,13 +27,8 @@ import type { Ctx, Middleware } from './types';
 import { getCookie, setCookie } from './cookies';
 import { readForm } from './body';
 import { httpError } from './errors';
-import { getHmacKey, hmacSign, hmacVerify, randomToken } from './crypto-util';
+import { getHmacKey, hmacSign, hmacVerify, randomToken, utf8Bytes } from './crypto-util';
 import { mediaTypeOf } from './raw-headers';
-
-/** One process-wide encoder — `encode()` still allocates a fresh output
- * buffer per call, so mint/verify pays no encoder allocation (respond.ts
- * precedent). */
-const encoder = new TextEncoder();
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -77,7 +72,7 @@ function tokenMessage(
   nonce: string,
   bind: string | undefined
 ): Uint8Array<ArrayBuffer> {
-  return encoder.encode(
+  return utf8Bytes(
     bind === undefined ? `${exp}.${nonce}` : `${exp}.${nonce}.${bind}`
   );
 }
@@ -155,11 +150,10 @@ export function createCsrf(options: CsrfOptions): Csrf {
   const ttl = ttlSeconds * 1000;
   // A byte secret is copied — the shared key cache digests the material
   // on every use, so a caller mutating their array after createCsrf must
-  // not change what verifies. `encoder.encode` is already fresh.
+  // not change what verifies. A string secret passes through as-is:
+  // getHmacKey encodes it and memoizes the import by digest.
   const secret =
-    typeof options.secret === 'string'
-      ? encoder.encode(options.secret)
-      : options.secret.slice();
+    typeof options.secret === 'string' ? options.secret : options.secret.slice();
   // One key import per instance, resolved once at creation: every mint
   // and verify below awaits this same promise, so an unsafe request pays
   // the (memoized) digest + import once instead of three times. The
@@ -232,12 +226,16 @@ export function createCsrf(options: CsrfOptions): Csrf {
       // to the token check.
       const originHeader = ctx.req.headers.get('origin');
       if (originHeader !== null) {
+        // Parse and compare separately: a thrown mismatch must not land
+        // in the malformed-Origin catch below it.
+        let origin: string;
         try {
-          if (new URL(originHeader).origin !== ctx.url.origin) {
-            throw httpError(403, 'CSRF check failed: Origin mismatch');
-          }
+          origin = new URL(originHeader).origin;
         } catch {
           throw httpError(403, 'CSRF check failed: malformed Origin');
+        }
+        if (origin !== ctx.url.origin) {
+          throw httpError(403, 'CSRF check failed: Origin mismatch');
         }
       } else if (ctx.req.headers.get('sec-fetch-site') === 'cross-site') {
         throw httpError(403, 'CSRF check failed: cross-site request');

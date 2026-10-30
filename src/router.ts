@@ -580,24 +580,31 @@ export function matchRoutes(
   // method-compatible routes are examined — a route whose method cannot
   // serve this request is skipped before the path is even matched, so the
   // hot path pays nothing for the other methods registered on the same
-  // path. Each candidate check appears twice — once for the node's plain
-  // list, once per indexed bucket — keeping the loop bodies allocation-free.
+  // path. Within the phase, the plain-list and indexed-bucket loops share
+  // one candidate block — the local `consider` closure, a single
+  // allocation per matchRoutes call. The mirror between the two phases
+  // stays hand-written on purpose (guarded by parity tests).
   //
-  // Mirrored by the phase-2 `Allow` walk below (~:636): a walk shape
+  // Mirrored by the phase-2 `Allow` walk below (~:633): a walk shape
   // changed here must be mirrored there (descent order, plain/indexed
   // scans, seq lookup).
   let best: { seq: number; route: Route; params: Params } | undefined;
   let node: StaticNode | undefined = index.root;
   let depth = 0;
+  // Reads the current `depth` at call time, so both scans at every trie
+  // level see the level they were reached at.
+  const consider = (route: Route): void => {
+    if (!methodCompatible(route.method, m)) return;
+    const params = matchParts(route.segments, parts, depth);
+    if (params === undefined) return;
+    const seq = index.seq.get(route) ?? Number.MAX_SAFE_INTEGER;
+    if (best === undefined || seq < best.seq) {
+      best = { seq, route, params };
+    }
+  };
   while (node !== undefined) {
     for (const route of node.plain) {
-      if (!methodCompatible(route.method, m)) continue;
-      const params = matchParts(route.segments, parts, depth);
-      if (params === undefined) continue;
-      const seq = index.seq.get(route) ?? Number.MAX_SAFE_INTEGER;
-      if (best === undefined || seq < best.seq) {
-        best = { seq, route, params };
-      }
+      consider(route);
     }
     const indexed = node.indexed;
     if (indexed !== undefined) {
@@ -607,13 +614,7 @@ export function matchRoutes(
         const bucket = byValue.get(part);
         if (bucket === undefined) continue;
         for (const route of bucket) {
-          if (!methodCompatible(route.method, m)) continue;
-          const params = matchParts(route.segments, parts, depth);
-          if (params === undefined) continue;
-          const seq = index.seq.get(route) ?? Number.MAX_SAFE_INTEGER;
-          if (best === undefined || seq < best.seq) {
-            best = { seq, route, params };
-          }
+          consider(route);
         }
       }
     }
@@ -634,7 +635,7 @@ export function matchRoutes(
   // allocating the `Allow` collection on a request that never needs it. The
   // 405 path is rare — the second walk is the cheaper trade.
   //
-  // Mirrored from the phase-1 candidate walk above (~:579, method filter
+  // Mirrored from the phase-1 candidate walk above (~:580, method filter
   // inverted): a walk shape changed here must be mirrored there (descent
   // order, plain/indexed scans, seq lookup).
   //
@@ -646,17 +647,20 @@ export function matchRoutes(
   const hits: { seq: number; method: string }[] = [];
   node = index.root;
   depth = 0;
+  // Mirrors phase 1's `consider` with the method filter inverted.
+  const record = (route: Route): void => {
+    // Phase 1 already proved these miss the path — they cannot 405.
+    if (methodCompatible(route.method, m)) return;
+    const params = matchParts(route.segments, parts, depth);
+    if (params === undefined) return;
+    hits.push({
+      seq: index.seq.get(route) ?? Number.MAX_SAFE_INTEGER,
+      method: route.method,
+    });
+  };
   while (node !== undefined) {
     for (const route of node.plain) {
-      // Phase 1 already proved these miss the path — they cannot 405.
-      if (methodCompatible(route.method, m)) continue;
-      const params = matchParts(route.segments, parts, depth);
-      if (params !== undefined) {
-        hits.push({
-          seq: index.seq.get(route) ?? Number.MAX_SAFE_INTEGER,
-          method: route.method,
-        });
-      }
+      record(route);
     }
     const indexed = node.indexed;
     if (indexed !== undefined) {
@@ -666,14 +670,7 @@ export function matchRoutes(
         const bucket = byValue.get(part);
         if (bucket === undefined) continue;
         for (const route of bucket) {
-          if (methodCompatible(route.method, m)) continue;
-          const params = matchParts(route.segments, parts, depth);
-          if (params !== undefined) {
-            hits.push({
-              seq: index.seq.get(route) ?? Number.MAX_SAFE_INTEGER,
-              method: route.method,
-            });
-          }
+          record(route);
         }
       }
     }

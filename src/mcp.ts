@@ -196,23 +196,30 @@ function toolInputSchema(route: Route, meta: RouteMeta | undefined): McpTool['in
 }
 
 /**
- * The one walk behind both exports: routes → tools plus the name → route
- * reverse map `tools/call` resolves through. Rebuilt per use (cheap — a
- * few dozen routes), so routes registered after the handler's creation
- * are still served; the two views share the walk, so they can never
- * drift.
+ * The name→route map both views resolve through — the slug/dedup walk
+ * with no schema work, so `tools/call` resolves a route by name without
+ * compiling the whole table's input schemas. Rebuilt per use (a few
+ * dozen routes), so routes registered after the handler's creation are
+ * still served; the two views share this walk, so they can never drift.
  */
-function compileTools(
-  app: App,
-  options: McpOptions
-): { readonly tools: McpTool[]; readonly routes: ReadonlyMap<string, Route> } {
-  const tools: McpTool[] = [];
+function routeIndex(app: App, options: McpOptions): ReadonlyMap<string, Route> {
   const routes = new Map<string, Route>();
   for (const route of app.routes) {
     const meta = getRouteMeta(route);
     if (meta === undefined && options.includeUnannotated !== true) continue;
-    const name = uniqueName(toolSlug(route.method, route.pattern), routes);
-    routes.set(name, route);
+    routes.set(uniqueName(toolSlug(route.method, route.pattern), routes), route);
+  }
+  return routes;
+}
+
+function compileTools(
+  app: App,
+  options: McpOptions
+): { readonly tools: McpTool[]; readonly routes: ReadonlyMap<string, Route> } {
+  const routes = routeIndex(app, options);
+  const tools: McpTool[] = [];
+  for (const [name, route] of routes) {
+    const meta = getRouteMeta(route);
     tools.push({ name, ...descriptionOf(meta, route), inputSchema: toolInputSchema(route, meta) });
   }
   return { tools, routes };

@@ -15,7 +15,7 @@ import type { App } from './app';
 
 import { handle } from './app';
 import { finishGuarded } from './finish';
-import { mediaTypeOf } from './raw-headers';
+import { headerRecordOf, isJsonMedia, mediaTypeOf } from './raw-headers';
 import { isSafeHost } from './safe-host';
 
 /** An API Gateway HTTP API (payload v2) event — the structural subset the
@@ -124,8 +124,7 @@ function isTextual(headers: Record<string, string>): boolean {
   return (
     media === '' ||
     media.startsWith('text/') ||
-    media === 'application/json' ||
-    media.endsWith('+json') ||
+    isJsonMedia(headers['content-type']) ||
     media === 'application/javascript' ||
     media === 'application/xml' ||
     media.endsWith('+xml') ||
@@ -133,23 +132,21 @@ function isTextual(headers: Record<string, string>): boolean {
   );
 }
 
-/** Buffers the `Response` into the v2 result. Spec header iteration merges
- * duplicates with `", "` but yields each `set-cookie` separately — exactly
- * the split the v2 result wants (`cookies` array vs flat record). */
+/** Buffers the `Response` into the v2 result. The shared `headerRecordOf`
+ * already produces the exact split the v2 result wants — every name as
+ * the combined flat string except `set-cookie`, kept as the array and
+ * lifted into `cookies` (never comma-merged into the record). */
 async function toResult(response: Response): Promise<LambdaResultV2> {
-  const headers: Record<string, string> = {};
-  const cookies: string[] = [];
-  for (const [name, value] of response.headers) {
-    if (name === 'set-cookie') {
-      cookies.push(value);
-    } else {
-      headers[name] = value;
-    }
-  }
+  const record = headerRecordOf(response.headers);
+  const cookies = record['set-cookie'] as string[] | undefined;
+  delete record['set-cookie'];
+  // Only `set-cookie` was ever the array, and it just left the record —
+  // every surviving value is a combined string.
+  const headers = record as Record<string, string>;
   const head = {
     statusCode: response.status,
     headers,
-    ...(cookies.length > 0 ? { cookies } : {}),
+    ...(cookies !== undefined ? { cookies } : {}),
   };
   if (response.body === null) {
     return { ...head, isBase64Encoded: false };

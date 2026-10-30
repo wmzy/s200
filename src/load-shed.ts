@@ -25,7 +25,7 @@
 
 import type { Ctx, Middleware } from './types';
 
-import { assertPositive } from './assert';
+import { assertPositive, assertPositiveInteger } from './assert';
 import { createEluReader } from './elu';
 import { httpError } from './errors';
 
@@ -132,11 +132,7 @@ export function loadShed(options: LoadShedOptions = {}): Middleware {
   if (maxInFlight !== undefined) {
     assertPositive('load-shed', 'maxInFlight', maxInFlight);
   }
-  if (!Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 1) {
-    throw new Error(
-      `Invalid load-shed retryAfterSeconds ${String(retryAfterSeconds)}: must be a positive integer`
-    );
-  }
+  assertPositiveInteger('load-shed', 'retryAfterSeconds', retryAfterSeconds);
 
   // The in-flight ledger: count requests in and out, never sample. An
   // injected sensor replaces the reading, not the bookkeeping.

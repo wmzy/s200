@@ -119,7 +119,7 @@ use(app, routeHints(app));
 
 ### 开发运行器与 CLI
 
-`s200 dev`（`s200` bin）把热重载核心接线成运行器：整个会话一个服务器身份，首次加载打印路由表 —— 一行计数加上对齐的 `METHOD  PATTERN` 行（`createRouteTable` + `formatRouteTable`，注册序）。每次重载仍只打一行 `reloaded (N routes)` 计数。
+`s200 dev`（`s200` bin）把热重载核心接线成运行器：整个会话一个服务器身份，首次加载打印路由表 —— 一行计数加上对齐的 `METHOD  PATTERN` 行（`createRouteTable` + `formatRouteTable`，注册序）。每次重载仍只打一行 `reloaded (N routes)` 计数。dev 服务器运行期间，按原样解析失败的说明符会以 `.ts` 后缀重试（分片执行器子域的同款回退，`installShardResolution`）：源码布局可以保留无扩展名的相对导入；只有本就失败的说明符会重试 —— 显式扩展布局不受影响。
 
 ```sh
 s200 dev ./app.ts --port 3000 --overlay
@@ -152,7 +152,7 @@ s200 dev ./app.ts --port 3000 --overlay
 
 `DevEvent`：`{ type: 'reload' } | { type: 'error'; message: string; stack?: string }`。`DevEventBus`：`{ publish(event: DevEvent): void; subscribe(listener: (event: DevEvent) => void): () => void }`。
 
-`dev` 之外还有两个一次性子命令，用同一加载器（default 导出或具名 `app`，默认 `./app.ts`）与同一 TypeScript 下限加载入口：
+`dev` 之外还有两个一次性子命令，用同一加载器（具名 `app` 导出、default 导出或 `createApp()` 调用——与 shard executor 同一约定；默认 `./app.ts`）与同一 TypeScript 下限加载入口：
 
 ```sh
 s200 routes ./app.ts --json

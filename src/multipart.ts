@@ -73,6 +73,11 @@ const HEADER_BLOCK_MAX = 16_384;
 const TRANSPORT_PAD_MAX = 256;
 
 const encoder = new TextEncoder();
+// Stateless per use — one module-level instance (plus the fixed CRLF
+// needles) serves every scanForm call instead of a per-request alloc.
+const crlf = encoder.encode('\r\n');
+const crlfcrlf = encoder.encode('\r\n\r\n');
+const decoder = new TextDecoder();
 
 /** `haystack.indexOf(needle)` for bytes, scanning from `from` — first-byte
  * quick reject, then a compare loop. Needles are ASCII line/boundary
@@ -235,12 +240,10 @@ async function scanForm(
   onPart: (part: FormPart) => void | Promise<void>,
   bounds: { readonly maxParts: number; readonly maxPartSize: number }
 ): Promise<void> {
-  const crlfcrlf = encoder.encode('\r\n\r\n');
-  const decoder = new TextDecoder();
   // RFC 2046: the FIRST delimiter may sit at byte 0 with no leading CRLF.
   // A virtual CRLF in front of the stream lets the uniform CRLF-prefixed
   // search match it while still skipping any preamble before it.
-  let carry: Uint8Array = encoder.encode('\r\n');
+  let carry: Uint8Array = crlf;
   let stage: 'preamble' | 'headers' | 'body' = 'preamble';
   let from = 0;
   let partChunks: Uint8Array[] = [];
