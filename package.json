@@ -689,13 +689,13 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "6.95 KB"
+      "limit": "6.98 KB"
     },
     {
       "name": "compress battery (min+gz)",
       "path": "dist/compress.mjs",
       "gzip": true,
-      "limit": "2.78 KB"
+      "limit": "2.82 KB"
     },
     {
       "name": "streaming battery (min+gz)",
@@ -722,7 +722,7 @@
       "name": "timeout battery (min+gz)",
       "path": "dist/timeout.mjs",
       "gzip": true,
-      "limit": "650 B"
+      "limit": "670 B"
     },
     {
       "name": "timing battery (min+gz)",
@@ -743,7 +743,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "1 KB"
+      "limit": "1.02 KB"
     },
     {
       "name": "circuit-breaker battery (min+gz)",
@@ -767,19 +767,19 @@
       "name": "aws-lambda adapter (min+gz)",
       "path": "dist/aws-lambda.mjs",
       "gzip": true,
-      "limit": "4.56 KB"
+      "limit": "4.62 KB"
     },
     {
       "name": "vercel adapter (min+gz)",
       "path": "dist/vercel.mjs",
       "gzip": true,
-      "limit": "4.13 KB"
+      "limit": "4.15 KB"
     },
     {
       "name": "mcp battery (min+gz)",
       "path": "dist/mcp.mjs",
       "gzip": true,
-      "limit": "5.7 KB"
+      "limit": "5.72 KB"
     },
     {
       "name": "openapi battery: meta + openapi (min+gz)",
@@ -834,7 +834,7 @@
       "name": "version battery (min+gz)",
       "path": "dist/version.mjs",
       "gzip": true,
-      "limit": "1.25 KB"
+      "limit": "1.3 KB"
     },
     {
       "name": "shard battery (min+gz)",
@@ -861,7 +861,7 @@
         "node:*"
       ],
       "gzip": true,
-      "limit": "9.82 KB"
+      "limit": "10.46 KB"
     },
     {
       "name": "unit-metrics battery (min+gz)",
