@@ -200,6 +200,20 @@ function loadHeadersKit(): Promise<typeof import('./raw-headers')> {
   return headersKit;
 }
 
+// The shared Host→URL-authority gate (safe-host.ts — a dependency-free
+// leaf), loaded lazily for the same link-time reason as the kits above:
+// the child bridge interpolates the client's Host header into the request
+// URL exactly like `s200/node`'s toRequest does, so a shard app reading
+// `ctx.url.hostname` sees the same authority behind the executor as it
+// would under direct serve (the supervisor relays raw bytes, so the
+// original Host header arrives intact).
+let safeHostKit: Promise<typeof import('./safe-host')> | undefined;
+
+function loadSafeHostKit(): Promise<typeof import('./safe-host')> {
+  safeHostKit ??= import('./safe-host');
+  return safeHostKit;
+}
+
 /**
  * Resolves the shard app from a user entry: `app` export, then `default`,
  * then calling `createApp()` — the contract every executor realm uses.
@@ -251,8 +265,14 @@ async function serveShardRequest(app: App, req: IncomingMessage, res: ServerResp
     // duplicates stay pairs, the Request constructor folds them. Same
     // mapping `s200/node`'s toRequest feeds its RequestInit.
     const { rawHeaderPairs } = await loadHeadersKit();
+    // URL authority rides the forwarded Host header through the shared
+    // safe-host gate — the same convention `s200/node`'s toRequest applies
+    // (an absent or unsafe Host falls back to `localhost`). The old
+    // `127.0.0.1:<privatePort>` carrier made `ctx.url.hostname`/`port`
+    // diverge between executor and direct-serve deployments.
+    const { safeAuthority } = await loadSafeHostKit();
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
-    const url = 'http://127.0.0.1:' + String(req.socket.localPort ?? 0) + (req.url ?? '/');
+    const url = 'http://' + safeAuthority(req.headers.host) + (req.url ?? '/');
     const request = new Request(url, {
       method: req.method,
       headers: rawHeaderPairs(req.rawHeaders),

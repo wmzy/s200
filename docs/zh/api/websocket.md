@@ -95,6 +95,7 @@ upgradeWebSocket(
 - **拒绝** —— 任何中间件写 `ctx.res`、返回 `Response` 或抛错都会拒绝升级；客户端收到该 HTTP 响应（抛出的 `HttpError` 映射为它的状态码与 `{ error }` 信封，其他错误走应用的 `onError`/`logError` 策略 —— 自定义 `onError` 保持沉默时回落默认映射，因为升级没有可用的 fallback body）。ctx 上挂起的 `setHeader`/`setHeaders` 条目会附在拒绝响应上。
 - **批准** —— 链正常结束且 `ctx.res` 仍为 `undefined` 时升级继续：socket 即响应。中间件在回卷侧看到 `res: undefined`，且所有 `ctx.state` 修改都随 handler 的 ctx 一并传递（同一个 ctx 对象 —— `resolveUpgrade` 把它交还给适配器）。既不作答也不调 `next()` 的中间件隐式批准 —— 要么调 `next()` 要么作答，没有第三条分支。
 - **handler 本身在批准之后运行**，位于链外：它抛出的错误不再经过中间件（走 `socket.onError` + 以 1011 关闭的既有行为）。
+- **消息回调在分发中途抛错时，三个适配器一律同等遏制** —— node、bun、workerd 都将其扇出到 `socket.onError` 并以 1011 `'handler error'` 关闭，而不是让错误逃逸进运行时的事件分发；排在抛错回调之后的回调不再执行。
 
 `resolveUpgrade(app, route, request, url, params)` 是所有适配器共用的判定帮助函数 —— `WsUpgradeDecision` 为 `{ ok: true; ctx: Ctx }` 或 `{ ok: false; response: Response }`。它面向适配器作者；应用通过 `serve` + `createUpgradeHandler` / `createBunWebSocketBridge` / `createCloudflareWebSocketBridge` 获得相同行为。连接阶段的帮助函数同理：`negotiateProtocol` 执行共用的子协议规则，`createWsSession` + `createWsSocket` + `runWsHandler` 构建各运行时的 socket —— 适配器只需提供自己的传输闭包（node 的 RFC 6455 帧封装、bun 的 `ArrayBuffer`→视图转换、workerd 的可选 `ping`/`bufferedAmount`）。
 

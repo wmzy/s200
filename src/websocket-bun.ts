@@ -26,6 +26,7 @@ import {
   createWsSession,
   createWsSocket,
   decideUpgrade,
+  reportHandlerError,
   runWsHandler,
   type WebSocketHandler,
   type WsSession,
@@ -151,7 +152,19 @@ export function createBunWebSocketBridge(app: App): BunWebSocketBridge {
     message(ws, data) {
       const session = sessions.get(ws);
       if (session === undefined) return;
-      for (const cb of session.onMessage) cb(data);
+      // A callback that throws fans out through the shared contract —
+      // onError + close 1011 — instead of escaping into Bun's event
+      // delivery (the same containment the node adapter applies).
+      for (const cb of session.onMessage) {
+        try {
+          cb(data);
+        } catch (error) {
+          reportHandlerError(error, session, (code, reason) =>
+            ws.close(code, reason)
+          );
+          return;
+        }
+      }
     },
     close(ws, code, reason) {
       const session = sessions.get(ws);

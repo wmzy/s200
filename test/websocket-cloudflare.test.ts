@@ -316,6 +316,28 @@ describe('cloudflare WsSocket adapter (unit)', () => {
     errors[0]!.message.should.equal('kaboom');
     fake.closes.should.deep.equal([[1011, 'handler error']]);
   });
+
+  it('fans out a throwing message callback through onError and closes 1011', async () => {
+    // A callback that throws mid-dispatch must not escape into workerd's
+    // event delivery — the shared containment contract (reportHandlerError)
+    // applies to the message path, same as the node adapter.
+    const app = createApp();
+    const errors: Error[] = [];
+    upgradeWebSocket(app, '/throw', (socket) => {
+      socket.onError((error) => errors.push(error));
+      socket.onMessage(() => {
+        throw new Error('mid-dispatch');
+      });
+    });
+    const fake = createFakePair();
+    installPair(fake);
+    await createCloudflareWebSocketBridge(app).upgrade(handshake('/throw'));
+    await tick();
+    fake.emit('message', { data: 'x' });
+    errors.should.have.length(1);
+    errors[0]!.message.should.equal('mid-dispatch');
+    fake.closes.should.deep.equal([[1011, 'handler error']]);
+  });
 });
 
 // --- workerd section: real round trip through miniflare, when present. ---

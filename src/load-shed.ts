@@ -31,7 +31,7 @@ import {
   assertUnitRange,
 } from './assert';
 import { createEluReader } from './elu';
-import { httpError } from './errors';
+import { serviceUnavailable } from './errors';
 
 /**
  * Pressure sensors — one reader per dimension, each independently
@@ -162,12 +162,7 @@ export function loadShed(options: LoadShedOptions = {}): Middleware {
         (maxRssBytes !== undefined && readRssBytes() > maxRssBytes) ||
         (maxInFlight !== undefined && readInFlight() > maxInFlight)
       ) {
-        throw httpError(
-          503,
-          'Service Unavailable',
-          { error: 'Service Unavailable' },
-          { 'retry-after': String(retryAfterSeconds) }
-        );
+        throw serviceUnavailable(retryAfterSeconds);
       }
       return await next();
     } finally {

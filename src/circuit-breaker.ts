@@ -30,7 +30,7 @@
  */
 
 import { assertPositive } from './assert';
-import { httpError, isHttpError, retryAfterSeconds } from './errors';
+import { isHttpError, retryAfterSeconds, serviceUnavailable } from './errors';
 import { pushSlidingTimestamps } from './bounded-collections';
 
 /** Phase of the state machine: `closed` → `open` → `half-open` → … */
@@ -323,13 +323,7 @@ export async function breakerCall<T>(
         ? breaker.options.cooldownMs -
           (breaker.options.now() - breaker.openedAt)
         : 0;
-    const retryAfter = retryAfterSeconds(remaining);
-    throw httpError(
-      503,
-      'Service Unavailable',
-      { error: 'Service Unavailable' },
-      { 'retry-after': String(retryAfter) }
-    );
+    throw serviceUnavailable(retryAfterSeconds(remaining));
   }
   try {
     const value = await fn();

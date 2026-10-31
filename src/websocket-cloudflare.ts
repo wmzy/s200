@@ -37,6 +37,7 @@ import {
   createWsSession,
   createWsSocket,
   decideUpgrade,
+  reportHandlerError,
   runWsHandler,
   type WebSocketHandler,
   type WsData,
@@ -191,7 +192,17 @@ function runConnection(
     subscribePong,
   });
   server.addEventListener('message', (event) => {
-    for (const cb of session.onMessage) cb(event.data);
+    // A callback that throws fans out through the shared contract —
+    // onError + close 1011 — instead of escaping into workerd's event
+    // delivery (the same containment the node adapter applies).
+    for (const cb of session.onMessage) {
+      try {
+        cb(event.data);
+      } catch (error) {
+        reportHandlerError(error, session, close);
+        return;
+      }
+    }
   });
   server.addEventListener('close', (event) => {
     for (const cb of session.onClose) cb(event.code, event.reason);

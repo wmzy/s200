@@ -112,6 +112,24 @@ export function retryAfterSeconds(ms: number): number {
   return Math.max(1, Math.ceil(ms / 1000));
 }
 
+/**
+ * The shared `503 Service Unavailable` envelope: the `{ error }` body plus
+ * the `retry-after` header computed by {@link retryAfterSeconds}. Both
+ * availability gates — `s200/circuit-breaker`'s open phase and
+ * `s200/load-shed`'s threshold trip — throw this exact shape, so the two
+ * answers can never drift apart; `s200/rate-limit`'s 429 keeps its own
+ * envelope (different status, different body).
+ *
+ * @internal */
+export function serviceUnavailable(retryAfterSec: number): HttpError {
+  return httpError(
+    503,
+    'Service Unavailable',
+    { error: 'Service Unavailable' },
+    { 'retry-after': String(retryAfterSec) }
+  );
+}
+
 /** Shape predicate — duck typing is the only safe check for tagged data. */
 export function isHttpError(e: unknown): e is HttpError {
   return (

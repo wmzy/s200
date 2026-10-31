@@ -71,7 +71,7 @@ await supervisor.stop();
 
 `ShardPlan`：`{ spec, executor: Executor, port? }` —— 显式端口覆盖；省略时 thread/process 单元从 31000+ 计数器取。`Executor`：`{ kind: 'inline'; app } \| { kind: 'thread'; entry } \| { kind: 'process'; entry } \| { kind: 'external'; address }`。`UnitState`：`'spawning' | 'ready' | 'draining' | 'stopped' | 'failed' | 'external'`。意外子进程退出以指数退避重启（100ms 翻倍、上限 5s）；稳定期重置。
 
-线程交接是双模式的：在能转移服务器句柄的运行时（node ≥ 26）上，预绑定的监听器与其停泊的套接字经一次 `postMessage` 移入工作者（零代理）；在更早的运行时上，工作者改为服务私有端口，监督器把接受的套接字逐字节管道到该端口 —— 同样的惰性生成、同样的首请求保证，监督器始终不解析 HTTP。工作者在采纳其套接字之前死亡时，停泊的套接字被销毁，客户端快速失败而非挂死。
+线程交接是双模式的：在能转移服务器句柄的运行时（node ≥ 26）上，预绑定的监听器与其停泊的套接字经一次 `postMessage` 移入工作者（零代理）；在更早的运行时上，工作者改为服务私有端口，监督器把接受的套接字逐字节管道到该端口 —— 同样的惰性生成、同样的首请求保证，监督器始终不解析 HTTP。工作者在采纳其套接字之前死亡时，停泊的套接字被销毁，客户端快速失败而非挂死。两种模式下子进程看到的都是原始请求字节，且它用转发来的 `Host` 头、经与 `s200/node` 相同的 safe-host 门控构造请求 URL —— 分片内的 `ctx.url` 与直接部署时一致（`Host` 缺失或不安全时回落 `localhost`）。
 
 另导出：`installShardResolution()`、`appFromEntry(entry)`、`createShardServer(app)`、`startShardWorker(...)`、`runThreadShard(...)` —— `runShards` 驱动的子域机制（thread/process 单元把本模块作为其运行时重新导入）—— 以及 `WorkerLaunch`（`{ mode?: 'lazy' | 'eager'; port? }`），监督器→工作者的启动消息。
 

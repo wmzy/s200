@@ -355,7 +355,10 @@ function runConnection(
     closeCode = code;
     closeReason = reason;
     const payload = closePayload(code, encodeCloseReason(reason));
-    socket.write(Buffer.concat([frameHeader(0x8, payload.byteLength), payload]));
+    // writeFrame's `finished` guard is a no-op here (checked above), but
+    // going through it keeps every outbound close one serialization rule
+    // with data/pong frames.
+    writeFrame(0x8, payload);
     socket.end(); // flush, then close our side once the peer answers
   };
 
@@ -558,10 +561,10 @@ function runConnection(
             closeReason = reason;
             closeSent = true;
             if (code === 1005) {
-              socket.write(frameHeader(0x8, 0));
+              writeFrame(0x8, new Uint8Array(0));
             } else {
               const echo = closePayload(code, TEXT_ENCODER.encode(reason));
-              socket.write(Buffer.concat([frameHeader(0x8, echo.byteLength), echo]));
+              writeFrame(0x8, echo);
             }
           }
           socket.end();

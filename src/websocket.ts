@@ -511,8 +511,8 @@ export function asError(value: unknown, fallbackMessage?: string): Error {
  * the normalized error to the session's error callbacks, then close 1011
  * `'handler error'` through the adapter's close — the code and reason are
  * the wire contract clients see, kept verbatim. {@link runWsHandler}
- * applies it to a thrown/rejected route handler; the node adapter applies
- * it to a message callback that throws mid-dispatch.
+ * applies it to a thrown/rejected route handler; every adapter applies it
+ * to a message callback that throws mid-dispatch.
  *
  * @internal Exported for the adapters' handler-error fan-outs. */
 export function reportHandlerError(
