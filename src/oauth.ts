@@ -163,7 +163,7 @@ async function postTokenGrant(
   if (!res.ok) {
     throw httpError(502, `OAuth token exchange failed: HTTP ${res.status}`);
   }
-  const raw = (await res.json()) as {
+  let raw: {
     access_token?: string;
     token_type?: string;
     expires_in?: number;
@@ -171,6 +171,14 @@ async function postTokenGrant(
     scope?: string;
     id_token?: string;
   };
+  try {
+    raw = (await res.json()) as typeof raw;
+  } catch {
+    // A 2xx with a non-JSON body (an HTML error page, an empty answer)
+    // is the same upstream failure as a non-2xx — the 502 contract
+    // must not leak the platform's SyntaxError.
+    throw httpError(502, 'OAuth token response is not JSON');
+  }
   if (raw.access_token === undefined || raw.token_type === undefined) {
     throw httpError(502, 'OAuth token response lacks a token the flow needs');
   }
@@ -188,7 +196,8 @@ async function postTokenGrant(
  * Exchanges an authorization code: POSTs the `authorization_code` grant
  * with the PKCE verifier (form-encoded). A `clientSecret` sends HTTP
  * Basic client authentication; without one the `client_id` rides the
- * body. A non-2xx answer, or a payload without `access_token` and
+ * body. A non-2xx answer, a payload that is not JSON, or a payload
+ * without `access_token` and
  * `token_type`, throws a 502 `HttpError` — upstream failures are the
  * server's problem, not the user's.
  */

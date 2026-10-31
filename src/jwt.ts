@@ -584,7 +584,15 @@ export function createJwksResolver(
     if (!res.ok) {
       throw jwtError(`jwks fetch failed: HTTP ${res.status}`);
     }
-    const body = (await res.json()) as { keys?: JwkWithKid[] };
+    let body: { keys?: JwkWithKid[] };
+    try {
+      body = (await res.json()) as { keys?: JwkWithKid[] };
+    } catch {
+      // A 2xx with a non-JSON body is the same malformed-jwks failure as
+      // a missing `keys` array — the JwtError contract must not leak the
+      // platform's SyntaxError as an unclassified 500.
+      throw jwtError('malformed jwks: response is not JSON');
+    }
     if (!Array.isArray(body.keys) || body.keys.length === 0) {
       throw jwtError('malformed jwks: missing keys');
     }

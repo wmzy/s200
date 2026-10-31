@@ -94,9 +94,23 @@ export function extractBearer(
   if (scheme === 'Bearer') {
     return BEARER_TOKEN_RE.exec(header)?.[1];
   }
-  const escaped = scheme.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${escaped}\\s+(.+)$`, 'i').exec(header)?.[1];
+  return schemePattern(scheme).exec(header)?.[1];
 }
+
+/** Custom schemes compile once per scheme, not once per request — the
+ * cache is keyed by the small, stable scheme set an app configures, and
+ * the `i`-only pattern carries no `lastIndex` state, so sharing one
+ * instance across requests is safe. */
+const schemePatterns = new Map<string, RegExp>();
+const schemePattern = (scheme: string): RegExp => {
+  let pattern = schemePatterns.get(scheme);
+  if (pattern === undefined) {
+    const escaped = scheme.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    pattern = new RegExp(`^${escaped}\\s+(.+)$`, 'i');
+    schemePatterns.set(scheme, pattern);
+  }
+  return pattern;
+};
 
 /** The default-scheme matcher — a literal regex compiles once, keeping
  * the `Bearer` fast path allocation-identical to a hand-written gate. */

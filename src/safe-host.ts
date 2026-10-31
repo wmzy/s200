@@ -1,7 +1,8 @@
 /**
  * Internal Host(-like) header validation shared by the URL-building
- * adapters (`s200/node`'s toRequest, `s200/aws-lambda`'s requestUrl) so a
- * crafted Host cannot pollute the parsed request URL. NOT a public entry —
+ * adapters (`s200/node`'s toRequest, `s200/aws-lambda`'s requestUrl,
+ * `s200/websocket-node`'s upgrade gate) so a crafted Host cannot pollute
+ * the parsed request URL. NOT a public entry —
  * the barrel does not re-export this module; import it relatively from
  * within src (the module is runtime-free, so the Lambda bundle stays
  * clean of node-only code).
@@ -33,4 +34,15 @@ export function isSafeHost(host: string | undefined): host is string {
     SAFE_HOST.test(host) &&
     URL.canParse(`https://${host}/`)
   );
+}
+
+/**
+ * The authority every URL-building adapter interpolates: the host when
+ * {@link isSafeHost} passes, `localhost` otherwise. The gate and the
+ * fallback are one convention — call sites must not re-derive either.
+ *
+ * @internal
+ */
+export function safeAuthority(host: string | undefined): string {
+  return isSafeHost(host) ? host : 'localhost';
 }

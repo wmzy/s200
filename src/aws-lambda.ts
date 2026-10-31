@@ -16,7 +16,7 @@ import type { App } from './app';
 import { handle } from './app';
 import { finishGuarded } from './finish';
 import { headerRecordOf, isJsonMedia, mediaTypeOf } from './raw-headers';
-import { isSafeHost } from './safe-host';
+import { safeAuthority } from './safe-host';
 
 /** An API Gateway HTTP API (payload v2) event — the structural subset the
  * adapter reads. Real events carry more (`routeKey`, `requestContext`
@@ -68,10 +68,7 @@ function requestUrl(event: LambdaEventV2): string {
     event.rawQueryString === ''
       ? event.rawPath
       : `${event.rawPath}?${event.rawQueryString}`;
-  const host = event.headers['host'];
-  return isSafeHost(host)
-    ? `https://${host}${suffix}`
-    : `https://localhost${suffix}`;
+  return `https://${safeAuthority(event.headers['host'])}${suffix}`;
 }
 
 /** The request body: `undefined` for an absent, `null` or empty payload,

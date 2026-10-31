@@ -66,6 +66,20 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+/** True when `signal` can actually abort — the two shapes a `Ctx` hands
+ * out that never can (`undefined`, the shared {@link neverSignal}) read
+ * as one predicate at every call site. Doubles as a type guard: the
+ * taken branch narrows `signal` to a live `AbortSignal`. */
+function isCooperative(signal: AbortSignal | undefined): signal is AbortSignal {
+  return signal !== undefined && signal !== neverSignal();
+}
+
+/** The one 413 every byte-budget crossing speaks — `throw` sites and
+ * stream `controller.error` sites share it, so the message cannot fork. */
+function bodyTooLarge() {
+  return httpError(413, 'Request body too large');
+}
+
 /**
  * One `reader.read()` raced against `ctx.signal`. On abort the source is
  * cancelled — via the reader, because the body stream is locked to it and
@@ -79,7 +93,7 @@ function readChunk(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   signal: AbortSignal | undefined
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal === undefined || signal === neverSignal()) {
+  if (!isCooperative(signal)) {
     return reader.read();
   }
   if (signal.aborted) {
@@ -126,7 +140,7 @@ async function readLimited(
     if (done) break;
     size += value.byteLength;
     if (limit !== undefined && size > limit) {
-      throw httpError(413, 'Request body too large');
+      throw bodyTooLarge();
     }
     chunks.push(value);
   }
@@ -151,7 +165,7 @@ function cacheFor(ctx: Ctx, limit: number | undefined): BufferedCache {
       // later limited read can only enforce after the fact.
       cached.raw = cached.raw.then((buffer) => {
         if (buffer.byteLength > limit) {
-          throw httpError(413, 'Request body too large');
+          throw bodyTooLarge();
         }
         return buffer;
       });
@@ -161,7 +175,7 @@ function cacheFor(ctx: Ctx, limit: number | undefined): BufferedCache {
   // The shared cached promise is what makes an aborted mid-read reject for
   // every waiter: a later read of the same ctx awaits the same (rejected)
   // raw promise instead of hanging or replaying stale bytes.
-  const cooperative = ctx.signal !== undefined && ctx.signal !== neverSignal();
+  const cooperative = isCooperative(ctx.signal);
   const raw =
     !cooperative && limit === undefined
       ? ctx.req.arrayBuffer()
@@ -243,7 +257,7 @@ function replayStream(
       cache.raw.then(
         (buffer) => {
           if (limit !== undefined && buffer.byteLength > limit) {
-            controller.error(httpError(413, 'Request body too large'));
+            controller.error(bodyTooLarge());
             return;
           }
           // A view over the cached buffer — byte-exact, no copy. Empty
@@ -279,7 +293,7 @@ function streamSource(
   signal: AbortSignal | undefined
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
-  const cooperative = signal !== undefined && signal !== neverSignal();
+  const cooperative = isCooperative(signal);
   let size = 0;
   let settled = false;
   let onAbort: (() => void) | undefined;
@@ -323,7 +337,7 @@ function streamSource(
             // platform body is cancelled so the rest of the upload is
             // never received. Chunks already delivered stay delivered —
             // the consumer must discard them on error.
-            controller.error(httpError(413, 'Request body too large'));
+            controller.error(bodyTooLarge());
             void reader.cancel().catch(() => undefined);
             return;
           }
@@ -381,7 +395,7 @@ export function readStream(
   const signal = ctx.signal;
   // A dead request never touches the source: the stream is born errored,
   // the platform body is cancelled and the cache is parked as streamed.
-  if (signal !== undefined && signal !== neverSignal() && signal.aborted) {
+  if (isCooperative(signal) && signal.aborted) {
     bodyCache.set(ctx, { streamed: true });
     ctx.req.body?.cancel().catch(() => undefined);
     return erroredStream(abortError());

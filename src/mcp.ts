@@ -361,7 +361,12 @@ export function createMcpHandler(
   };
   return async (request: Request): Promise<Response> => {
     if (request.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405, headers: { allow: 'POST' } });
+      // The one plain-HTTP answer this transport gives: the framework's
+      // `{ error }` envelope with the spec-required 405 + `allow: POST`.
+      return Response.json(
+        { error: 'Method Not Allowed' },
+        { status: 405, headers: { allow: 'POST' } }
+      );
     }
     let parsed: unknown;
     try {

@@ -150,6 +150,13 @@ export function messageOf(error: unknown): string {
  * here by design — diagnostics flow to the log sink, never the client.
  * Everything else becomes
  * an anonymous 500 — the error's internals never leak to the client.
+ *
+ * The framework-level 404/405/500 fallbacks speak the same `{ error }`
+ * envelope through a sibling constructor, `jsonFallback`
+ * (respond.ts) — deliberately split: that one materializes through the
+ * chain-aware `newResponse` (light mode included), while this hot path
+ * keeps the single-literal `Response.json` and the `body`/`headers`
+ * payload support an error mapping needs.
  */
 export function toErrorResponse(error: unknown): Response {
   if (isHttpError(error)) {

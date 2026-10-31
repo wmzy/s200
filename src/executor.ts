@@ -511,8 +511,10 @@ const stopProcessUnit = async (unit: Unit): Promise<void> => {
     },
     () => {
       // Fire-and-forget: the exit event (imminent after SIGKILL) settles.
-      child.kill('SIGKILL');
-      return undefined;
+      // A `false` return means no such pid — no exit event is coming, so
+      // settle here instead of leaving stop() hanging on a dead child.
+      // (An exit event racing this is a no-op: resolve is idempotent.)
+      return child.kill('SIGKILL') ? undefined : Promise.resolve();
     }
   );
 };

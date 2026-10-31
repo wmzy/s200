@@ -259,12 +259,30 @@ describe('generateClient (typed emission)', () => {
     );
   });
 
-  it('emits the Branch helper only when a route declares responses', () => {
+  it('emits the Branch helper only when a route declares responses or throws gates', () => {
     generateClient(representativeApp()).should.not.contain('Branch<');
     generateClient(createApp()).should.not.contain('type Branch<');
     generateClient(typedApp()).should.contain(
       "type Branch<S extends number, T> = Omit<Response, 'json' | 'status'> & {"
     );
+  });
+
+  it('gives a throws-only route a Branch<200, unknown> success member — the spec emitter policy', () => {
+    const app = createApp();
+    get(app, '/locked', throws(401, 403), () => new Response('ok'));
+
+    const source = generateClient(app);
+    // Without the fallback the union would claim the method only ever
+    // errors; `unknown` is the honest undeclared 200 body. Mirrors
+    // openapi's bare `200: Successful response` for the same route.
+    source.should.contain(
+      'export type GetLockedResponse =\n' +
+        '  | Branch<200, unknown>\n' +
+        '  | Branch<401, { error: string }>\n' +
+        '  | Branch<403, { error: string }>;'
+    );
+    // The helper ships with it.
+    source.should.contain('type Branch<S extends number, T>');
   });
 
   it('collides type names with the same suffix as method names', () => {

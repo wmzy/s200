@@ -67,6 +67,7 @@ stop(); // Server-Timing: db;dur=5.2, total;dur=18.3
 | `attributes` | — | `startSpan` 时刻在每个 span 上的静态属性 |
 | `spanName` | `` `${method} ${pathname}` `` | `(ctx) => string` |
 | `extract` | — | `(headers: Headers) => unknown` —— 分布式上下文钩子；其不透明返回值作为 `parentContext` 透传（如用你的 tracer 的 propagation API 解析 `traceparent`） |
+| `now` | `performance.now` | 时钟覆盖（测试、确定性重放）—— 与 `metrics` 相同的注入 |
 
 ```ts
 import { trace } from 's200/otel';

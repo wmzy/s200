@@ -38,8 +38,9 @@ import { STATUS_CODES } from 'node:http';
 import { createHash } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
-import { rawHeaderPairs, splitTokens } from './raw-headers';
-import { isSafeHost } from './safe-host';
+import { setCachedUrl } from './light';
+import { rawHeaderPairs, splitList, splitTokens } from './raw-headers';
+import { safeAuthority } from './safe-host';
 
 import {
   createWsSession,
@@ -122,7 +123,7 @@ function acceptUpgrade(
   // event — an uncaught exception that kills the process. Same gate as
   // `s200/node`'s request URLs (safe-host.ts): unsafe falls back to
   // localhost, and the upgrade proceeds on the real path.
-  const host = isSafeHost(req.headers.host) ? req.headers.host : 'localhost';
+  const host = safeAuthority(req.headers.host);
   const url = new URL(req.url ?? '/', `http://${host}`);
   const matched = matchWebSocket(app, url.pathname);
   if (matched === undefined) {
@@ -172,7 +173,7 @@ function acceptUpgrade(
     const extHeader = req.headers['sec-websocket-extensions'];
     const offer =
       typeof extHeader === 'string' ? extHeader.toLowerCase() : '';
-    if (offer.split(',').some((ext) => ext.trim().startsWith('permessage-deflate'))) {
+    if (splitList(offer).some((ext) => ext.startsWith('permessage-deflate'))) {
       deflate = true;
       const windowBits = offer.includes('server_max_window_bits')
         ? '; server_max_window_bits=15'
@@ -189,6 +190,10 @@ function acceptUpgrade(
   // the same helper.
   const headers = new Headers(rawHeaderPairs(req.rawHeaders));
   const request = new Request(url, { method: req.method ?? 'GET', headers });
+  // The URL was parsed for routing above — cache it on the request the
+  // same way `s200/node`'s toRequest does, so ctx.url reads never
+  // re-parse (the cachedUrl optimization covers upgrades too).
+  setCachedUrl(request, url);
 
   // The middleware chain (app's own, then the route's) decides BEFORE the
   // 101 goes out — any rejection Response is answered as plain HTTP on
@@ -325,7 +330,9 @@ function runConnection(
 
   const writeFrame = (opcode: number, payload: Uint8Array, rsv1 = false): void => {
     if (finished) return;
-    socket.write(Buffer.concat([frameHeader(opcode, payload.byteLength, rsv1), Buffer.from(payload)]));
+    // Buffer.concat takes Uint8Array views as-is — wrapping payload in
+    // Buffer.from would copy every outbound frame (pong, data, close).
+    socket.write(Buffer.concat([frameHeader(opcode, payload.byteLength, rsv1), payload]));
   };
 
   /** Compressed send per RFC 7692 + no-context-takeover: each message is

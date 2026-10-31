@@ -550,7 +550,7 @@ const rows = await probeApp(app);        // [{ method: 'GET', pattern: '/users/:
 
 ## Codegen
 
-`s200/codegen` 的 `generateClient(app)` 从运行时路由表发出独立的 TypeScript 客户端模块（数据 + 函数中的数据）：每条路由一个类型化方法，自包含的路径填充/查询助手，内建方法 —— 且零导入（模块自带 `ClientInit`、路径填充与查询助手，保持无依赖）。参数来自各条 pattern；`init.query` 与 `init.body` 来自 `s200/meta` 注解，响应类型来自 `meta.responses` 与 `throws()` 门的合并 —— 两者都未声明的路由保持裸 `Promise<Response>`；用于不给任何栈的消费者一个类型化调用者而不必随附 s200：
+`s200/codegen` 的 `generateClient(app)` 从运行时路由表发出独立的 TypeScript 客户端模块（数据 + 函数中的数据）：每条路由一个类型化方法，自包含的路径填充/查询助手，内建方法 —— 且零导入（模块自带 `ClientInit`、路径填充与查询助手，保持无依赖）。参数来自各条 pattern；`init.query` 与 `init.body` 来自 `s200/meta` 注解，响应类型来自 `meta.responses` 与 `throws()` 门的合并 —— 两者都未声明的路由保持裸 `Promise<Response>`，仅有 `throws()` 门的路由则获得一个 `Branch<200, unknown>` 成功分支（与 OpenAPI 发射器的裸 200 策略一致，规范与类型对「该方法仍可成功」保持一致）；用于不给任何栈的消费者一个类型化调用者而不必随附 s200：
 
 ```ts
 import { generateClient } from 's200/codegen';

@@ -73,6 +73,13 @@ export type TraceOptions = {
   /** Span name; defaults to `` `${ctx.req.method} ${ctx.url.pathname}` ``. */
   readonly spanName?: (ctx: Ctx) => string;
   /**
+   * Clock override (tests, deterministic replays); default
+   * `performance.now`. The same injection {@link metrics} carries — a
+   * custom clock alone (no tracer/attributes/spanName/extract)
+   * instruments nothing and stays on the pass-through fast path.
+   */
+  readonly now?: () => number;
+  /**
    * Distributed-context hook: called with the request headers before
    * `startSpan`; its opaque return value is passed through as
    * `parentContext`. Parsing (e.g. of a W3C `traceparent` header) stays
@@ -120,6 +127,9 @@ const noopTracer: Tracer = {
  */
 export function trace(options: TraceOptions = {}): Middleware {
   const { tracer = noopTracer, attributes, spanName, extract } = options;
+  // Bound lazily like `metrics` does: a detached `performance.now` loses
+  // its receiver in Node.
+  const now = options.now ?? ((): number => performance.now());
   if (
     tracer === noopTracer &&
     attributes === undefined &&
@@ -129,7 +139,7 @@ export function trace(options: TraceOptions = {}): Middleware {
     return (_ctx: Ctx, next: Next) => next();
   }
   return async (ctx: Ctx, next: Next): Promise<void> => {
-    const start = performance.now();
+    const start = now();
     const parentContext =
       extract === undefined ? undefined : extract(ctx.req.headers);
     const name =
@@ -142,7 +152,7 @@ export function trace(options: TraceOptions = {}): Middleware {
       span.setAttribute('http.request.method', methodOf(ctx));
       span.setAttribute('url.path', ctx.url.pathname);
       span.setAttribute('http.response.status_code', statusCodeOf(ctx));
-      span.setAttribute('s200.duration_ms', performance.now() - start);
+      span.setAttribute('s200.duration_ms', now() - start);
       span.setStatus({
         code:
           ctx.res !== undefined && ctx.res.status >= 500

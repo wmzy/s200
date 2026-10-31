@@ -12,8 +12,16 @@
  * pattern, `init.query` from `meta.query`, `init.body` from `meta.body`,
  * and a status-discriminated response union from `meta.responses` merged
  * with the route's `throws` gates. Handlers' own body brands are
- * compile-time phantoms, so anything undeclared stays `unknown`, and
- * routes with no declarations keep the bare `Promise<Response>`.
+ * compile-time phantoms, so anything undeclared stays `unknown`; routes
+ * with no declarations at all keep the bare `Promise<Response>`, and a
+ * route with `throws` gates but no `meta.responses` gains a
+ * `Branch<200, unknown>` success member — the same bare-200 policy the
+ * OpenAPI emitter applies, so spec and types never disagree about
+ * whether a throws-only method can still succeed.
+ *
+ * The emitted client is deliberately thinner than `s200/client`: no
+ * request timeout, no abort signal, no middleware hook — only base URL,
+ * path fill, query serialization and JSON bodies.
  *
  * Output is deterministic — registration order, no timestamps — so it
  * diffs and commits like hand-written source.
@@ -411,6 +419,20 @@ export function generateClient(app: App, options: GenerateClientOptions = {}): s
         status,
         body: schema === undefined ? 'unknown' : schemaToTs(schema),
       });
+    }
+    // The spec emitter answers a route with no `meta.responses` of its own
+    // with a bare `200: Successful response` (openapi.ts's policy, kept
+    // out of `mergedResponses` on purpose). Mirror it, but only where the
+    // union would otherwise misrepresent: a throws-only route would claim
+    // the method only ever errors while the handler keeps answering 200s.
+    // Fully-undeclared routes keep the loose `Promise<Response>`, and a
+    // declared `meta.responses` is taken at face value — no fallback then.
+    if (
+      meta?.responses === undefined &&
+      branches.length > 0 &&
+      !branches.some((branch) => branch.status === 200)
+    ) {
+      branches.push({ status: 200, body: 'unknown' });
     }
     let responseType = 'Response';
     if (branches.length > 0) {

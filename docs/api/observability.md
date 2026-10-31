@@ -67,6 +67,7 @@ Started before `next()`, finished on the unwind (the in-chain error boundary mat
 | `attributes` | — | Static attributes stamped on every span at `startSpan` time |
 | `spanName` | `` `${method} ${pathname}` `` | `(ctx) => string` |
 | `extract` | — | `(headers: Headers) => unknown` — distributed-context hook; its opaque return passes through as `parentContext` (e.g. parse `traceparent` with your tracer's propagation API) |
+| `now` | `performance.now` | Clock override (tests, deterministic replays) — the same injection `metrics` carries |
 
 ```ts
 import { trace } from 's200/otel';

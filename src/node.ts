@@ -34,7 +34,7 @@ import { runFinish } from './finish';
 import { drainHttpServer } from './drain';
 import { writeWebResponseToNode } from './node-bridge';
 import { headerRecordOf, rawHeaderPairs } from './raw-headers';
-import { isSafeHost } from './safe-host';
+import { safeAuthority } from './safe-host';
 
 
 /** Any server the adapter can return: HTTP/1.1, HTTPS, or HTTP/2-over-TLS. */
@@ -435,7 +435,7 @@ function toRequest(req: RequestLike, light: boolean, signal?: AbortSignal): Requ
   ];
   const candidate =
     req.headers.host ?? (typeof authority === 'string' ? authority : undefined);
-  const host = isSafeHost(candidate) ? candidate : 'localhost';
+  const host = safeAuthority(candidate);
   const url = `http://${host}${req.url ?? '/'}`;
   const method = req.method ?? 'GET';
   // GET/HEAD must stay bodyless — the platform rejects a request body
