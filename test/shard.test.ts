@@ -71,6 +71,10 @@ describe('shardSpecs grouping', function () {
 
     // Declaration order; empty groups produce no spec.
     specs.map((spec) => spec.id).should.deep.equal(['all', 'a', 'ab']);
+    // The root group keeps its '/' — the catch-all `underPrefix` and the
+    // generated gateway/dispatch configs key on the literal path (mount
+    // collapses the root to the no-prefix form; a shard must not).
+    byId(specs, 'all').prefix.should.equal('/');
     patterns(byId(specs, 'a')).should.deep.equal(['/a/x']);
     patterns(byId(specs, 'ab')).should.deep.equal(['/a/b', '/a/b/y']);
     patterns(byId(specs, 'all')).should.deep.equal(['/elsewhere']);

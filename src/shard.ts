@@ -115,9 +115,13 @@ function underPrefix(pattern: string, prefix: string): boolean {
 const DNS_LABEL = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 /**
- * Validates one group and normalizes its prefix (trailing slashes off; the
- * root keeps its '/'), so every consumer compares clean prefixes — the
- * same normalization `mount` applies to its prefixes.
+ * Validates one group and normalizes its prefix — must start with '/',
+ * trailing slashes collapse — the same rule shape `use`/`mount` prefixes
+ * follow (`basePrefixOf` in app.ts). The root deliberately forks: mount
+ * reads `'/'` as the no-prefix global form (as does `''`), while a shard
+ * keeps `'/'` — the catch-all `underPrefix` matches and the path
+ * `ShardSpec.prefix` carries to gateway/dispatch consumers, where `''`
+ * would be no path at all.
  */
 function normalizeGroup(group: ShardGroup): ShardGroup {
   if (group.id === '' || group.id.length > 63 || !DNS_LABEL.test(group.id)) {

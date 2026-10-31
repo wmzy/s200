@@ -35,6 +35,7 @@ import {
 import { serve } from './node';
 import { generateClient } from './codegen';
 import { parseEnv } from './config';
+import { messageOf } from './errors';
 import { createRouteTable, formatRouteTable } from './route-table';
 import { selfUrlOf } from './self-url';
 
@@ -566,11 +567,14 @@ export async function runDev(
   }
 }
 
-/** Shapes any thrown value into the overlay's `error` event. */
+/** Shapes any thrown value into the overlay's `error` event. The message
+ * goes through the shared `messageOf` extraction (`./errors` — one policy
+ * with health's failure reasons); the `instanceof` arm exists only to
+ * carry `stack`, which plain thrown values lack. */
 const devErrorOf = (error: unknown): DevEvent =>
   error instanceof Error
-    ? { type: 'error', message: error.message, stack: error.stack }
-    : { type: 'error', message: String(error) };
+    ? { type: 'error', message: messageOf(error), stack: error.stack }
+    : { type: 'error', message: messageOf(error) };
 
 /** Parsed `s200 routes` arguments. */
 export type RoutesArgs = {

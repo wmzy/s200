@@ -491,6 +491,11 @@ describe('runDev error overlay (--overlay)', () => {
       captured.onError!(new Error('compile failed')); // load failure path
       await readUntil('compile failed');
       seen.should.contain('event: error');
+      // The message is the bare `message`, not `String(error)`'s
+      // "Error: compile failed" — the shared messageOf policy.
+      seen.should.contain('"message":"compile failed"');
+      captured.onError!('plain string failure'); // non-Error throw
+      await readUntil('"message":"plain string failure"');
     } finally {
       await reader.cancel();
       await dev.close();
